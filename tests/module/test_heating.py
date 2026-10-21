@@ -36,7 +36,6 @@ def _make_climate(products=None, devices=None, min_max=None):
         {
             "products": products or {},
             "devices": devices or {},
-            "actions": {},
             "minMax": min_max or {},
             "user": {},
         }
@@ -116,14 +115,6 @@ class TestGetCurrentTemperature:
         climate = _make_climate({"heat-1": {"props": {"temperature": "N/A"}}})
         assert await climate.get_current_temperature(_make_device()) is None
 
-    async def test_minmax_first_write(self):
-        """First temperature reading initialises the minMax entry for the device."""
-        climate = _make_climate({"heat-1": {"props": {"temperature": _CURRENT_TEMP}}})
-        d = _make_device()
-        await climate.get_current_temperature(d)
-        assert "heat-1" in climate.session.data.minMax
-        assert climate.session.data.minMax["heat-1"]["TodayMin"] == _CURRENT_TEMP
-
 
 class TestGetTargetTemperature:
     """Tests for HiveHeating.get_target_temperature."""
@@ -167,16 +158,6 @@ class TestGetMode:
         )
         result = await climate.get_mode(_make_device())
         assert result == _MANUAL_MODE
-
-
-class TestGetOperationModes:
-    """Tests for HiveHeating.get_operation_modes."""
-
-    async def test_returns_three_modes(self):
-        """Returns the standard list of three heating operation modes."""
-        climate = _make_climate()
-        modes = await climate.get_operation_modes()
-        assert modes == [_SCHEDULE_MODE, _MANUAL_MODE, "OFF"]
 
 
 class TestSetTargetTemperature:
@@ -265,40 +246,3 @@ class TestSetBoostOff:
         assert result is True
         _, kwargs = climate.session.api.set_state.call_args
         assert kwargs.get("target") == _BOOST_RESTORE_TARGET
-
-
-class TestGetScheduleNowNextLater:
-    """Tests for Climate.get_schedule_now_next_later."""
-
-    async def test_online_schedule_mode_calls_helper(self):
-        """Online device in SCHEDULE mode returns schedule data."""
-        climate = _make_climate(
-            {"heat-1": {"state": {"mode": _SCHEDULE_MODE, "schedule": {}}}}
-        )
-        climate.session.attr.online_offline.return_value = True
-        result = await climate.get_schedule_now_next_later(_make_device())
-        assert result is not None
-
-    async def test_non_schedule_mode_returns_none(self):
-        """Non-SCHEDULE mode returns None."""
-        climate = _make_climate({"heat-1": {"state": {"mode": _MANUAL_MODE}}})
-        assert await climate.get_schedule_now_next_later(_make_device()) is None
-
-
-class TestMinMaxTemperature:
-    """Tests for Climate.minmax_temperature."""
-
-    async def test_returns_minmax_data(self):
-        """Returns minMax entry for the device when present."""
-        climate = _make_climate(
-            min_max={
-                "heat-1": {"TodayMin": _TODAY_MIN_TEMP, "TodayMax": _TODAY_MAX_TEMP}
-            }
-        )
-        result = await climate.minmax_temperature(_make_device())
-        assert result["TodayMin"] == _TODAY_MIN_TEMP
-
-    async def test_missing_returns_none(self):
-        """Returns None when no minMax entry exists for the device."""
-        climate = _make_climate()
-        assert await climate.minmax_temperature(_make_device()) is None

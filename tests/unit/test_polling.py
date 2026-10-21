@@ -256,7 +256,7 @@ class TestGetDevicesSlowPoll:
         p.config = MagicMock()
         p.config.file = False
         p.tokens = None  # triggers the "neither branch" path
-        p.data = Map({"products": {}, "devices": {}, "actions": {}, "user": {}})
+        p.data = Map({"products": {}, "devices": {}, "user": {}})
 
         result = await p.get_devices("No_ID")
         assert result is False
@@ -309,7 +309,7 @@ class TestGetDevicesNoneGuard:
         p.api = MagicMock()
         p.api.get_all = AsyncMock(return_value=None)
         p.hive_refresh_tokens = AsyncMock()
-        p.data = Map({"products": {}, "devices": {}, "actions": {}, "user": {}})
+        p.data = Map({"products": {}, "devices": {}, "user": {}})
 
         result = await p.get_devices("No_ID")
         assert result is False
@@ -333,7 +333,7 @@ class TestGetDevicesHomesKey:
         p.api = MagicMock()
         p.api.get_all = AsyncMock(return_value={"original": "200", "parsed": parsed})
         p.hive_refresh_tokens = AsyncMock()
-        p.data = Map({"products": {}, "devices": {}, "actions": {}, "user": {}})
+        p.data = Map({"products": {}, "devices": {}, "user": {}})
         return p, await p.get_devices("No_ID")
 
     async def test_homes_null_does_not_crash(self):
@@ -374,3 +374,38 @@ class TestGetDevicesHomesKey:
         }
         _p, result = await self._run_get_devices_with_parsed(parsed)
         assert isinstance(result, bool)
+
+
+class TestUpdateInterval:
+    """Tests for PollingMixin.update_interval, which the options flow calls."""
+
+    @staticmethod
+    def _make_stub():
+        from apyhiveapi.helper.hivedataclasses import SessionConfig
+
+        class _Stub(PollingMixin):
+            def __init__(self):
+                self.config = SessionConfig()
+
+        return _Stub()
+
+    async def test_seconds_are_stored_as_a_timedelta(self):
+        from datetime import timedelta
+
+        stub = self._make_stub()
+        assert await stub.update_interval(120) is True
+        assert stub.config.scan_interval == timedelta(seconds=120)
+
+    async def test_timedelta_is_stored_as_given(self):
+        from datetime import timedelta
+
+        stub = self._make_stub()
+        await stub.update_interval(timedelta(minutes=3))
+        assert stub.config.scan_interval == timedelta(minutes=3)
+
+    async def test_values_below_the_minimum_are_raised_to_it(self):
+        from apyhiveapi.session.polling import MIN_SCAN_INTERVAL
+
+        stub = self._make_stub()
+        await stub.update_interval(5)
+        assert stub.config.scan_interval == MIN_SCAN_INTERVAL

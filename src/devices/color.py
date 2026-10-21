@@ -39,28 +39,6 @@ class LightColorHandler:  # pylint: disable=no-member
             _LOGGER.error(e)
         return None
 
-    async def get_min_color_temp(self, device: Device):
-        """Get light minimum color temperature (mireds).
-
-        Args:
-            device (Device): Device to query.
-
-        Returns:
-            int | None: Minimum colour temperature in mireds.
-        """
-        return self._kelvin_to_mireds(device, "props", "colourTemperature", "max")
-
-    async def get_max_color_temp(self, device: Device):
-        """Get light maximum color temperature (mireds).
-
-        Args:
-            device (Device): Device to query.
-
-        Returns:
-            int | None: Maximum colour temperature in mireds.
-        """
-        return self._kelvin_to_mireds(device, "props", "colourTemperature", "min")
-
     async def get_color_temp(self, device: Device):
         """Get light current color temperature (mireds).
 

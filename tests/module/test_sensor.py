@@ -14,8 +14,6 @@ def _make_sensor(products=None, devices=None):
         {
             "products": products or {},
             "devices": devices or {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )
@@ -120,9 +118,9 @@ class TestGetSensor:
         result = await sensor.get_sensor(_make_device())
         assert result is cached
 
-    async def test_availability_type_skips_device_recovered(self):
-        """get_sensor does not call device_recovered for Availability hive_type."""
+    async def test_connectivity_type_skips_device_recovered(self):
+        """get_sensor does not call device_recovered for the Connectivity hive_type."""
         sensor = _make_sensor(devices={"dev-1": {"props": {"online": True}}})
-        d = _make_device(hive_type="Availability")
+        d = _make_device(hive_type="Connectivity")
         await sensor.get_sensor(d)
         sensor.session.helper.device_recovered.assert_not_called()

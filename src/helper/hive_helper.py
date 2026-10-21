@@ -4,7 +4,6 @@ import copy
 import datetime
 import logging
 import operator
-import time
 from typing import Any
 
 from .const import HIVE_TYPES
@@ -25,25 +24,6 @@ _SENSITIVE_KEY_PARTS = (
     "responsemetadata",
     "newdevicemetadata",
 )
-
-
-def epoch_time(date_time: Any, pattern: str, action: str) -> Any:
-    """Convert between a datetime string and a Unix epoch integer.
-
-    Args:
-        date_time: Epoch integer or date/time string to convert.
-        pattern: ``strptime``/``strftime`` format string used for the conversion.
-        action: ``"to_epoch"`` converts a datetime string → int;
-                ``"from_epoch"`` converts an int → formatted datetime string.
-
-    Returns:
-        Converted value, or ``None`` if *action* is unrecognised.
-    """
-    if action == "to_epoch":
-        return int(time.mktime(time.strptime(str(date_time), pattern)))
-    if action == "from_epoch":
-        return datetime.datetime.fromtimestamp(int(date_time)).strftime(pattern)
-    return None
 
 
 class HiveHelper:
@@ -113,41 +93,6 @@ class HiveHelper:
             if n_id not in self.session.config.error_list:
                 _LOGGER.error(message)
                 self.session.config.error_list[n_id] = datetime.datetime.now()
-
-    def get_device_from_id(self, n_id: str):
-        """Get product/device data from ID.
-
-        Args:
-            n_id (str): ID of the device.
-
-        Returns:
-            dict: Device data.
-        """
-        if hasattr(self.session, "entity_cache"):
-            for cached_id, cached in self.session.entity_cache.items():
-                hive_id = (
-                    cached.get("hive_id")
-                    if isinstance(cached, dict)
-                    else getattr(cached, "hive_id", None)
-                )
-                device_id = (
-                    cached.get("device_id")
-                    if isinstance(cached, dict)
-                    else getattr(cached, "device_id", None)
-                )
-                if n_id in (hive_id, device_id):
-                    ha_name = (
-                        cached.get("haName", cached_id)
-                        if isinstance(cached, dict)
-                        else getattr(cached, "ha_name", cached_id)
-                    )
-                    _LOGGER.debug(
-                        "get_device_from_id - Found cached device for ID %s: %s",
-                        n_id,
-                        ha_name,
-                    )
-                    return cached
-        return False
 
     def get_device_data(self, product: dict):
         """Get device from product data.

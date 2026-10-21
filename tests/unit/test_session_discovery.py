@@ -32,8 +32,6 @@ def _make_stub(*, has_data=True):
         {
             "products": _POPULATED_PRODUCTS if has_data else {},
             "devices": _POPULATED_DEVICES if has_data else {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )
@@ -69,8 +67,6 @@ def _make_create_stub():
         {
             "products": {},
             "devices": {},
-            "actions": {},
-            "minMax": {},
             "user": {"temperatureUnit": "C"},
         }
     )
@@ -343,16 +339,6 @@ class TestCreateDevicesExtended:
         # Hub is found; hub_id is set to the hub device
         assert s.hub_id == "hub-1"
 
-    async def test_action_processed_as_switch(self):
-        """Actions in data.actions are added to device_list['switch']."""
-        s = _make_create_stub()
-        s.data["actions"] = {
-            "act-1": {"id": "act-1", "name": "Good Night", "type": "action"}
-        }
-        result = await s.create_devices()
-        assert len(result["switch"]) == 1
-        assert result["switch"][0].hive_type == "action"
-
     async def test_returns_device_list_dict(self):
         """create_devices always returns a dict with the expected HA entity keys."""
         s = _make_create_stub()
@@ -479,7 +465,7 @@ class TestCreateDevicesEntityConfigKwargs:
     """Lines 224->226, 226->228, 228->230: entity_config kwarg population in DEVICES loop."""
 
     async def test_entity_config_with_all_fields_populates_kwargs(self):
-        """EntityConfig with ha_name, hive_type, and category all set → all kwargs passed."""
+        """EntityConfig with ha_name and hive_type set → both kwargs passed."""
         s = _make_create_stub()
         s.data["devices"] = {
             "dev-1": {
@@ -493,14 +479,12 @@ class TestCreateDevicesEntityConfigKwargs:
             entity_type="binary_sensor",
             ha_name="Hub Status",
             hive_type="Connectivity",
-            category="diagnostic",
         )
         with patch("apyhiveapi.session.discovery.DEVICES", {"hub": [entity_cfg]}):
             result = await s.create_devices()
         assert len(result["binary_sensor"]) == 1
         created = result["binary_sensor"][0]
         assert created.hive_type == "Connectivity"
-        assert created.category == "diagnostic"
 
     async def test_entity_config_empty_fields_does_not_add_to_kwargs(self):
         """EntityConfig with empty ha_name and hive_type does not inject those keys."""
@@ -517,7 +501,6 @@ class TestCreateDevicesEntityConfigKwargs:
             entity_type="binary_sensor",
             ha_name="",  # falsy — should not be added to kwargs
             hive_type="",  # falsy — should not be added to kwargs
-            category=None,  # None — should not be added to kwargs
         )
         with patch("apyhiveapi.session.discovery.DEVICES", {"hub": [entity_cfg]}):
             result = await s.create_devices()
@@ -543,7 +526,6 @@ class TestCreateDevicesDeviceAddListError:
             entity_type="binary_sensor",
             ha_name="Hub Status",
             hive_type="Connectivity",
-            category="diagnostic",
         )
         with patch("apyhiveapi.session.discovery.DEVICES", {"hub": [entity_cfg]}):
             with patch.object(s, "add_list", side_effect=KeyError("bad key")):
@@ -566,31 +548,10 @@ class TestCreateDevicesDeviceAddListError:
             entity_type="binary_sensor",
             ha_name="",
             hive_type="",
-            category=None,
         )
         with patch("apyhiveapi.session.discovery.DEVICES", {"hub": [entity_cfg]}):
             with patch.object(s, "add_list", side_effect=TypeError("bad type")):
                 result = await s.create_devices()
-        assert isinstance(result, dict)
-
-
-class TestCreateDevicesActionAddListError:
-    """Lines 258-259: KeyError/TypeError from add_list in actions loop is caught."""
-
-    async def test_action_add_list_keyerror_is_caught(self):
-        """KeyError from add_list when processing an action is logged, not propagated."""
-        s = _make_create_stub()
-        s.data["actions"] = {"act-1": {"id": "act-1", "name": "Good Night"}}
-        with patch.object(s, "add_list", side_effect=KeyError("missing")):
-            result = await s.create_devices()
-        assert isinstance(result, dict)
-
-    async def test_action_add_list_typeerror_is_caught(self):
-        """TypeError from add_list when processing an action is caught."""
-        s = _make_create_stub()
-        s.data["actions"] = {"act-1": {"id": "act-1", "name": "Wake Up"}}
-        with patch.object(s, "add_list", side_effect=TypeError("type error")):
-            result = await s.create_devices()
         assert isinstance(result, dict)
 
 
@@ -613,7 +574,6 @@ class TestCreateDevicesProductTemperatureUnit:
             entity_type="sensor",
             ha_name="Temp Sensor",
             hive_type="Current_Temperature",
-            category="diagnostic",
             temperature_unit="F",
         )
         captured_kwargs = {}
@@ -649,7 +609,6 @@ class TestCreateDevicesProductAddListAttributeError:
             entity_type="climate",
             ha_name="",
             hive_type="",
-            category=None,
         )
         with patch("apyhiveapi.session.discovery.PRODUCTS", {"heating": [entity_cfg]}):
             with patch.object(s, "add_list", side_effect=AttributeError("attr error")):
@@ -671,7 +630,6 @@ class TestCreateDevicesProductAddListAttributeError:
             entity_type="climate",
             ha_name="",
             hive_type="",
-            category=None,
         )
         with patch("apyhiveapi.session.discovery.PRODUCTS", {"heating": [entity_cfg]}):
             with patch.object(s, "add_list", side_effect=NameError("name error")):

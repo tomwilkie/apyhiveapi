@@ -610,11 +610,12 @@ class TestAsyncInit:
 
         mock_boto_client = MagicMock()
         mock_loop = MagicMock()
-        mock_loop.run_in_executor = AsyncMock(
-            side_effect=[_LOGIN_INFO, mock_boto_client]
-        )
+        mock_loop.run_in_executor = AsyncMock(return_value=mock_boto_client)
 
-        with patch("asyncio.get_running_loop", return_value=mock_loop):
+        with (
+            patch.object(auth.api, "get_login_info", return_value=_LOGIN_INFO),
+            patch("asyncio.get_running_loop", return_value=mock_loop),
+        ):
             await auth.async_init()
 
         assert auth._pool_id == "eu-west-1_TestPool"
@@ -636,11 +637,12 @@ class TestAsyncInit:
         }
         mock_boto_client = MagicMock()
         mock_loop = MagicMock()
-        mock_loop.run_in_executor = AsyncMock(
-            side_effect=[login_info, mock_boto_client]
-        )
+        mock_loop.run_in_executor = AsyncMock(return_value=mock_boto_client)
 
-        with patch("asyncio.get_running_loop", return_value=mock_loop):
+        with (
+            patch.object(auth.api, "get_login_info", return_value=login_info),
+            patch("asyncio.get_running_loop", return_value=mock_loop),
+        ):
             await auth.async_init()
 
         assert auth._region == "ap-southeast-2"
@@ -1342,9 +1344,7 @@ class TestAsyncInitMissingKeys:
 
         auth = HiveAuthAsync(username="user@test.com", password="pass")
         bad_login_info = {"UPID": "eu-west-1_TestPool", "CLIID": "test-client-id"}
-        mock_loop = MagicMock()
-        mock_loop.run_in_executor = AsyncMock(side_effect=[bad_login_info])
-        with patch("asyncio.get_running_loop", return_value=mock_loop):
+        with patch.object(auth.api, "get_login_info", return_value=bad_login_info):
             with pytest.raises(HiveUnknownConfiguration):
                 await auth.async_init()
 
@@ -1354,9 +1354,7 @@ class TestAsyncInitMissingKeys:
 
         auth = HiveAuthAsync(username="user@test.com", password="pass")
         bad_login_info = {"CLIID": "test-client-id", "REGION": "eu-west-1_TestPool"}
-        mock_loop = MagicMock()
-        mock_loop.run_in_executor = AsyncMock(side_effect=[bad_login_info])
-        with patch("asyncio.get_running_loop", return_value=mock_loop):
+        with patch.object(auth.api, "get_login_info", return_value=bad_login_info):
             with pytest.raises(HiveUnknownConfiguration):
                 await auth.async_init()
 
@@ -1422,9 +1420,6 @@ class TestAsyncInitNoneGuard:
         auth = HiveAuthAsync(username="user@test.com", password="pass")
         auth.client = None
 
-        mock_loop = MagicMock()
-        mock_loop.run_in_executor = AsyncMock(return_value=None)
-
-        with patch("asyncio.get_running_loop", return_value=mock_loop):
+        with patch.object(auth.api, "get_login_info", return_value=None):
             with pytest.raises(HiveUnknownConfiguration):
                 await auth.async_init()

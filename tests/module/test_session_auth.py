@@ -1,4 +1,4 @@
-"""Tests for SessionAuthMixin — update_tokens, login, sms2fa, hive_refresh_tokens."""
+"""Tests for SessionAuthMixin — update_tokens, login, hive_refresh_tokens."""
 
 # pylint: disable=attribute-defined-outside-init,too-few-public-methods,protected-access
 import asyncio
@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from apyhiveapi.helper.hive_exceptions import (
-    HiveInvalid2FACode,
     HiveReauthRequired,
     HiveRefreshTokenExpired,
     HiveUnknownConfiguration,
@@ -139,24 +138,6 @@ class TestHandleDeviceLoginChallenge:
         s.auth.device_login.return_value = {"ChallengeName": "SMS_MFA"}
         with pytest.raises(HiveReauthRequired):
             await s._handle_device_login_challenge({})
-
-
-class TestSms2fa:
-    """Tests for SessionAuthMixin.sms2fa()."""
-
-    async def test_success_calls_update_tokens(self):
-        """Successful 2FA returns result with AuthenticationResult."""
-        s = _make_stub()
-        s.auth.sms_2fa.return_value = AUTH_RESULT
-        result = await s.sms2fa("123456", {"session": "data"})
-        assert "AuthenticationResult" in result
-
-    async def test_invalid_code_reraises(self):
-        """Invalid 2FA code re-raises HiveInvalid2FACode."""
-        s = _make_stub()
-        s.auth.sms_2fa.side_effect = HiveInvalid2FACode()
-        with pytest.raises(HiveInvalid2FACode):
-            await s.sms2fa("bad", {})
 
 
 class TestHiveRefreshTokens:

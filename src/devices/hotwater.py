@@ -2,7 +2,6 @@
 
 import logging
 
-from ..helper.compat_aliases import WaterHeaterCompatMixin
 from ..helper.const import HIVETOHA
 from ..helper.device_handler_base import BaseDeviceHandler
 from ..helper.hivedataclasses import Device
@@ -36,15 +35,6 @@ class HiveHotwater(BoostMixin, BaseDeviceHandler):
         if state == "BOOST":
             state = self._get_product_state(device, "props", "previous", "mode")
         return HIVETOHA[self.hotwater_type].get(state, state)
-
-    @staticmethod
-    async def get_operation_modes():
-        """Get hot water list of possible modes.
-
-        Returns:
-            list: Return list of operation modes.
-        """
-        return ["SCHEDULE", "ON", "OFF"]
 
     async def get_state(self, device: Device):
         """Get hot water current state.
@@ -133,7 +123,7 @@ class HiveHotwater(BoostMixin, BaseDeviceHandler):
         return await self._execute_state_change(device, mode=prev_mode)
 
 
-class WaterHeater(WaterHeaterCompatMixin, HiveHotwater):
+class WaterHeater(HiveHotwater):
     """Water heater class.
 
     Args:
@@ -177,19 +167,3 @@ class WaterHeater(WaterHeaterCompatMixin, HiveHotwater):
             device.status,
         )
         return self.session.set_cached_device(device)
-
-    async def get_schedule_now_next_later(self, device: Device):
-        """Hive get hotwater schedule now, next and later.
-
-        Args:
-            device (dict): device to get schedule for.
-
-        Returns:
-            dict: return now, next and later schedule.
-        """
-        mode_current = await self.get_mode(device)
-        if mode_current == "SCHEDULE":
-            schedule = self._get_product_state(device, "state", "schedule")
-            if schedule is not None:
-                return self.session.helper.get_schedule_nnl(schedule)
-        return None

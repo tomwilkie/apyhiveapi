@@ -26,9 +26,7 @@ def _make_stub():
     p = StubPolling()
     p.config = SessionConfig()
     p.config.last_update = datetime.now() - _FAR_PAST
-    p.data = Map(
-        {"products": {}, "devices": {}, "actions": {}, "minMax": {}, "user": {}}
-    )
+    p.data = Map({"products": {}, "devices": {}, "user": {}})
     p.tokens = None
     p.entity_cache = {}
     p.update_lock = asyncio.Lock()
@@ -258,11 +256,6 @@ class TestGetDevicesDataParsing:
         p = await self._run_with_parsed({"homes": {"homes": [{"id": "home-123"}]}})
         assert p.config.home_id == "home-123"
 
-    async def test_actions_parsed_populates_data_actions(self):
-        """'actions' list in parsed response populates data.actions."""
-        p = await self._run_with_parsed({"actions": [{"id": "act-1"}]})
-        assert "act-1" in p.data.actions
-
 
 # ---------------------------------------------------------------------------
 # get_devices — exception handling
@@ -284,7 +277,7 @@ class TestGetDevicesExceptions:
         """asyncio.TimeoutError sets _last_poll_slow=True and returns False."""
         p = _make_stub()
         p.tokens = MagicMock()
-        p.api.get_all.side_effect = asyncio.TimeoutError()
+        p.api.get_all.side_effect = TimeoutError()
         result = await p.get_devices("No_ID")
         assert result is False
         assert p._last_poll_slow is True

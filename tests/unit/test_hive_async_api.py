@@ -12,6 +12,7 @@ from apyhiveapi.helper.hive_exceptions import (
     FileInUse,
     HiveApiError,
     HiveAuthError,
+    HiveConnectionError,
     NoApiToken,
 )
 
@@ -49,7 +50,7 @@ def _make_api(status=200, json_data=None, token="test-token", file_mode=False):
     return HiveApiAsync(hive_session=session, websession=websession)
 
 
-def _make_api_no_token(_url_contains_sso=False):
+def _make_api_no_token():
     """Return an API instance whose session raises KeyError on token lookup."""
     websession = _make_mock_websession(status=200)
     session = MagicMock()
@@ -76,12 +77,6 @@ class TestHiveApiAsyncRequest:
         api = _make_api(status=201)
         resp = await api.request("post", "https://beekeeper.hivehome.com/1.0/nodes/x/y")
         assert resp.status == 201
-
-    async def test_sso_url_without_token_does_not_raise(self):
-        api = _make_api_no_token()
-        # Should not raise NoApiToken because "sso" is in the URL
-        resp = await api.request("get", "https://sso.hivehome.com/")
-        assert resp.status == 200
 
     async def test_non_sso_without_token_raises_no_api_token(self):
         api = _make_api_no_token()
@@ -146,47 +141,6 @@ class TestGetAll:
 # ---------------------------------------------------------------------------
 
 
-class TestGetEndpoints:
-    async def test_get_devices_returns_parsed_json(self):
-        payload = [{"id": "dev1"}]
-        api = _make_api(status=200, json_data=payload)
-        result = await api.get_devices()
-        assert result["original"] == 200
-        assert result["parsed"] == payload
-
-    async def test_get_products_returns_parsed_json(self):
-        payload = [{"id": "prod1"}]
-        api = _make_api(status=200, json_data=payload)
-        result = await api.get_products()
-        assert result["original"] == 200
-        assert result["parsed"] == payload
-
-    async def test_get_actions_returns_parsed_json(self):
-        payload = [{"id": "act1"}]
-        api = _make_api(status=200, json_data=payload)
-        result = await api.get_actions()
-        assert result["original"] == 200
-        assert result["parsed"] == payload
-
-    async def test_get_devices_os_error_raises_http_error(self):
-        api = _make_api(status=200)
-        api.websession.request.side_effect = OSError
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.get_devices()
-
-    async def test_get_products_os_error_raises_http_error(self):
-        api = _make_api(status=200)
-        api.websession.request.side_effect = OSError
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.get_products()
-
-    async def test_get_actions_os_error_raises_http_error(self):
-        api = _make_api(status=200)
-        api.websession.request.side_effect = OSError
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.get_actions()
-
-
 # ---------------------------------------------------------------------------
 # Tests: HiveApiAsync.set_state
 # ---------------------------------------------------------------------------
@@ -223,115 +177,14 @@ class TestSetState:
 # ---------------------------------------------------------------------------
 
 
-class TestSetAction:
-    async def test_file_in_use_returns_file_response(self):
-        api = _make_api(status=200, file_mode=True)
-        result = await api.set_action("action-1", '{"status": "on"}')
-        assert result == {"original": "file"}
-
-    async def test_successful_set_action_returns_status_200(self):
-        payload = {"id": "action-1", "status": "on"}
-        api = _make_api(status=200, json_data=payload)
-        result = await api.set_action("action-1", '{"status": "on"}')
-        assert result["original"] == 200
-        assert result["parsed"] == payload
-
-    async def test_runtime_error_calls_error_method(self):
-        api = _make_api(status=200)
-        api.websession.request.side_effect = RuntimeError("fail")
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.set_action("action-1", "{}")
-
-    async def test_os_error_calls_error_method(self):
-        api = _make_api(status=200)
-        api.websession.request.side_effect = OSError
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.set_action("action-1", "{}")
-
-
 # ---------------------------------------------------------------------------
 # Tests: HiveApiAsync holiday mode
 # ---------------------------------------------------------------------------
 
 
-class TestHolidayMode:
-    async def test_get_holiday_mode_returns_parsed_json(self):
-        payload = {
-            "active": False,
-            "enabled": False,
-            "start": 1783006500000,
-            "end": 1783296000000,
-            "temperature": 12,
-            "status": "OK",
-        }
-        api = _make_api(status=200, json_data=payload)
-        result = await api.get_holiday_mode()
-        assert result["original"] == 200
-        assert result["parsed"] == payload
-
-    async def test_set_holiday_mode_posts_epoch_ms_body(self):
-        payload = {"start": 1783767707701, "end": 1784372507701, "temperature": 12}
-        api = _make_api(status=200, json_data=payload)
-        result = await api.set_holiday_mode(1783767707701, 1784372507701, 12)
-        assert result["original"] == 200
-        assert result["parsed"] == payload
-        _, kwargs = api.websession.request.call_args
-        assert json.loads(kwargs["data"]) == {
-            "start": 1783767707701,
-            "end": 1784372507701,
-            "temperature": 12,
-        }
-
-    async def test_set_holiday_mode_file_in_use_returns_file_response(self):
-        api = _make_api(status=200, file_mode=True)
-        result = await api.set_holiday_mode(1, 2, 12)
-        assert result == {"original": "file"}
-
-    async def test_cancel_holiday_mode_returns_set_true(self):
-        api = _make_api(status=200, json_data={"set": True})
-        result = await api.cancel_holiday_mode()
-        assert result["original"] == 200
-        assert result["parsed"] == {"set": True}
-        args, _ = api.websession.request.call_args
-        assert args[0] == "delete"
-
-    async def test_cancel_holiday_mode_file_in_use_returns_file_response(self):
-        api = _make_api(status=200, file_mode=True)
-        result = await api.cancel_holiday_mode()
-        assert result == {"original": "file"}
-
-
 # ---------------------------------------------------------------------------
 # Tests: HiveApiAsync.motion_sensor
 # ---------------------------------------------------------------------------
-
-
-class TestMotionSensor:
-    async def test_url_does_not_double_base_url(self):
-        payload = [{"timestamp": 12345}]
-        api = _make_api(status=200, json_data=payload)
-        captured = {}
-        original_request = api.request
-
-        async def capture_request(method, url, **kwargs):
-            captured["url"] = url
-            return await original_request(method, url, **kwargs)
-
-        api.request = capture_request
-        sensor = {"type": "motionsensor", "id": "ms-001"}
-        await api.motion_sensor(sensor, 1000000, 2000000)
-        url = captured["url"]
-        assert url.startswith(api.base_url + "/products/")
-        assert "motionsensor/ms-001" in url
-        assert url.count("https://beekeeper") == 1
-
-    async def test_motion_sensor_returns_parsed_json(self):
-        payload = [{"timestamp": 12345}]
-        api = _make_api(status=200, json_data=payload)
-        sensor = {"type": "motionsensor", "id": "ms-001"}
-        result = await api.motion_sensor(sensor, 1000000, 2000000)
-        assert result["original"] == 200
-        assert result["parsed"] == payload
 
 
 # ---------------------------------------------------------------------------
@@ -431,137 +284,6 @@ class TestRequestNonAuthErrorBranch:
             await api.request("get", "https://beekeeper.hivehome.com/1.0/devices")
 
 
-class TestMotionSensorBranches:
-    """Cover lines 215-235: motion_sensor() success and error paths."""
-
-    async def test_success_returns_status_and_parsed(self):
-        """Successful call returns status and parsed JSON."""
-        payload = [{"event": "motion", "timestamp": 1234567890}]
-        api = _make_api(status=200, json_data=payload)
-        api.urls["base"] = ""
-        sensor = {"type": "motionsensor", "id": "sensor-001"}
-        result = await api.motion_sensor(sensor, fromepoch=1000000, toepoch=2000000)
-        assert result["original"] == 200
-        assert result["parsed"] == payload
-
-    async def test_url_is_built_correctly(self):
-        """Verifies the URL is assembled with correct sensor type and id."""
-        api = _make_api(status=200, json_data=[])
-        api.urls["base"] = "https://beekeeper-uk.hivehome.com/1.0"
-        sensor = {"type": "contactsensor", "id": "abc-123"}
-        captured_url = []
-        original_request = api.request
-
-        async def capture_request(method, url, **kwargs):
-            captured_url.append(url)
-            return await original_request(method, url, **kwargs)
-
-        with patch.object(api, "request", side_effect=capture_request):
-            await api.motion_sensor(sensor, fromepoch=100, toepoch=200)
-        assert len(captured_url) == 1
-        assert "contactsensor" in captured_url[0]
-        assert "abc-123" in captured_url[0]
-        assert "from=100" in captured_url[0]
-        assert "to=200" in captured_url[0]
-
-    async def test_os_error_raises_http_error(self):
-        """OSError inside the try block causes error() → HTTPError."""
-        api = _make_api(status=200)
-        api.urls["base"] = ""
-        sensor = {"type": "motionsensor", "id": "sensor-001"}
-        api.websession.request.side_effect = OSError("fail")
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.motion_sensor(sensor, fromepoch=1000, toepoch=2000)
-
-    async def test_runtime_error_raises_http_error(self):
-        """RuntimeError inside the try block causes error() → HTTPError."""
-        api = _make_api(status=200)
-        api.urls["base"] = ""
-        sensor = {"type": "motionsensor", "id": "sensor-002"}
-        api.websession.request.side_effect = RuntimeError("unexpected")
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.motion_sensor(sensor, fromepoch=1000, toepoch=2000)
-
-    async def test_client_error_raises_http_error(self):
-        """aiohttp.ClientError inside the try block causes error() → HTTPError."""
-        api = _make_api(status=200)
-        api.urls["base"] = ""
-        sensor = {"type": "motionsensor", "id": "sensor-003"}
-        api.websession.request.side_effect = aiohttp.ClientError()
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.motion_sensor(sensor, fromepoch=1000, toepoch=2000)
-
-
-class TestGetWeather:
-    """Cover lines 239-249: get_weather() success, space encoding, and error paths."""
-
-    async def test_success_returns_status_and_parsed(self):
-        """Successful call returns status and parsed weather JSON."""
-        payload = {"temperature": {"value": 15, "unit": "C"}}
-        api = _make_api(status=200, json_data=payload)
-        result = await api.get_weather("?lat=51.5&lon=-0.1")
-        assert result["original"] == 200
-        assert result["parsed"] == payload
-
-    async def test_space_in_weather_url_is_encoded(self):
-        """Spaces in the weather_url are replaced with %20."""
-        api = _make_api(status=200, json_data={})
-        captured_url = []
-        original_request = api.request
-
-        async def capture_request(method, url, **kwargs):
-            captured_url.append(url)
-            return await original_request(method, url, **kwargs)
-
-        with patch.object(api, "request", side_effect=capture_request):
-            await api.get_weather("?postcode=SW1A 2AA")
-        assert len(captured_url) == 1
-        assert " " not in captured_url[0]
-        assert "%20" in captured_url[0]
-
-    async def test_url_is_prefixed_with_weather_base(self):
-        """The weather base URL is prepended to the given weather_url."""
-        api = _make_api(status=200, json_data={})
-        captured_url = []
-        original_request = api.request
-
-        async def capture_request(method, url, **kwargs):
-            captured_url.append(url)
-            return await original_request(method, url, **kwargs)
-
-        with patch.object(api, "request", side_effect=capture_request):
-            await api.get_weather("?lat=51.5")
-        assert captured_url[0].startswith("https://weather.prod.bgchprod.info/weather")
-
-    async def test_os_error_raises_http_error(self):
-        """OSError inside the try block causes error() → HTTPError."""
-        api = _make_api(status=200)
-        api.websession.request.side_effect = OSError("network fail")
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.get_weather("?lat=51.5")
-
-    async def test_runtime_error_raises_http_error(self):
-        """RuntimeError inside the try block causes error() → HTTPError."""
-        api = _make_api(status=200)
-        api.websession.request.side_effect = RuntimeError("unexpected")
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.get_weather("?lat=51.5")
-
-    async def test_client_error_raises_http_error(self):
-        """aiohttp.ClientError inside the try block causes error() → HTTPError."""
-        api = _make_api(status=200)
-        api.websession.request.side_effect = aiohttp.ClientError()
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.get_weather("?lat=51.5")
-
-    async def test_connection_error_raises_http_error(self):
-        """ConnectionError inside the try block causes error() → HTTPError."""
-        api = _make_api(status=200)
-        api.websession.request.side_effect = ConnectionError("disconnected")
-        with pytest.raises(web_exceptions.HTTPError):
-            await api.get_weather("?lat=51.5")
-
-
 class TestSetStateJsonEncoding:
     """set_state must produce valid JSON even when kwarg values contain special characters."""
 
@@ -588,3 +310,122 @@ class TestSetStateJsonEncoding:
 
         parsed = json.loads(captured["data"])
         assert parsed["mode"] == 'MANUAL"injected'
+
+
+# ---------------------------------------------------------------------------
+# Tests: HiveApiAsync.get_login_info
+# ---------------------------------------------------------------------------
+
+_SSO_PAGE = (
+    "<html><head><script>"
+    'window.HiveSSOPoolId="eu-west-1_abc",'
+    'window.HiveSSOPublicCognitoClientId="client123"'
+    "</script></head></html>"
+)
+_SSO_LOGIN_DATA = {
+    "UPID": "eu-west-1_abc",
+    "CLIID": "client123",
+    "REGION": "eu-west-1_abc",
+}
+
+
+def _make_page_websession(html: str, status: int = 200):
+    """Return a mock websession whose GET yields *html*."""
+    resp = MagicMock()
+    resp.status = status
+    resp.text = AsyncMock(return_value=html)
+    resp.__aenter__ = AsyncMock(return_value=resp)
+    resp.__aexit__ = AsyncMock(return_value=False)
+    websession = MagicMock()
+    websession.get.return_value = resp
+    return websession
+
+
+class TestGetLoginInfo:
+    async def test_successful_parse_returns_login_data(self):
+        """Parses HiveSSOPoolId and HiveSSOPublicCognitoClientId from the SSO page."""
+        api = HiveApiAsync(websession=_make_page_websession(_SSO_PAGE))
+
+        result = await api.get_login_info()
+
+        assert result == _SSO_LOGIN_DATA
+        api.websession.get.assert_called_once()
+        assert api.websession.get.call_args.args[0] == "https://sso.hivehome.com/"
+
+    async def test_single_quoted_values_are_parsed(self):
+        """Since 2026-10-20 the SSO page uses single quotes and spaces around =."""
+        html = (
+            "<script>\n"
+            "        window.HiveSSOPoolId = 'eu-west-1_abc'\n"
+            "        window.HiveSSOCognitoClientId = 'private123'\n"
+            "        window.HiveSSOPublicCognitoClientId = 'client123'\n"
+            "        window.HiveSSOState = '%%STATE%%'\n"
+            "    </script>"
+        )
+        api = HiveApiAsync(websession=_make_page_websession(html))
+
+        assert await api.get_login_info() == _SSO_LOGIN_DATA
+
+    async def test_only_the_first_script_block_is_parsed(self):
+        """Assignments in later script blocks are ignored, as before the port."""
+        html = (
+            "<script>window.Unrelated = 'x'</script>"
+            "<script>window.HiveSSOPoolId = 'p' "
+            "window.HiveSSOPublicCognitoClientId = 'c'</script>"
+        )
+        api = HiveApiAsync(websession=_make_page_websession(html))
+
+        assert await api.get_login_info() is None
+
+    async def test_mismatched_quotes_are_not_parsed(self):
+        """A value must be closed by the same quote character it was opened with."""
+        html = "<script>window.HiveSSOPoolId = 'eu-west-1_abc\"</script>"
+        api = HiveApiAsync(websession=_make_page_websession(html))
+
+        assert await api.get_login_info() is None
+
+    async def test_missing_keys_return_none(self):
+        """A script block without the Cognito keys yields None."""
+        html = "<script>window.SomeOtherKey=value</script>"
+        api = HiveApiAsync(websession=_make_page_websession(html))
+
+        assert await api.get_login_info() is None
+
+    async def test_page_without_script_returns_none(self):
+        api = HiveApiAsync(websession=_make_page_websession("<html></html>"))
+
+        assert await api.get_login_info() is None
+
+    async def test_client_error_raises_connection_error(self):
+        websession = _make_page_websession(_SSO_PAGE)
+        websession.get.side_effect = aiohttp.ClientError("net error")
+        api = HiveApiAsync(websession=websession)
+
+        with pytest.raises(HiveConnectionError):
+            await api.get_login_info()
+
+    async def test_timeout_raises_connection_error(self):
+        """A timeout on the SSO page is transient, so it must not return None."""
+        websession = _make_page_websession(_SSO_PAGE)
+        websession.get.side_effect = TimeoutError()
+        api = HiveApiAsync(websession=websession)
+
+        with pytest.raises(HiveConnectionError):
+            await api.get_login_info()
+
+    async def test_uses_a_temporary_session_when_none_is_configured(self):
+        """Auth has no shared session, so a short-lived one is opened and closed."""
+        temp_session = _make_page_websession(_SSO_PAGE)
+        temp_session.__aenter__ = AsyncMock(return_value=temp_session)
+        temp_session.__aexit__ = AsyncMock(return_value=False)
+        api = HiveApiAsync()
+
+        with patch(
+            "apyhiveapi.api.hive_async_api.ClientSession", return_value=temp_session
+        ) as session_cls:
+            result = await api.get_login_info()
+
+        assert result == _SSO_LOGIN_DATA
+        session_cls.assert_called_once_with()
+        temp_session.__aexit__.assert_awaited_once()
+        assert api.websession is None

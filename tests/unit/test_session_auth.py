@@ -202,34 +202,6 @@ class TestHandleDeviceLoginChallengeExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestSms2faExtended:
-    """Tests for sms2fa branches not covered by the main test file."""
-
-    async def test_no_auth_raises_unknown_config(self):
-        """sms2fa with auth=None raises HiveUnknownConfiguration."""
-        s = _make_stub()
-        s.auth = None
-        with pytest.raises(HiveUnknownConfiguration):
-            await s.sms2fa("123456", {})
-
-    async def test_api_error_reraises(self):
-        """HiveApiError from auth.sms_2fa propagates unchanged."""
-        s = _make_stub()
-        s.auth.sms_2fa.side_effect = HiveApiError()
-        with pytest.raises(HiveApiError):
-            await s.sms2fa("123456", {})
-
-    async def test_result_without_auth_result_returned_directly(self):
-        """Result with no AuthenticationResult is returned without calling update_tokens."""
-        s = _make_stub()
-        plain = {"ChallengeName": "SOMETHING_ELSE"}
-        s.auth.sms_2fa.return_value = plain
-        result = await s.sms2fa("123456", {})
-        assert result == plain
-        # Tokens must be untouched
-        assert s.tokens.token_data["token"] == ""
-
-
 # ---------------------------------------------------------------------------
 # _retry_login
 # ---------------------------------------------------------------------------

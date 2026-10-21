@@ -6,9 +6,9 @@ import asyncio
 from typing import Any
 
 from aiohttp import ClientSession
-from apyhiveapi import API, Auth  # type: ignore[import-not-found]
 
-from ..helper.compat_aliases import SessionCompatMixin
+from ..api.hive_async_api import HiveApiAsync
+from ..api.hive_auth_async import HiveAuthAsync
 from ..helper.device_attributes import HiveAttributes
 from ..helper.hive_helper import HiveHelper
 from ..helper.hivedataclasses import Device, SessionConfig, SessionTokens
@@ -18,7 +18,7 @@ from .discovery import DiscoveryMixin
 from .polling import PollingMixin
 
 
-class HiveSession(SessionCompatMixin, SessionAuthMixin, PollingMixin, DiscoveryMixin):
+class HiveSession(SessionAuthMixin, PollingMixin, DiscoveryMixin):
     """Hive Session Code.
 
     Raises:
@@ -46,27 +46,16 @@ class HiveSession(SessionCompatMixin, SessionAuthMixin, PollingMixin, DiscoveryM
             password (str, optional): Hive Password. Defaults to None.
             websession (object, optional): Websession for api calls. Defaults to None.
         """
-        self.auth = Auth(
-            username=username,
-            password=password,
-        )
+        self.auth = HiveAuthAsync(username=username, password=password)
         self._owns_websession = websession is None
-        self.api = API(hive_session=self, websession=websession)
+        self.api = HiveApiAsync(hive_session=self, websession=websession)
         self.helper = HiveHelper(self)
         self.attr = HiveAttributes(self)
         self.update_lock = asyncio.Lock()
         self._refresh_lock = asyncio.Lock()
         self.tokens = SessionTokens()
         self.config = SessionConfig(username=username)
-        self.data: Any = Map(
-            {
-                "products": {},
-                "devices": {},
-                "actions": {},
-                "user": {},
-                "minMax": {},
-            }
-        )
+        self.data: Any = Map({"products": {}, "devices": {}, "user": {}})
         self.entity_cache: dict[str, Device] = {}
         self.device_list: dict[str, list[Device]] = {}
         self.hub_id = None

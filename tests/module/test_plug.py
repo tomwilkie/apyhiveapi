@@ -16,8 +16,6 @@ def _make_switch(products=None, devices=None):
         {
             "products": products or {},
             "devices": devices or {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )

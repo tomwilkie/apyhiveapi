@@ -32,8 +32,6 @@ def _make_light(products=None, devices=None):
         {
             "products": products or {},
             "devices": devices or {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )
@@ -220,42 +218,6 @@ class TestGetLight:
 
 class TestLightColorHandler:
     """Tests for LightColorHandler methods (mixed into HiveLight)."""
-
-    async def test_get_min_color_temp_converts_kelvin(self):
-        """get_min_color_temp returns mireds derived from colourTemperature.max kelvin."""
-        light = _make_light(
-            {
-                "light-1": {
-                    "props": {
-                        "colourTemperature": {
-                            "max": _CT_MAX_KELVIN,
-                            "min": _CT_MIN_KELVIN,
-                        }
-                    },
-                    "state": {},
-                }
-            }
-        )
-        result = await light.get_min_color_temp(_make_device())
-        assert result == _CT_MIN_MIRED
-
-    async def test_get_max_color_temp_converts_kelvin(self):
-        """get_max_color_temp returns mireds derived from colourTemperature.min kelvin."""
-        light = _make_light(
-            {
-                "light-1": {
-                    "props": {
-                        "colourTemperature": {
-                            "max": _CT_MAX_KELVIN,
-                            "min": _CT_MIN_KELVIN,
-                        }
-                    },
-                    "state": {},
-                }
-            }
-        )
-        result = await light.get_max_color_temp(_make_device())
-        assert result == _CT_MAX_MIRED
 
     async def test_get_color_temp_returns_mireds(self):
         """get_color_temp converts the current kelvin value to mireds."""

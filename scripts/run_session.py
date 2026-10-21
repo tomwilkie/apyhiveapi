@@ -332,7 +332,7 @@ class Admin:
 
     async def poll(self):
         """Poll now; False means it failed or one was already running."""
-        ok = await self.hive.force_update()
+        ok = await poll_now(self.hive)
         log_summary(self.hive, f"admin poll{'' if ok else ' (FAILED)'}")
         return ok
 
@@ -430,6 +430,17 @@ class Admin:
             writer.close()
 
 
+async def poll_now(hive: Hive) -> bool:
+    """Poll Hive immediately, bypassing the scan interval.
+
+    Returns False when a poll is already running or the poll failed.
+    """
+    if hive.update_lock.locked():
+        return False
+    async with hive.update_lock:
+        return await hive._poll_devices()  # pylint: disable=protected-access
+
+
 async def run(args: argparse.Namespace, config: dict) -> None:
     """Start the session, then poll and log a summary until stopped."""
     hive = Hive(username=config["username"], password=config.get("password", ""))
@@ -461,7 +472,7 @@ async def run(args: argparse.Namespace, config: dict) -> None:
             while args.polls == 0 or poll < args.polls:
                 poll += 1
                 await asyncio.sleep(settings.interval)
-                ok = await hive.force_update()
+                ok = await poll_now(hive)
                 log_summary(hive, f"poll {poll}{'' if ok else ' (FAILED)'}")
 
 
@@ -543,7 +554,7 @@ def call(name: str | None, command: list[str]) -> None:
         )
     try:
         reply = asyncio.run(_send(name, command))
-    except (OSError, ValueError, asyncio.TimeoutError) as error:
+    except (TimeoutError, OSError, ValueError) as error:
         sys.exit(f"Could not reach {name}: {error or type(error).__name__}")
     if not reply.get("ok"):
         sys.exit(f"{name}: {reply.get('error')}")

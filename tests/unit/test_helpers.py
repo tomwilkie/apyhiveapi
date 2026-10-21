@@ -1,12 +1,12 @@
-"""Unit tests for HiveHelper and epoch_time."""
+"""Unit tests for HiveHelper."""
 
 # pylint: disable=protected-access
 
 from unittest.mock import MagicMock
 
 import pytest
-from apyhiveapi.helper.hive_helper import HiveHelper, epoch_time
-from apyhiveapi.helper.hivedataclasses import Device, SessionConfig
+from apyhiveapi.helper.hive_helper import HiveHelper
+from apyhiveapi.helper.hivedataclasses import SessionConfig
 from apyhiveapi.helper.map import Map
 
 
@@ -17,8 +17,6 @@ def _make_helper(products=None, devices=None, entity_cache=None):
         {
             "products": products or {},
             "devices": devices or {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )
@@ -32,37 +30,6 @@ def _make_helper(products=None, devices=None, entity_cache=None):
 # ---------------------------------------------------------------------------
 # epoch_time
 # ---------------------------------------------------------------------------
-
-
-class TestEpochTime:
-    """Tests for the top-level epoch_time() helper function."""
-
-    def test_to_epoch_returns_int(self):
-        """to_epoch converts a date string to an integer Unix timestamp."""
-        result = epoch_time("01.01.2024 12:00:00", "%d.%m.%Y %H:%M:%S", "to_epoch")
-        assert isinstance(result, int)
-
-    def test_to_epoch_is_deterministic(self):
-        """Same input always yields the same epoch integer."""
-        r1 = epoch_time("01.01.2024 12:00:00", "%d.%m.%Y %H:%M:%S", "to_epoch")
-        r2 = epoch_time("01.01.2024 12:00:00", "%d.%m.%Y %H:%M:%S", "to_epoch")
-        assert r1 == r2
-
-    def test_from_epoch_returns_string(self):
-        """from_epoch converts an integer timestamp to a formatted string."""
-        result = epoch_time(0, "%H:%M", "from_epoch")
-        assert isinstance(result, str)
-
-    def test_from_epoch_format_applied(self):
-        """The pattern argument is honoured for 'from_epoch'."""
-        result = epoch_time(0, "%H:%M", "from_epoch")
-        # Should look like HH:MM
-        assert ":" in result
-        assert len(result) == 5  # noqa: PLR2004
-
-    def test_unknown_action_returns_none(self):
-        """Unrecognised action argument returns None."""
-        assert epoch_time("anything", "%Y", "unknown") is None
 
 
 # ---------------------------------------------------------------------------
@@ -334,65 +301,6 @@ class TestErrorCheck:
 # ---------------------------------------------------------------------------
 
 
-class TestGetDeviceFromId:
-    """Tests for HiveHelper.get_device_from_id."""
-
-    def test_found_by_hive_id(self):
-        """Returns the cached Device when looked up by its hive_id."""
-        dev = Device(
-            hive_id="h1",
-            hive_name="T",
-            hive_type="heating",
-            ha_type="climate",
-            device_id="d1",
-            device_name="T",
-            device_data={},
-            ha_name="Test",
-        )
-        helper, _ = _make_helper(entity_cache={"key1": dev})
-        result = helper.get_device_from_id("h1")
-        assert result is dev
-
-    def test_found_by_device_id(self):
-        """Returns the cached Device when looked up by its device_id."""
-        dev = Device(
-            hive_id="h1",
-            hive_name="T",
-            hive_type="heating",
-            ha_type="climate",
-            device_id="d1",
-            device_name="T",
-            device_data={},
-            ha_name="Test",
-        )
-        helper, _ = _make_helper(entity_cache={"key1": dev})
-        result = helper.get_device_from_id("d1")
-        assert result is dev
-
-    def test_not_found_returns_false(self):
-        """Returns False when the ID is not in the entity_cache."""
-        helper, _ = _make_helper()
-        assert helper.get_device_from_id("nope") is False
-
-    def test_empty_cache_returns_false(self):
-        """Returns False immediately when entity_cache is empty."""
-        helper, _ = _make_helper(entity_cache={})
-        assert helper.get_device_from_id("h1") is False
-
-    def test_dict_style_cache_entry_found_by_hive_id(self):
-        """get_device_from_id also handles dict entries in entity_cache."""
-        cache_entry = {"hive_id": "h2", "device_id": "d2", "haName": "Lamp"}
-        helper, _ = _make_helper(entity_cache={"lamp": cache_entry})
-        result = helper.get_device_from_id("h2")
-        assert result is cache_entry
-
-    def test_no_entity_cache_attribute_returns_false(self):
-        """If session has no entity_cache at all, returns False gracefully."""
-        helper, session = _make_helper()
-        del session.entity_cache  # remove the attribute entirely
-        assert helper.get_device_from_id("h1") is False
-
-
 # ---------------------------------------------------------------------------
 # HiveHelper.get_device_data
 # ---------------------------------------------------------------------------
@@ -588,46 +496,6 @@ class TestHiveHelperSanitizeListNode:
 # ---------------------------------------------------------------------------
 # Migrated from test_hive_helper_extended.py
 # ---------------------------------------------------------------------------
-
-
-class TestGetDeviceFromIdBranch:
-    """Covers the branch where no cache entry matches the requested ID."""
-
-    def test_returns_false_when_no_match_in_cache(self):
-        """When entity_cache has entries but none match n_id, returns False."""
-        other_device = Device(
-            hive_id="other-hive-id",
-            hive_name="Other",
-            hive_type="heating",
-            ha_type="climate",
-            device_id="other-device-id",
-            device_name="Other",
-            device_data={},
-        )
-        helper, _ = _make_helper(entity_cache={"other-key": other_device})
-        result = helper.get_device_from_id("nonexistent-id")
-        assert result is False
-
-    def test_returns_false_when_cache_is_empty(self):
-        """When entity_cache is empty, returns False without entering the loop."""
-        helper, _ = _make_helper(entity_cache={})
-        assert helper.get_device_from_id("any-id") is False
-
-
-class TestEpochTimePattern:
-    """epoch_time to_epoch must honour the pattern argument."""
-
-    def test_to_epoch_uses_caller_pattern(self):
-        """Passing a custom pattern must parse the date string with that pattern."""
-        result = epoch_time("2024-06-15", "%Y-%m-%d", "to_epoch")
-        assert isinstance(result, int), "Expected int epoch timestamp"
-        assert result > 0
-
-    def test_to_epoch_standard_hive_format_still_works(self):
-        """The standard Hive date+time format must still parse correctly."""
-        result = epoch_time("15.06.2024 12:00:00", "%d.%m.%Y %H:%M:%S", "to_epoch")
-        assert isinstance(result, int)
-        assert result > 0
 
 
 def _sample_schedule():

@@ -2,14 +2,14 @@
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.13+
 - [pre-commit](https://pre-commit.com/)
 
 ## Setup
 
 ```bash
-git clone https://github.com/Pyhive/Pyhiveapi.git
-cd Pyhiveapi
+git clone https://github.com/Pyhass/Pyhive.git
+cd Pyhive
 make setup
 ```
 
@@ -45,16 +45,6 @@ ruff check src/          # lint
 ruff format src/         # format
 mypy src/                # type check
 ```
-
-## Generating the sync package
-
-The `pyhiveapi` (sync) package is auto-generated from the async source in `src/`:
-
-```bash
-python setup.py build_py
-```
-
-Never edit files under `pyhiveapi/` directly — edit `src/` only.
 
 ## Submitting a PR
 

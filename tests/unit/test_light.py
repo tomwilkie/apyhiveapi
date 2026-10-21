@@ -15,8 +15,6 @@ def _make_session(products=None, devices=None):
         {
             "products": products or {},
             "devices": devices or {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )

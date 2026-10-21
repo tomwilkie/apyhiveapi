@@ -32,16 +32,17 @@ class TestDevice:
         d = _make_device(hive_id="abc")
         assert d["hive_id"] == "abc"
 
-    def test_dict_read_camel_case_translated(self):
-        """Test reading device attribute using legacy camelCase key."""
+    def test_dict_write(self):
+        """Test writing a device attribute using dict-style access."""
         d = _make_device(hive_id="abc")
-        assert d["hiveID"] == "abc"
-
-    def test_dict_write_camel_case(self):
-        """Test writing device attribute using legacy camelCase key."""
-        d = _make_device()
-        d["hiveID"] = "xyz"
+        d["hive_id"] = "xyz"
         assert d.hive_id == "xyz"
+
+    def test_dict_read_missing_key_raises_key_error(self):
+        """Test reading an unknown key raises KeyError, not AttributeError."""
+        d = _make_device()
+        with pytest.raises(KeyError):
+            _ = d["nonexistent"]
 
     def test_contains_present_key(self):
         """Test __contains__ returns True for present non-None key."""

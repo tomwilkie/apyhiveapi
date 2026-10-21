@@ -20,15 +20,7 @@ async def file_session():
 def fake_session():
     """Lightweight stub session for module-level tests."""
     session = MagicMock()
-    session.data = Map(
-        {
-            "products": {},
-            "devices": {},
-            "actions": {},
-            "minMax": {},
-            "user": {},
-        }
-    )
+    session.data = Map({"products": {}, "devices": {}, "user": {}})
     session.config = SessionConfig()
     session.helper = MagicMock()
     session.helper.get_schedule_nnl = MagicMock(return_value={})
@@ -39,7 +31,6 @@ def fake_session():
     session.attr.state_attributes = AsyncMock(return_value={})
     session.api = MagicMock()
     session.api.set_state = AsyncMock(return_value={"original": 200, "parsed": {}})
-    session.api.set_action = AsyncMock(return_value={"original": 200, "parsed": {}})
     session.hive_refresh_tokens = AsyncMock()
     session.get_devices = AsyncMock(return_value=True)
     session.should_use_cached_data = MagicMock(return_value=False)

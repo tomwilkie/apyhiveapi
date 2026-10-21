@@ -1,6 +1,5 @@
 """Shared base class for all Hive device handlers."""
 
-import asyncio
 import logging
 from typing import Any
 
@@ -88,7 +87,7 @@ class BaseDeviceHandler:  # pylint: disable=too-few-public-methods
             resp = await self.session.api.set_state(
                 data["type"], device.hive_id, **state_kwargs
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # Honour the documented False-on-failure contract so one slow
             # device doesn't abort a multi-entity service call.
             _LOGGER.warning(

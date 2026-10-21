@@ -23,8 +23,6 @@ def _make_attrs(devices=None, products=None, battery=None, mode=None):
         {
             "products": products or {},
             "devices": devices or {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )

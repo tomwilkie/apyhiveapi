@@ -29,8 +29,6 @@ def _make_stub(*, has_data=True):
         {
             "products": _POPULATED_PRODUCTS if has_data else {},
             "devices": _POPULATED_DEVICES if has_data else {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )
@@ -65,8 +63,6 @@ def _make_create_devices_stub():
         {
             "products": {},
             "devices": {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )

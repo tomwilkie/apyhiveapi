@@ -1,8 +1,8 @@
 """Hive API Module."""
 
-import asyncio
 import json
 import logging
+import re
 import time
 
 from aiohttp import (
@@ -14,11 +14,24 @@ from aiohttp import (
 )
 
 from ..helper.const import HTTP_FORBIDDEN, HTTP_UNAUTHORIZED
-from ..helper.hive_exceptions import FileInUse, HiveApiError, HiveAuthError, NoApiToken
+from ..helper.hive_exceptions import (
+    FileInUse,
+    HiveApiError,
+    HiveAuthError,
+    HiveConnectionError,
+    NoApiToken,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 _REQUEST_ERRORS = (ClientError, OSError, RuntimeError, json.JSONDecodeError)
+
+# The SSO bootstrap page embeds its Cognito config in its first <script>
+# block as `window.<key> = <value>` assignments. The value quoting changed
+# from double to single quotes on 2026-10-20, so accept either (and require
+# the closing quote to match).
+_FIRST_SCRIPT = re.compile(r"<script[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
+_SSO_ASSIGNMENT = re.compile(r"""window\.(\w+)\s*=\s*(["'])(.*?)\2""")
 
 
 class HiveApiAsync:
@@ -29,16 +42,8 @@ class HiveApiAsync:
         self.base_url = "https://beekeeper.hivehome.com/1.0"
         self.urls = {
             "properties": "https://sso.hivehome.com/",
-            "login": f"{self.base_url}/cognito/login",
-            "refresh": f"{self.base_url}/cognito/refresh-token",
-            "holiday_mode": f"{self.base_url}/holiday-mode",
-            "all": f"{self.base_url}/nodes/all?products=true&devices=true&actions=true",
-            "devices": f"{self.base_url}/devices",
-            "products": f"{self.base_url}/products",
-            "actions": f"{self.base_url}/actions",
+            "all": f"{self.base_url}/nodes/all?products=true&devices=true",
             "nodes": f"{self.base_url}/nodes/{{0}}/{{1}}",
-            "long_lived": "https://api.prod.bgchprod.info/omnia/accessTokens",
-            "weather": "https://weather.prod.bgchprod.info/weather",
         }
         self.timeout = 5
         self.json_return = {
@@ -58,6 +63,55 @@ class HiveApiAsync:
             self.websession = ClientSession()
         return self.websession
 
+    async def get_login_info(self) -> dict | None:
+        """Fetch the Cognito pool details embedded in the Hive SSO login page.
+
+        Returns:
+            dict | None: ``UPID``, ``CLIID`` and ``REGION``, or None when the
+            page does not contain them.
+
+        Raises:
+            HiveConnectionError: The page could not be fetched.
+        """
+        url = self.urls["properties"]
+        _LOGGER.debug("get_login_info - Fetching login info from: %s", url)
+        try:
+            if self.websession is not None:
+                page = await self._fetch_page(self.websession, url)
+            else:
+                # Auth objects have no shared session, so use a short-lived one.
+                async with ClientSession() as websession:
+                    page = await self._fetch_page(websession, url)
+        except (ClientError, OSError) as err:
+            _LOGGER.error("Failed to get login info: %s", err)
+            raise HiveConnectionError("Could not reach the Hive login page") from err
+
+        script = _FIRST_SCRIPT.search(page)
+        script_text = script.group(1) if script else ""
+        sso_values = {
+            key: value for key, _quote, value in _SSO_ASSIGNMENT.findall(script_text)
+        }
+        try:
+            login_data = {
+                "UPID": sso_values["HiveSSOPoolId"],
+                "CLIID": sso_values["HiveSSOPublicCognitoClientId"],
+                "REGION": sso_values["HiveSSOPoolId"],
+            }
+        except KeyError as err:
+            _LOGGER.error("Failed to get login info: missing %s", err)
+            return None
+        _LOGGER.debug("get_login_info - Login info extracted successfully")
+        return login_data
+
+    async def _fetch_page(self, websession: ClientSession, url: str) -> str:
+        """Return the body of *url* as text."""
+        timeout = ClientTimeout(total=self.timeout)
+        async with websession.get(url, timeout=timeout) as resp:
+            _LOGGER.debug(
+                "get_login_info - Login info response status: %s", resp.status
+            )
+            return await resp.text()
+
     async def request(self, method: str, url: str, **kwargs) -> ClientResponse:
         """Make a request."""
         _LOGGER.debug("API %s request to %s", method.upper(), url)
@@ -71,10 +125,9 @@ class HiveApiAsync:
         try:
             headers["Authorization"] = self.session.tokens.token_data["token"]
         except KeyError as exc:
-            if "sso" not in url:
-                raise NoApiToken from exc
+            raise NoApiToken from exc
 
-        auth_token = headers.get("Authorization", "")
+        auth_token = headers["Authorization"]
         _LOGGER.debug(
             "Using token (len=%d, tail=…%s)", len(auth_token), auth_token[-4:]
         )
@@ -121,7 +174,7 @@ class HiveApiAsync:
             resp = await self.request(method, url, data=data)
             json_return["original"] = resp.status
             json_return["parsed"] = await resp.json(content_type=None)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.warning("Hive API request timed out calling %s", url)
             raise
         except _REQUEST_ERRORS:
@@ -141,82 +194,12 @@ class HiveApiAsync:
         """Build and query all endpoint."""
         return await self._call_endpoint("get", self.urls["all"])
 
-    async def get_devices(self):
-        """Call the get devices endpoint."""
-        return await self._call_endpoint("get", self.urls["devices"])
-
-    async def get_products(self):
-        """Call the get products endpoint."""
-        return await self._call_endpoint("get", self.urls["products"])
-
-    async def get_actions(self):
-        """Call the get actions endpoint."""
-        return await self._call_endpoint("get", self.urls["actions"])
-
-    async def motion_sensor(self, sensor, fromepoch, toepoch):
-        """Call a way to get motion sensor info."""
-        url = (
-            self.base_url
-            + "/products"
-            + "/"
-            + sensor["type"]
-            + "/"
-            + sensor["id"]
-            + "/events?from="
-            + str(fromepoch)
-            + "&to="
-            + str(toepoch)
-        )
-        return await self._call_endpoint("get", url)
-
-    async def get_weather(self, weather_url):
-        """Call endpoint to get local weather from Hive API."""
-        t_url = self.urls["weather"] + weather_url
-        url = t_url.replace(" ", "%20")
-        return await self._call_endpoint("get", url)
-
     async def set_state(self, n_type, n_id, **kwargs):
         """Set the state of a Device."""
         _LOGGER.debug("set_state - Setting state for %s/%s: %s", n_type, n_id, kwargs)
         jsc = json.dumps(kwargs)
         url = self.urls["nodes"].format(n_type, n_id)
         return await self._call_unless_file_mode("post", url, data=jsc)
-
-    async def set_action(self, n_id, data):
-        """Set the state of a Action."""
-        _LOGGER.debug("Setting action %s", n_id)
-        url = self.urls["actions"] + "/" + n_id
-        return await self._call_unless_file_mode("put", url, data=data)
-
-    async def get_holiday_mode(self):
-        """Get the current holiday mode configuration."""
-        return await self._call_endpoint("get", self.urls["holiday_mode"])
-
-    async def set_holiday_mode(self, start: int, end: int, temperature: float):
-        """Schedule holiday mode.
-
-        Args:
-            start: Start time as epoch milliseconds.
-            end: End time as epoch milliseconds.
-            temperature: Frost-protection temperature to hold during holiday mode.
-        """
-        _LOGGER.debug(
-            "set_holiday_mode - Scheduling holiday mode from %s to %s at %s°.",
-            start,
-            end,
-            temperature,
-        )
-        jsc = json.dumps({"start": start, "end": end, "temperature": temperature})
-        return await self._call_unless_file_mode(
-            "post", self.urls["holiday_mode"], data=jsc
-        )
-
-    async def cancel_holiday_mode(self):
-        """Cancel any scheduled or active holiday mode."""
-        _LOGGER.debug("cancel_holiday_mode - Cancelling holiday mode.")
-        return await self._call_unless_file_mode(
-            "delete", self.urls["holiday_mode"], data=json.dumps({})
-        )
 
     async def error(self):
         """An error has occurred interacting with the Hive API."""

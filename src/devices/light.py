@@ -2,7 +2,6 @@
 
 import logging
 
-from ..helper.compat_aliases import LightCompatMixin
 from ..helper.const import HIVETOHA
 from ..helper.device_handler_base import BaseDeviceHandler
 from ..helper.hivedataclasses import Device
@@ -98,7 +97,7 @@ class HiveLight(LightColorHandler, BaseDeviceHandler):
         )
 
 
-class Light(LightCompatMixin, HiveLight):
+class Light(HiveLight):
     """Home Assistant Light Code.
 
     Args:

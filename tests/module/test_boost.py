@@ -24,8 +24,6 @@ def _make_handler(products):
         {
             "products": products,
             "devices": {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )

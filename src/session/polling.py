@@ -249,14 +249,13 @@ class PollingMixin:
         return api_resp_d
 
     def _store_nodes(self, nodes: Any) -> None:
-        """Store the user, home, products, devices and actions from a poll.
+        """Store the user, home, products and devices from a poll.
 
         Args:
             nodes: The parsed JSON body of the all-nodes response.
         """
         products = {}
         devices = {}
-        actions = {}
         for key in nodes:
             if key == "user":
                 self.data.user = nodes[key]
@@ -267,26 +266,21 @@ class PollingMixin:
             elif key == "devices":
                 for device in nodes[key]:
                     devices[device["id"]] = device
-            elif key == "actions":
-                for action in nodes[key]:
-                    actions[action["id"]] = action
             elif key == "homes":
                 homes_data = nodes[key]
                 if isinstance(homes_data, dict) and homes_data.get("homes"):
                     self.config.home_id = homes_data["homes"][0]["id"]
 
         _LOGGER.debug(
-            "get_devices - API returned %d products, %d devices, %d actions.",
+            "get_devices - API returned %d products, %d devices.",
             len(products),
             len(devices),
-            len(actions),
         )
         if products:
             self._keep_missing_state(products)
             self.data.products = products
         if devices:
             self.data.devices = devices
-        self.data.actions = actions
 
     async def get_devices(self, _n_id: str):
         """Get latest data for Hive nodes.
@@ -318,7 +312,7 @@ class PollingMixin:
             _LOGGER.error("Reauthentication required, propagating to caller.")
             self.config.last_update = datetime.now()
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.warning("Hive API request timed out — keeping cached device data.")
             self._last_poll_slow = True
             self.config.last_update = (

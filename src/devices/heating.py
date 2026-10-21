@@ -1,9 +1,7 @@
 """Hive Heating Module."""
 
 import logging
-from datetime import datetime
 
-from ..helper.compat_aliases import HeatingCompatMixin
 from ..helper.const import HIVETOHA
 from ..helper.device_handler_base import BaseDeviceHandler
 from ..helper.hivedataclasses import Device
@@ -47,36 +45,6 @@ class HiveHeating(BoostMixin, BaseDeviceHandler):
             return self._get_product_state(device, "props", "maxHeat")
         return 32
 
-    def _track_minmax(self, hive_id: str, temperature: float) -> None:
-        """Record today's and since-restart min/max temperatures for a device."""
-        today = str(datetime.date(datetime.now()))
-        min_max = self.session.data.minMax.get(hive_id)
-
-        if min_max is None:
-            self.session.data.minMax[hive_id] = {
-                "TodayMin": temperature,
-                "TodayMax": temperature,
-                "TodayDate": today,
-                "RestartMin": temperature,
-                "RestartMax": temperature,
-            }
-            return
-
-        if min_max["TodayDate"] == today:
-            min_max["TodayMin"] = min(min_max["TodayMin"], temperature)
-            min_max["TodayMax"] = max(min_max["TodayMax"], temperature)
-        else:
-            min_max.update(
-                {
-                    "TodayMin": temperature,
-                    "TodayMax": temperature,
-                    "TodayDate": today,
-                }
-            )
-
-        min_max["RestartMin"] = min(min_max["RestartMin"], temperature)
-        min_max["RestartMax"] = max(min_max["RestartMax"], temperature)
-
     async def get_current_temperature(self, device: Device):
         """Get heating current temperature.
 
@@ -98,8 +66,6 @@ class HiveHeating(BoostMixin, BaseDeviceHandler):
                     device.ha_name,
                 )
                 return None
-
-            self._track_minmax(device.hive_id, temperature)
             return round(temperature, 1)
         except KeyError as e:
             _LOGGER.error(
@@ -200,15 +166,6 @@ class HiveHeating(BoostMixin, BaseDeviceHandler):
             str: [Return True or False for the Heat on Demand status.]
         """
         return self._get_product_state(device, "props", "autoBoost", "active")
-
-    @staticmethod
-    async def get_operation_modes():
-        """Get heating list of possible modes.
-
-        Returns:
-            list: Operation modes.
-        """
-        return ["SCHEDULE", "MANUAL", "OFF"]
 
     async def set_target_temperature(self, device: Device, new_temp: str):
         """Set heating target temperature.
@@ -328,7 +285,7 @@ class HiveHeating(BoostMixin, BaseDeviceHandler):
         return await self._execute_state_change(device, autoBoost=state)
 
 
-class Climate(HeatingCompatMixin, HiveHeating):
+class Climate(HiveHeating):
     """Climate class for Home Assistant.
 
     Args:
@@ -387,39 +344,3 @@ class Climate(HeatingCompatMixin, HiveHeating):
             device.status,
         )
         return self.session.set_cached_device(device)
-
-    async def get_schedule_now_next_later(self, device: Device):
-        """Hive get heating schedule now, next and later.
-
-        Args:
-            device (dict): Device to get schedule for.
-
-        Returns:
-            dict: Schedule now, next and later
-        """
-        online = await self.session.attr.online_offline(device.device_id)
-        current_mode = await self.get_mode(device)
-        if not (online and current_mode == "SCHEDULE"):
-            return None
-
-        try:
-            data = self.session.data.products[device.hive_id]
-            return self.session.helper.get_schedule_nnl(data["state"]["schedule"])
-        except KeyError as e:
-            _LOGGER.error(e)
-        return None
-
-    async def minmax_temperature(self, device: Device):
-        """Min/Max Temp.
-
-        Args:
-            device (dict): device to get min/max temperature for.
-
-        Returns:
-            dict: Shows min/max temp for the day.
-        """
-        try:
-            return self.session.data.minMax[device.hive_id]
-        except KeyError as e:
-            _LOGGER.error(e)
-        return None

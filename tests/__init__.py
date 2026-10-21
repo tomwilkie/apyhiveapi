@@ -1,1 +1,1 @@
-"""Tests for pyhiveapi."""
+"""Tests for apyhiveapi."""

@@ -4,7 +4,6 @@
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from apyhiveapi.devices.heating import Climate
 from apyhiveapi.helper.hivedataclasses import Device, SessionConfig
 from apyhiveapi.helper.map import Map
@@ -22,7 +21,6 @@ def _make_climate(products=None, devices=None, min_max=None):
         {
             "products": products or {},
             "devices": devices or {},
-            "actions": {},
             "minMax": min_max or {},
             "user": {},
         }
@@ -61,49 +59,6 @@ def _make_device(hive_id="heat-1", device_id="dev-1", hive_type="heating"):
 
 
 class TestGetCurrentTemperature:
-    async def test_minmax_today_same_date_updates_min_max(self):
-        """When minMax entry exists for today's date, TodayMin/TodayMax are updated."""
-        initial_min = _CURRENT_TEMP + 2.0
-        initial_max = _CURRENT_TEMP - 2.0
-        existing = {
-            "TodayMin": initial_min,
-            "TodayMax": initial_max,
-            "TodayDate": _TODAY,
-            "RestartMin": initial_min,
-            "RestartMax": initial_max,
-        }
-        climate = _make_climate(
-            products={"heat-1": {"props": {"temperature": _CURRENT_TEMP}}},
-            min_max={"heat-1": existing},
-        )
-        result = await climate.get_current_temperature(_make_device())
-        assert result == _CURRENT_TEMP
-        entry = climate.session.data.minMax["heat-1"]
-        assert entry["TodayMin"] == min(initial_min, _CURRENT_TEMP)
-        assert entry["TodayMax"] == max(initial_max, _CURRENT_TEMP)
-        assert entry["RestartMin"] == min(initial_min, _CURRENT_TEMP)
-        assert entry["RestartMax"] == max(initial_max, _CURRENT_TEMP)
-
-    async def test_minmax_different_date_resets_today(self):
-        """When minMax entry exists but TodayDate is stale, today values are reset."""
-        existing = {
-            "TodayMin": 5.0,
-            "TodayMax": 30.0,
-            "TodayDate": "2000-01-01",
-            "RestartMin": 5.0,
-            "RestartMax": 30.0,
-        }
-        climate = _make_climate(
-            products={"heat-1": {"props": {"temperature": _CURRENT_TEMP}}},
-            min_max={"heat-1": existing},
-        )
-        result = await climate.get_current_temperature(_make_device())
-        assert result == _CURRENT_TEMP
-        entry = climate.session.data.minMax["heat-1"]
-        assert entry["TodayMin"] == _CURRENT_TEMP
-        assert entry["TodayMax"] == _CURRENT_TEMP
-        assert entry["TodayDate"] == _TODAY
-
     async def test_keyerror_returns_none(self):
         """Missing device.hive_id in products returns None."""
         climate = _make_climate(products={})
@@ -281,17 +236,6 @@ class TestGetClimate:
         climate.session.attr.online_offline.assert_not_called()
 
 
-class TestGetScheduleNowNextLater:
-    async def test_offline_returns_none(self):
-        """Offline device returns None regardless of mode."""
-        climate = _make_climate(
-            {"heat-1": {"state": {"mode": _SCHEDULE_MODE, "schedule": {}}}}
-        )
-        climate.session.attr.online_offline = AsyncMock(return_value=False)
-        result = await climate.get_schedule_now_next_later(_make_device())
-        assert result is None
-
-
 # ---------------------------------------------------------------------------
 # get_mode — BOOST path with missing props.previous must not log error
 # ---------------------------------------------------------------------------
@@ -424,35 +368,6 @@ class TestHeatingSetHeatOnDemand:
         assert kwargs.get("autoBoost") == "DISABLED"
 
 
-class TestHeatingGetScheduleNNLKeyError:
-    """Lines 438-439: KeyError in get_schedule_now_next_later."""
-
-    async def test_missing_schedule_key_returns_none(self):
-        """Product with state but no 'schedule' key causes KeyError → returns None."""
-        climate = _make_climate(
-            {"heat-1": {"state": {"mode": "SCHEDULE"}}}
-            # no 'schedule' key inside state
-        )
-        # Override get_mode to return SCHEDULE directly so the if-branch is entered
-        climate.session.helper.get_schedule_nnl.side_effect = KeyError("schedule")
-        # get_mode will read data["state"]["mode"] == "SCHEDULE" → enters the try block
-        # data["state"]["schedule"] raises KeyError → caught, returns None
-        result = await climate.get_schedule_now_next_later(_make_device())
-        assert result is None
-
-    async def test_schedule_key_error_caught_not_raised(self):
-        """A KeyError inside the try block does not propagate to the caller."""
-        climate = _make_climate({"heat-1": {"state": {"mode": "SCHEDULE"}}})
-        # Accessing data["state"]["schedule"] will raise KeyError (key absent)
-        try:
-            result = await climate.get_schedule_now_next_later(_make_device())
-        except KeyError:
-            pytest.fail(
-                "KeyError should have been caught inside get_schedule_now_next_later"
-            )
-        assert result is None
-
-
 class TestHeatingSetBoostOffScheduleMode:
     """Lines 321->325: prev_mode not in ('MANUAL','OFF') — target kwarg not added."""
 
@@ -508,13 +423,5 @@ class TestGetModeMissingMode:
         climate = _make_climate({"heat-1": {"state": {"target": 7}}})
         with patch("apyhiveapi.devices.heating._LOGGER") as mock_log:
             result = await climate.get_mode(_make_device())
-        assert result is None
-        mock_log.error.assert_not_called()
-
-    async def test_schedule_lookup_with_missing_mode_returns_none(self):
-        """get_schedule_now_next_later returns None quietly when mode is missing."""
-        climate = _make_climate({"heat-1": {"state": {"schedule": {}}}})
-        with patch("apyhiveapi.devices.heating._LOGGER") as mock_log:
-            result = await climate.get_schedule_now_next_later(_make_device())
         assert result is None
         mock_log.error.assert_not_called()

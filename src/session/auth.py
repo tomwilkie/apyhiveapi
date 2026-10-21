@@ -10,7 +10,6 @@ from typing import Any
 from ..helper.hive_exceptions import (
     HiveApiError,
     HiveFailedToRefreshTokens,
-    HiveInvalid2FACode,
     HiveInvalidDeviceAuthentication,
     HiveInvalidPassword,
     HiveInvalidUsername,
@@ -222,42 +221,6 @@ class SessionAuthMixin:
             _LOGGER.debug(
                 "_handle_device_login_challenge - Device login successful"
                 " — AuthenticationResult keys: %s",
-                auth_keys,
-            )
-            await self.update_tokens(result)
-
-        return result
-
-    async def sms2fa(self, code, session):
-        """Login to hive account with 2 factor authentication.
-
-        After successful SMS 2FA, checks if device needs registration and
-        handles it automatically (Rule 5).
-
-        Raises:
-            HiveUnknownConfiguration: Login information is unknown.
-
-        Returns:
-            dict: result of the authentication request with device data if registered.
-        """
-        if not self.auth:
-            _LOGGER.error("2FA failed: authentication not initialised.")
-            raise HiveUnknownConfiguration
-
-        _LOGGER.debug("sms_2fa - Submitting 2FA code.")
-        try:
-            result = await self.auth.sms_2fa(code, session)
-        except HiveInvalid2FACode:
-            _LOGGER.error("2FA failed: invalid code entered.")
-            raise
-        except HiveApiError:
-            _LOGGER.error("2FA failed: API error or no internet connection.")
-            raise
-
-        if result and "AuthenticationResult" in result:
-            auth_keys = list(result["AuthenticationResult"].keys())
-            _LOGGER.debug(
-                "sms_2fa - 2FA login successful — AuthenticationResult keys: %s",
                 auth_keys,
             )
             await self.update_tokens(result)

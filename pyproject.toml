@@ -1,35 +1,35 @@
 [build-system]
-requires = ["setuptools>=70", "wheel", "unasync"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyhive-integration"
 version = "2.0.0.B4"
-description = "A Python library to interface with the Hive API"
+description = "An async Python library to interface with the Hive API"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "KJonline24", email = "53_galleys_snark@icloud.com" }]
 keywords = ["hive", "home", "api", "library", "smart-home", "home-automation", "IoT", "async", "integration"]
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Home Automation",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+# Home Assistant pins boto3/botocore (1.42.x at the time of writing) and
+# aiohttp in its package_constraints.txt, so keep these floors low and
+# never add an upper bound: a range Home Assistant cannot satisfy makes
+# the integration fail to install.
 dependencies = [
+    "aiohttp",
     "boto3>=1.34",
     "botocore>=1.34",
-    "requests",
-    "aiohttp",
-    "pyquery",
 ]
 
 [project.urls]
@@ -47,45 +47,37 @@ dev = [
     "mypy",
     "bandit",
     "pre-commit",
-    "graphifyy",
-    "unasync",
-    "tokenize-rt",
 ]
 
 [tool.setuptools]
-# Keep this list in sync with the package directories under src/. It is explicit
-# rather than auto-discovered because package-dir maps two distribution names
-# (apyhiveapi, pyhive) onto the same source tree, which find: cannot express.
-# The sync flavour (pyhiveapi) is generated at build time by the unasync
-# build_py cmdclass in setup.py and so is not listed here.
+# Listed explicitly because package-dir renames src/ to apyhiveapi, which
+# automatic discovery cannot express. Keep in sync with the directories
+# under src/.
 packages = [
     "apyhiveapi",
     "apyhiveapi.api",
+    "apyhiveapi.data",
     "apyhiveapi.devices",
     "apyhiveapi.helper",
     "apyhiveapi.session",
-    "pyhive",
-    "pyhive.api",
-    "pyhive.devices",
-    "pyhive.helper",
-    "pyhive.session",
 ]
 
 [tool.setuptools.package-dir]
 apyhiveapi = "src"
-pyhive = "src"
 
 [tool.setuptools.package-data]
-apyhiveapi = ["data/*.json"]
-pyhive = ["data/*.json"]
+"apyhiveapi.data" = ["*.json"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "PL"]
-ignore = ["E501"]
+ignore = [
+    "E501",     # line length is handled by the formatter
+    "PLR0917",  # positional-argument counts are policed by pylint's too-many-positional-arguments
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
@@ -95,10 +87,7 @@ ignore = ["E501"]
 ]
 
 [tool.ruff.lint.isort]
-known-third-party = [
-    "aiohttp", "apyhiveapi", "boto3", "botocore",
-    "pyquery", "requests", "setuptools", "six", "urllib3",
-]
+known-third-party = ["aiohttp", "apyhiveapi", "boto3", "botocore"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -109,23 +98,7 @@ addopts = "--cov --cov-context=test --cov-report=lcov:coverage/lcov.info --cov-r
 source = ["src"]
 branch = true
 data_file = "coverage/.coverage"
-omit = [
-    "tests/*",
-    # deprecation shims — re-export only
-    "src/action.py",
-    "src/boost.py",
-    "src/color.py",
-    "src/device_attributes.py",
-    "src/heating.py",
-    "src/hotwater.py",
-    "src/hub.py",
-    "src/light.py",
-    "src/plug.py",
-    "src/sensor.py",
-    "src/session_discovery.py",
-    "src/session_polling.py",
-    "src/session_tokens.py",
-]
+omit = ["tests/*"]
 
 [tool.coverage.report]
 show_missing = true
@@ -149,14 +122,10 @@ show_contexts = true
 output = "coverage/lcov.info"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.13"
 show_error_codes = true
 follow_imports = "silent"
 ignore_missing_imports = true
 warn_incomplete_stub = true
 warn_redundant_casts = true
 warn_unused_configs = true
-
-[[tool.mypy.overrides]]
-module = ["boto3", "boto3.*", "botocore", "botocore.*", "requests", "requests.*", "pyquery", "pyquery.*"]
-ignore_missing_imports = true

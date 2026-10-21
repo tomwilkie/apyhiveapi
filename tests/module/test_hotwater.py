@@ -22,8 +22,6 @@ def _make_hotwater(products=None, devices=None):
         {
             "products": products or {},
             "devices": devices or {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )
@@ -119,15 +117,6 @@ class TestGetState:
         assert result is not None
 
 
-class TestGetOperationModes:
-    """Tests for HiveHotwater.get_operation_modes."""
-
-    async def test_returns_three_modes(self):
-        """Returns the standard list of three hot water operation modes."""
-        hw = _make_hotwater()
-        assert await hw.get_operation_modes() == [_SCHEDULE_MODE, _ON_MODE, _OFF_MODE]
-
-
 class TestSetMode:
     """Tests for HiveHotwater.set_mode."""
 
@@ -183,12 +172,3 @@ class TestSetBoostOff:
         assert result is True
         _, kwargs = hw.session.api.set_state.call_args
         assert kwargs.get("mode") == _SCHEDULE_MODE
-
-
-class TestGetScheduleNowNextLater:
-    """Tests for WaterHeater.get_schedule_now_next_later."""
-
-    async def test_non_schedule_returns_none(self):
-        """Non-SCHEDULE mode returns None."""
-        hw = _make_hotwater({"hw-1": {"state": {"mode": _ON_MODE}}})
-        assert await hw.get_schedule_now_next_later(_make_device()) is None

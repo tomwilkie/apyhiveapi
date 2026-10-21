@@ -3,7 +3,6 @@
 import logging
 from typing import Any
 
-from ..helper.compat_aliases import SwitchCompatMixin
 from ..helper.device_handler_base import BaseDeviceHandler
 from ..helper.hivedataclasses import Device
 
@@ -67,7 +66,7 @@ class HiveSmartPlug(BaseDeviceHandler):
         return await self._execute_state_change(device, status="OFF")
 
 
-class Switch(SwitchCompatMixin, HiveSmartPlug):
+class Switch(HiveSmartPlug):
     """Home Assistant switch class.
 
     Args:

@@ -19,8 +19,6 @@ def _make_hotwater(products=None, devices=None):
         {
             "products": products or {},
             "devices": devices or {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )
@@ -142,23 +140,6 @@ class TestGetWaterHeater:
         result = await hw.get_water_heater(d)
         hw.session.helper.error_check.assert_called_once()
         assert result.status["current_operation"] is None
-
-
-class TestGetScheduleNowNextLater:
-    async def test_schedule_mode_returns_nnl(self):
-        """SCHEDULE mode with schedule data returns now/next/later dict."""
-        hw = _make_hotwater(
-            {"hw-1": {"state": {"mode": _SCHEDULE_MODE, "schedule": {"data": []}}}}
-        )
-        result = await hw.get_schedule_now_next_later(_make_device())
-        assert result is not None
-        assert "now" in result
-
-    async def test_non_schedule_mode_returns_none(self):
-        """Non-SCHEDULE mode returns None."""
-        hw = _make_hotwater({"hw-1": {"state": {"mode": _ON_MODE}}})
-        result = await hw.get_schedule_now_next_later(_make_device())
-        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -299,17 +280,6 @@ class TestHotwaterGetStateKeyError:
             }
         )
         result = await hw.get_state(_make_device())
-        assert result is None
-
-
-class TestHotwaterScheduleNNLNone:
-    """Lines 225->227: get_schedule_now_next_later returns None when schedule is absent."""
-
-    async def test_schedule_none_when_no_schedule_in_state(self):
-        """SCHEDULE mode product without 'schedule' key → _get_product_state returns None → None."""
-        hw = _make_hotwater({"hw-1": {"state": {"mode": "SCHEDULE"}}})
-        # _get_product_state(device, "state", "schedule") → None (key absent)
-        result = await hw.get_schedule_now_next_later(_make_device())
         assert result is None
 
 

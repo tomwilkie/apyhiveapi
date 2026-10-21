@@ -4,7 +4,7 @@ The test suite runs against ``src/`` via an editable install, so it cannot
 catch packaging mistakes — a missing entry in ``[tool.setuptools] packages``
 produces a wheel that installs cleanly and then fails at ``import``. This
 script closes that gap by installing the built wheel into a throwaway
-virtualenv and importing every module in every flavour.
+virtualenv and importing every module in it.
 
 Usage:
     python scripts/verify_dist.py [dist_dir]
@@ -20,24 +20,19 @@ import tempfile
 import venv
 from pathlib import Path
 
-# Flavours shipped by this distribution: the async original, its published
-# alias, and the unasync-generated sync build.
-FLAVOURS = ("apyhiveapi", "pyhive", "pyhiveapi")
+# Packages shipped by this distribution.
+FLAVOURS = ("apyhiveapi",)
 
-# Subpackages that must be present in each flavour. Guards against the
-# packages list in pyproject.toml drifting behind the source layout.
+# Subpackages that must be present. Guards against the packages list in
+# pyproject.toml drifting behind the source layout.
 REQUIRED_SUBPACKAGES = ("api", "devices", "helper", "session")
 
-# Package data that must ship alongside the async flavours.
-REQUIRED_DATA = {"apyhiveapi": ["data/data.json"], "pyhive": ["data/data.json"]}
+# Package data that must ship alongside the code.
+REQUIRED_DATA = {"apyhiveapi": ["data/data.json"]}
 
 # Entry points the Home Assistant integration depends on. A build that
 # imports but has lost these is still a broken release.
-REQUIRED_ATTRS = {
-    "apyhiveapi": ["API", "Auth", "Hive", "HiveReauthRequired"],
-    "pyhive": ["API", "Auth", "Hive"],
-    "pyhiveapi": ["API", "Auth", "Hive"],
-}
+REQUIRED_ATTRS = {"apyhiveapi": ["Auth", "Hive", "HiveReauthRequired"]}
 
 # Runs inside the throwaway venv, so it must stay stdlib-only.
 PROBE = """
@@ -47,9 +42,6 @@ import json
 import pathlib
 import pkgutil
 import sys
-import warnings
-
-warnings.simplefilter("ignore", DeprecationWarning)
 
 flavours = json.loads(sys.argv[1])
 required_subpackages = json.loads(sys.argv[2])
@@ -168,7 +160,7 @@ def main(argv: list[str]) -> int:
         result = json.loads(probe.stdout)
 
     failures = result["failures"]
-    print(f"imported {result['imported']} modules across {len(FLAVOURS)} flavours")
+    print(f"imported {result['imported']} modules")
     if failures:
         print(f"\nerror: {len(failures)} problem(s) in the built distribution:")
         for failure in failures:

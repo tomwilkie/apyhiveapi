@@ -1,4 +1,4 @@
-.PHONY: help setup test coverage lint sync verify-dist run-file run-live simulate-file simulate-live live-forget logs status stop call
+.PHONY: help setup test coverage lint verify-dist run-file run-live simulate-file simulate-live live-forget logs status stop call
 
 # Describe every target. `setup` stays the default goal (see .DEFAULT_GOAL).
 help:
@@ -9,7 +9,6 @@ help:
 	@echo "  test           Run the full test suite (coverage needs the whole suite)"
 	@echo "  coverage       Run the tests under coverage and write an lcov report"
 	@echo "  lint           Run every linter through pre-commit"
-	@echo "  sync           Generate the sync pyhiveapi package from the async source"
 	@echo "  verify-dist    Build the wheel and check it imports in a clean venv"
 	@echo ""
 	@echo "Local session runner (read-only unless started with WRITE=1)"
@@ -77,9 +76,6 @@ coverage:
 
 lint:
 	pre-commit run --all-files
-
-sync:
-	python setup.py build_py
 
 # Build the wheel and prove it is importable in a clean venv. The test suite
 # runs against src/, so only this catches packaging regressions.

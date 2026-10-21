@@ -65,47 +65,31 @@ class DiscoveryMixin:
         """
         try:
             hive_type = kwargs.get("hive_type", data.get("type", ""))
-            if hive_type == "action":
-                device_name = kwargs.get("ha_name", data.get("name", "Action"))
-                device_obj = Device(
-                    hive_id=data.get("id", ""),
-                    hive_name=device_name,
-                    hive_type="action",
-                    ha_type=entity_type,
-                    device_id=data.get("id", ""),
-                    device_name=device_name,
-                    device_data={},
-                    parent_device=self.hub_id,
-                    ha_name=device_name,
-                )
-            else:
-                device_data = self.helper.get_device_data(data)
-                state_name = device_data["state"]["name"]
-                device_name = "Heating" if state_name == "Receiver" else state_name
+            device_data = self.helper.get_device_data(data)
+            state_name = device_data["state"]["name"]
+            device_name = "Heating" if state_name == "Receiver" else state_name
 
-                ha_name = kwargs.get("ha_name", "")
-                if ha_name.startswith(" "):
-                    ha_name = device_name + ha_name
-                elif not ha_name:
-                    ha_name = device_name
+            ha_name = kwargs.get("ha_name", "")
+            if ha_name.startswith(" "):
+                ha_name = device_name + ha_name
+            elif not ha_name:
+                ha_name = device_name
 
-                device_obj = Device(
-                    hive_id=data.get("id", ""),
-                    hive_name=device_name,
-                    hive_type=hive_type,
-                    ha_type=entity_type,
-                    device_id=device_data["id"],
-                    device_name=device_name,
-                    device_data=device_data.get("props", data.get("props", {})),
-                    parent_device=self.hub_id,
-                    is_group=data.get("isGroup", False),
-                    ha_name=ha_name,
-                    category=kwargs.get("category"),
-                    temperature_unit=kwargs.get("temperature_unit"),
-                )
+            device_obj = Device(
+                hive_id=data.get("id", ""),
+                hive_name=device_name,
+                hive_type=hive_type,
+                ha_type=entity_type,
+                device_id=device_data["id"],
+                device_name=device_name,
+                device_data=device_data.get("props", data.get("props", {})),
+                parent_device=self.hub_id,
+                ha_name=ha_name,
+                temperature_unit=kwargs.get("temperature_unit"),
+            )
 
-                if data.get("type", "") == "hub":
-                    self.device_list["parent"].append(device_obj)
+            if data.get("type", "") == "hub":
+                self.device_list["parent"].append(device_obj)
 
             self.device_list[entity_type].append(device_obj)
             return device_obj
@@ -220,8 +204,6 @@ class DiscoveryMixin:
             kwargs["ha_name"] = entity_config.ha_name
         if entity_config.hive_type:
             kwargs["hive_type"] = entity_config.hive_type
-        if entity_config.category:
-            kwargs["category"] = entity_config.category
         return kwargs
 
     async def create_devices(  # noqa: PLR0912, PLR0915
@@ -284,22 +266,6 @@ class DiscoveryMixin:
                 _LOGGER.debug(
                     "create_devices - Added device %s to battery monitoring list",
                     device_name,
-                )
-
-        # Process actions
-        _LOGGER.debug(
-            "create_devices - Processing %d actions", len(self.data["actions"])
-        )
-        for action_id, action in self.data["actions"].items():
-            try:
-                self.add_list(
-                    "switch", action, ha_name=action["name"], hive_type="action"
-                )
-            except (KeyError, TypeError, AttributeError) as e:
-                _LOGGER.error(
-                    "Failed to create action entity for %s: %s",
-                    action_id,
-                    str(e),
                 )
 
         # Process products

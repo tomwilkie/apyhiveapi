@@ -2,7 +2,6 @@
 
 import logging
 
-from ..helper.compat_aliases import SensorCompatMixin
 from ..helper.const import HIVE_TYPES, HIVETOHA
 from ..helper.device_handler_base import BaseDeviceHandler
 from ..helper.hivedataclasses import Device
@@ -27,8 +26,6 @@ sensor_commands = {
     "Hotwater_Mode": lambda s, d: s.session.hotwater.get_mode(d),
     "Hotwater_Boost": lambda s, d: s.session.hotwater.get_boost(d),
     "Battery": lambda s, d: s.session.attr.get_battery(d.device_id),
-    "Mode": lambda s, d: s.session.attr.get_mode(d.hive_id),
-    "Availability": lambda s, d: s.online(d),
     "Connectivity": lambda s, d: s.online(d),
     "Power": lambda s, d: s.session.switch.get_power_usage(d),
 }
@@ -76,7 +73,7 @@ class HiveSensor(BaseDeviceHandler):
         return None
 
 
-class Sensor(SensorCompatMixin, HiveSensor):
+class Sensor(HiveSensor):
     """Home Assistant sensor code.
 
     Args:
@@ -100,13 +97,13 @@ class Sensor(SensorCompatMixin, HiveSensor):
             )
             return cached
         online = await self._update_online_status(device)
-        # Availability and connectivity sensors report the online state itself,
-        # so they are refreshed even while the device is offline.
-        is_availability_sensor = device.hive_type in ("Availability", "Connectivity")
-        if not (online or is_availability_sensor):
+        # The connectivity sensor reports the online state itself, so it is
+        # refreshed even while the device is offline.
+        is_connectivity_sensor = device.hive_type == "Connectivity"
+        if not (online or is_connectivity_sensor):
             return await self._report_offline(device, {"state": None})
 
-        if not is_availability_sensor:
+        if not is_connectivity_sensor:
             self.session.helper.device_recovered(device.device_id)
 
         _LOGGER.debug(

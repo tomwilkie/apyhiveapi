@@ -21,9 +21,7 @@ def _make_stub(*, stale=True):
     p = StubPolling()
     p.config = SessionConfig()
     p.config.last_update = datetime.now() - _FAR_PAST if stale else datetime.now()
-    p.data = Map(
-        {"products": {}, "devices": {}, "actions": {}, "minMax": {}, "user": {}}
-    )
+    p.data = Map({"products": {}, "devices": {}, "user": {}})
     p.tokens = None
     p.entity_cache = {}
     p.update_lock = asyncio.Lock()

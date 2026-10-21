@@ -8,17 +8,6 @@ _SCAN_INTERVAL = timedelta(seconds=120)
 
 _SENTINEL = object()
 
-_DEVICE_KEY_MAP = {
-    "hiveID": "hive_id",
-    "hiveName": "hive_name",
-    "hiveType": "hive_type",
-    "haName": "ha_name",
-    "haType": "ha_type",
-    "deviceData": "device_data",
-    "parentDevice": "parent_device",
-    "temperatureunit": "temperature_unit",
-}
-
 
 @dataclass
 class Device:
@@ -32,9 +21,7 @@ class Device:
     device_name: str
     device_data: dict
     parent_device: str | None = None
-    is_group: bool = False
     ha_name: str = ""
-    category: str | None = None
     temperature_unit: str | None = None
     status: dict | None = None
     data: dict | None = None
@@ -42,24 +29,20 @@ class Device:
     min_temp: float | None = None
     max_temp: float | None = None
 
-    def _resolve(self, key: str) -> str:
-        """Translate a legacy camelCase key to the current snake_case attribute name."""
-        return _DEVICE_KEY_MAP.get(key, key)
-
     def __getitem__(self, key: str):
-        """Support dict-style read access, resolving legacy camelCase keys."""
+        """Support dict-style read access to the attributes."""
         try:
-            return getattr(self, self._resolve(key))
+            return getattr(self, key)
         except AttributeError:
             raise KeyError(key) from None
 
     def __setitem__(self, key: str, value) -> None:
-        """Support dict-style write access, resolving legacy camelCase keys."""
-        setattr(self, self._resolve(key), value)
+        """Support dict-style write access to the attributes."""
+        setattr(self, key, value)
 
     def __contains__(self, key: str) -> bool:
-        """Return True if the key resolves to a non-None attribute."""
-        val = getattr(self, self._resolve(key), _SENTINEL)
+        """Return True if the key names a non-None attribute."""
+        val = getattr(self, key, _SENTINEL)
         return val is not _SENTINEL and val is not None
 
     def get(self, key: str, default=None):
@@ -85,7 +68,6 @@ class EntityConfig:
     ]
     ha_name: str = ""
     hive_type: str = ""
-    category: str | None = None
     temperature_unit: str | None = None
 
 

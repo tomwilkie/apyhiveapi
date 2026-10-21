@@ -19,8 +19,6 @@ def _make_discovery():
         {
             "products": {},
             "devices": {},
-            "actions": {},
-            "minMax": {},
             "user": {},
         }
     )

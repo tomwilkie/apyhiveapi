@@ -27,7 +27,7 @@ from ..helper.hive_exceptions import (
     HiveUnknownConfiguration,
 )
 from .device_registration import DeviceRegistrationMixin
-from .hive_api import HiveApi
+from .hive_async_api import HiveApiAsync
 from .srp_crypto import (
     G_HEX,
     N_HEX,
@@ -55,8 +55,8 @@ class HiveAuthAsync(DeviceRegistrationMixin):
 
     def __init__(  # pylint: disable=too-many-positional-arguments  # noqa: PLR0913
         self,
-        username: str,
-        password: str,
+        username: str | None,
+        password: str | None,
         device_group_key: str | None = None,
         device_key: str | None = None,
         device_password: str | None = None,
@@ -71,7 +71,7 @@ class HiveAuthAsync(DeviceRegistrationMixin):
         self.device_password: str | None = device_password
         self.access_token: str | None = None
         self.token_created: datetime.datetime | None = None
-        self.api = HiveApi()
+        self.api = HiveApiAsync()
         self.user_id = "user_id"
         self.client_secret = client_secret
         self.big_n: int = hex_to_long(N_HEX)
@@ -91,7 +91,7 @@ class HiveAuthAsync(DeviceRegistrationMixin):
     async def async_init(self):
         """Initialise async variables."""
         self.loop = asyncio.get_running_loop()
-        self.data = await self.loop.run_in_executor(None, self.api.get_login_info)
+        self.data = await self.api.get_login_info()
         if not self.data:
             raise HiveUnknownConfiguration("SSO login page returned no data")
         self._pool_id = self.data.get("UPID")
@@ -235,9 +235,7 @@ class HiveAuthAsync(DeviceRegistrationMixin):
         timestamp = re.sub(
             r" 0(\d) ",
             r" \1 ",
-            datetime.datetime.now(datetime.timezone.utc).strftime(
-                "%a %b %d %H:%M:%S UTC %Y"
-            ),
+            datetime.datetime.now(datetime.UTC).strftime("%a %b %d %H:%M:%S UTC %Y"),
         )
         hkdf = await self.loop.run_in_executor(
             None,
