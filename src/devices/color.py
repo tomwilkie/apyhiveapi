@@ -20,6 +20,25 @@ class LightColorHandler:  # pylint: disable=no-member
 
     session: Any
 
+    def _kelvin_to_mireds(self, device: Device, *path: str) -> int | None:
+        """Read a Kelvin value from the device's product data, in mireds.
+
+        Args:
+            device (Device): Device to query.
+            path: Keys leading to the Kelvin value in the product data.
+
+        Returns:
+            int | None: The value in mireds, or None if it is missing or zero.
+        """
+        try:
+            node = self.session.data.products[device.hive_id]
+            for key in path:
+                node = node[key]
+            return round((1 / node) * 1000000)
+        except (KeyError, ZeroDivisionError) as e:
+            _LOGGER.error(e)
+        return None
+
     async def get_min_color_temp(self, device: Device):
         """Get light minimum color temperature (mireds).
 
@@ -29,13 +48,7 @@ class LightColorHandler:  # pylint: disable=no-member
         Returns:
             int | None: Minimum colour temperature in mireds.
         """
-        try:
-            data = self.session.data.products[device.hive_id]
-            state = data["props"]["colourTemperature"]["max"]
-            return round((1 / state) * 1000000)
-        except (KeyError, ZeroDivisionError) as e:
-            _LOGGER.error(e)
-        return None
+        return self._kelvin_to_mireds(device, "props", "colourTemperature", "max")
 
     async def get_max_color_temp(self, device: Device):
         """Get light maximum color temperature (mireds).
@@ -46,13 +59,7 @@ class LightColorHandler:  # pylint: disable=no-member
         Returns:
             int | None: Maximum colour temperature in mireds.
         """
-        try:
-            data = self.session.data.products[device.hive_id]
-            state = data["props"]["colourTemperature"]["min"]
-            return round((1 / state) * 1000000)
-        except (KeyError, ZeroDivisionError) as e:
-            _LOGGER.error(e)
-        return None
+        return self._kelvin_to_mireds(device, "props", "colourTemperature", "min")
 
     async def get_color_temp(self, device: Device):
         """Get light current color temperature (mireds).
@@ -63,13 +70,7 @@ class LightColorHandler:  # pylint: disable=no-member
         Returns:
             int | None: Current colour temperature in mireds.
         """
-        try:
-            data = self.session.data.products[device.hive_id]
-            state = data["state"]["colourTemperature"]
-            return round((1 / state) * 1000000)
-        except (KeyError, ZeroDivisionError) as e:
-            _LOGGER.error(e)
-        return None
+        return self._kelvin_to_mireds(device, "state", "colourTemperature")
 
     async def get_color(self, device: Device):
         """Get light current colour as an RGB tuple.

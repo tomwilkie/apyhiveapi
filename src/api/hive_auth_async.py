@@ -204,12 +204,8 @@ class HiveAuthAsync(DeviceRegistrationMixin):
             "SRP_A": long_to_hex(self.large_a_value),
         }
         if self.client_secret is not None:
-            auth_params.update(
-                {
-                    "SECRET_HASH": self.get_secret_hash(
-                        self.username, self._client_id, self.client_secret
-                    )
-                }
+            auth_params["SECRET_HASH"] = self.get_secret_hash(
+                self.username, self._client_id, self.client_secret
             )
 
         if is_device_login:
@@ -267,16 +263,12 @@ class HiveAuthAsync(DeviceRegistrationMixin):
             "PASSWORD_CLAIM_SIGNATURE": signature_string.decode("utf-8"),
         }
         if self.client_secret is not None:
-            response.update(
-                {
-                    "SECRET_HASH": self.get_secret_hash(
-                        self.username, self._client_id, self.client_secret
-                    )
-                }
+            response["SECRET_HASH"] = self.get_secret_hash(
+                self.username, self._client_id, self.client_secret
             )
 
         if self.device_key is not None:
-            response.update({"DEVICE_KEY": self.device_key})
+            response["DEVICE_KEY"] = self.device_key
 
         return response
 
@@ -291,8 +283,6 @@ class HiveAuthAsync(DeviceRegistrationMixin):
 
         self._new_srp_ephemeral()
         auth_params = await self.get_auth_params()
-        response = None
-        result = None
         _LOGGER.debug("login - Initiating SRP auth with Cognito.")
         try:
             response = await self.loop.run_in_executor(
@@ -420,7 +410,6 @@ class HiveAuthAsync(DeviceRegistrationMixin):
         """Send sms code for auth."""
         session = challenge_parameters.get("Session")
         code = str(entered_code)
-        result = None
         _LOGGER.debug("sms_2fa - Submitting SMS 2FA code to Cognito.")
         try:
             result = await self.loop.run_in_executor(
@@ -439,11 +428,11 @@ class HiveAuthAsync(DeviceRegistrationMixin):
             if result and "AuthenticationResult" in result:
                 self._store_auth_result(result)
         except botocore.exceptions.ClientError as err:
-            code = (err.response or {}).get("Error", {}).get("Code", "")
-            if code in ("NotAuthorizedException", "CodeMismatchException"):
+            error_code = (err.response or {}).get("Error", {}).get("Code", "")
+            if error_code in ("NotAuthorizedException", "CodeMismatchException"):
                 _LOGGER.error("2FA code rejected by Cognito.")
                 raise HiveInvalid2FACode from err
-            _LOGGER.error("2FA failed: %s", code)
+            _LOGGER.error("2FA failed: %s", error_code)
             raise HiveApiError from err
         except botocore.exceptions.EndpointConnectionError as err:
             _LOGGER.error("2FA failed: cannot reach Cognito endpoint.")
@@ -457,13 +446,9 @@ class HiveAuthAsync(DeviceRegistrationMixin):
         if self.client is None:
             await self.async_init()
         _LOGGER.debug("refresh_token - Requesting token refresh from Cognito.")
-        result = None
         auth_params = {"REFRESH_TOKEN": token}
         if self.device_key is not None:
-            auth_params = {
-                "REFRESH_TOKEN": token,
-                "DEVICE_KEY": self.device_key,
-            }
+            auth_params["DEVICE_KEY"] = self.device_key
 
         try:
             result = await self.loop.run_in_executor(

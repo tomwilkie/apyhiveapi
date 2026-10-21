@@ -200,9 +200,8 @@ class HiveApi:
 
     def set_action(self, n_id, data):
         """Set the state of a Action."""
-        jsc = data
         url = self.urls["base"] + self.urls["actions"] + "/" + n_id
-        return self._call_endpoint("POST", url, jsc)
+        return self._call_endpoint("POST", url, data)
 
     def get_holiday_mode(self):
         """Get the current holiday mode configuration."""

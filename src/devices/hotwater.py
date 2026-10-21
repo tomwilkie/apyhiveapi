@@ -1,7 +1,6 @@
 """Hive Hotwater Module."""
 
 import logging
-from typing import Any
 
 from ..helper.compat_aliases import WaterHeaterCompatMixin
 from ..helper.const import HIVETOHA
@@ -19,7 +18,6 @@ class HiveHotwater(BoostMixin, BaseDeviceHandler):
         object: Hotwater Object.
     """
 
-    session: Any
     hotwater_type = "Hotwater"
 
     async def get_mode(self, device: Device):
@@ -41,7 +39,7 @@ class HiveHotwater(BoostMixin, BaseDeviceHandler):
 
     @staticmethod
     async def get_operation_modes():
-        """Get heating list of possible modes.
+        """Get hot water list of possible modes.
 
         Returns:
             list: Return list of operation modes.
@@ -57,28 +55,22 @@ class HiveHotwater(BoostMixin, BaseDeviceHandler):
         Returns:
             str: return state of device.
         """
-        state = None
-        final = None
-
         try:
             data = self.session.data.products[device.hive_id]
             state = data["state"]["status"]
-            mode_current = await self.get_mode(device)
-            if mode_current == "SCHEDULE":
+            if await self.get_mode(device) == "SCHEDULE":
                 if await self.get_boost_status(device) == "ON":
                     state = "ON"
                 else:
-                    snan = self.session.helper.get_schedule_nnl(
+                    now_next_later = self.session.helper.get_schedule_nnl(
                         data["state"]["schedule"]
                     )
-                    if snan and "now" in snan:
-                        state = snan["now"]["value"]["status"]
-
-            final = HIVETOHA[self.hotwater_type].get(state, state)
+                    if now_next_later and "now" in now_next_later:
+                        state = now_next_later["now"]["value"]["status"]
+            return HIVETOHA[self.hotwater_type].get(state, state)
         except KeyError as e:
             _LOGGER.error(e)
-
-        return final
+        return None
 
     async def set_mode(self, device: Device, new_mode: str):
         """Set hot water mode.
@@ -124,11 +116,7 @@ class HiveHotwater(BoostMixin, BaseDeviceHandler):
             boolean: return True/False if boost was successful.
         """
         if (
-            device.hive_id not in self.session.data.products
-            or not (
-                isinstance(device.device_data, dict)
-                and device.device_data.get("online")
-            )
+            not self._is_available(device)
             or await self.get_boost_status(device) != "ON"
         ):
             return False
@@ -152,14 +140,6 @@ class WaterHeater(WaterHeaterCompatMixin, HiveHotwater):
         Hotwater (object): Hotwater class.
     """
 
-    def __init__(self, session: Any = None):
-        """Initialise water heater.
-
-        Args:
-            session (object, optional): Session to interact with account. Defaults to None.
-        """
-        self.session = session
-
     async def get_water_heater(self, device: Device):
         """Update water heater device.
 
@@ -169,47 +149,34 @@ class WaterHeater(WaterHeaterCompatMixin, HiveHotwater):
         Returns:
             dict: Updated device.
         """
-        if self.session.should_use_cached_data():
-            cached = self.session.get_cached_device(device)
-            if cached is not None:
-                _LOGGER.debug(
-                    "get_water_heater - Returning cached state for"
-                    " water heater %s (slow/busy poll).",
-                    device.ha_name,
-                )
-                return cached
-        online = await self.session.attr.online_offline(device.device_id)
-        if not isinstance(device.device_data, dict):
-            device.device_data = {}
-        device.device_data["online"] = online
-
-        if device.device_data["online"]:
-            self.session.helper.device_recovered(device.device_id)
+        cached = self._cached_if_busy(device)
+        if cached is not None:
             _LOGGER.debug(
-                "get_water_heater - Updating hot water data for %s.", device.ha_name
-            )
-            data = self.session.data.devices[device.device_id]
-            device.status = {"current_operation": await self.get_mode(device)}
-            props = data.get("props") or {}
-            props["online"] = online
-            device.device_data = props
-            device.parent_device = data.get("parent", None)
-            device.attributes = await self.session.attr.state_attributes(
-                device.device_id, device.hive_type
-            )
-
-            _LOGGER.debug(
-                "get_water_heater - Water heater device data for %s: %s",
+                "get_water_heater - Returning cached state for"
+                " water heater %s (slow/busy poll).",
                 device.ha_name,
-                device.status,
             )
+            return cached
+        online = await self._update_online_status(device)
+        if not online:
+            return await self._report_offline(device, {"current_operation": None})
 
-            return self.session.set_cached_device(device)
-        await self.session.helper.error_check(
-            device.device_id, "ERROR", device.device_data["online"]
+        self.session.helper.device_recovered(device.device_id)
+        _LOGGER.debug(
+            "get_water_heater - Updating hot water data for %s.", device.ha_name
         )
-        device.status = device.status or {"current_operation": None}
-        return device
+        data = self.session.data.devices[device.device_id]
+        device.status = {"current_operation": await self.get_mode(device)}
+        self._apply_device_props(device, data, online)
+        device.attributes = await self.session.attr.state_attributes(
+            device.device_id, device.hive_type
+        )
+        _LOGGER.debug(
+            "get_water_heater - Water heater device data for %s: %s",
+            device.ha_name,
+            device.status,
+        )
+        return self.session.set_cached_device(device)
 
     async def get_schedule_now_next_later(self, device: Device):
         """Hive get hotwater schedule now, next and later.

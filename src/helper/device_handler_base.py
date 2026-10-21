@@ -11,12 +11,56 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class BaseDeviceHandler:  # pylint: disable=too-few-public-methods
-    """Common plumbing shared across all Hive device handler classes.
+    """Common plumbing shared across all Hive device handler classes."""
 
-    Subclasses must ensure ``self.session`` is set before any method is called.
-    """
+    def __init__(self, session: Any = None):
+        """Initialise the handler.
 
-    session: Any
+        Args:
+            session (object, optional): Session to interact with the Hive account.
+                Defaults to None.
+        """
+        self.session = session
+
+    def _is_available(self, device: Device) -> bool:
+        """Return True if the device's product is known and the device is online."""
+        return device.hive_id in self.session.data.products and bool(
+            isinstance(device.device_data, dict) and device.device_data.get("online")
+        )
+
+    def _cached_if_busy(self, device: Device) -> Device | None:
+        """Return the cached entity while the session prefers cached state.
+
+        The session prefers it while the last poll was slow or another task
+        is polling; otherwise this returns None.
+        """
+        if self.session.should_use_cached_data():
+            return self.session.get_cached_device(device)
+        return None
+
+    async def _update_online_status(self, device: Device) -> Any:
+        """Store whether the device is online in ``device_data`` and return it."""
+        online = await self.session.attr.online_offline(device.device_id)
+        if not isinstance(device.device_data, dict):
+            device.device_data = {}
+        device.device_data["online"] = online
+        return online
+
+    @staticmethod
+    def _apply_device_props(device: Device, data: dict, online: Any) -> None:
+        """Replace ``device_data`` with the latest props and set the parent."""
+        props = data.get("props") or {}
+        props["online"] = online
+        device.device_data = props
+        device.parent_device = data.get("parent", None)
+
+    async def _report_offline(self, device: Device, default_status: dict) -> Device:
+        """Report an offline device and give it *default_status* if it has none."""
+        await self.session.helper.error_check(
+            device.device_id, "ERROR", device.device_data["online"]
+        )
+        device.status = device.status or default_status
+        return device
 
     async def _execute_state_change(self, device: Device, **state_kwargs) -> bool:
         """Check online → refresh tokens → set_state → get_devices.

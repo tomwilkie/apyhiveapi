@@ -17,7 +17,6 @@ class HiveSmartPlug(BaseDeviceHandler):
         object: Returns Plug object
     """
 
-    session: Any
     plug_type = "Switch"
 
     async def get_state(self, device: Device):
@@ -81,7 +80,7 @@ class Switch(SwitchCompatMixin, HiveSmartPlug):
         Args:
             session (object): This is the session object to interact with the current session.
         """
-        self.session = session
+        super().__init__(session)
 
     async def get_switch(self, device: Device):
         """Home assistant wrapper to get switch device.
@@ -92,48 +91,36 @@ class Switch(SwitchCompatMixin, HiveSmartPlug):
         Returns:
             dict: Return device after update is complete.
         """
-        if self.session.should_use_cached_data():
-            cached = self.session.get_cached_device(device)
-            if cached is not None:
-                _LOGGER.debug(
-                    "get_switch - Returning cached state for switch %s (slow/busy poll).",
-                    device.ha_name,
-                )
-                return cached
-        online = await self.session.attr.online_offline(device.device_id)
-        if not isinstance(device.device_data, dict):
-            device.device_data = {}
-        device.device_data["online"] = online
-
-        if device.device_data["online"]:
-            self.session.helper.device_recovered(device.device_id)
-            _LOGGER.debug("get_switch - Updating switch data for %s.", device.ha_name)
-            data = self.session.data.devices[device.device_id]
-            device.status = {"state": await self.get_switch_state(device)}
-            props = data.get("props") or {}
-            props["online"] = online
-            device.device_data = props
-            device.parent_device = data.get("parent", None)
-            device.attributes = {}
-
-            if device.hive_type == "activeplug":
-                device.status["power_usage"] = await self.get_power_usage(device)
-                device.attributes = await self.session.attr.state_attributes(
-                    device.device_id, device.hive_type
-                )
-
+        cached = self._cached_if_busy(device)
+        if cached is not None:
             _LOGGER.debug(
-                "get_switch - Switch device data for %s: %s",
+                "get_switch - Returning cached state for switch %s (slow/busy poll).",
                 device.ha_name,
-                device.status,
+            )
+            return cached
+        online = await self._update_online_status(device)
+        if not online:
+            return await self._report_offline(device, {"state": None})
+
+        self.session.helper.device_recovered(device.device_id)
+        _LOGGER.debug("get_switch - Updating switch data for %s.", device.ha_name)
+        data = self.session.data.devices[device.device_id]
+        device.status = {"state": await self.get_switch_state(device)}
+        self._apply_device_props(device, data, online)
+        device.attributes = {}
+
+        if device.hive_type == "activeplug":
+            device.status["power_usage"] = await self.get_power_usage(device)
+            device.attributes = await self.session.attr.state_attributes(
+                device.device_id, device.hive_type
             )
 
-            return self.session.set_cached_device(device)
-        await self.session.helper.error_check(
-            device.device_id, "ERROR", device.device_data["online"]
+        _LOGGER.debug(
+            "get_switch - Switch device data for %s: %s",
+            device.ha_name,
+            device.status,
         )
-        device.status = device.status or {"state": None}
-        return device
+        return self.session.set_cached_device(device)
 
     async def get_switch_state(self, device: Device):
         """Home Assistant wrapper to get updated switch state.
@@ -149,7 +136,7 @@ class Switch(SwitchCompatMixin, HiveSmartPlug):
         return await self.get_state(device)
 
     async def turn_on(self, device: Device):
-        """Home Assisatnt wrapper for turning switch on.
+        """Home Assistant wrapper for turning switch on.
 
         Args:
             device (dict): Device to switch on.
@@ -162,7 +149,7 @@ class Switch(SwitchCompatMixin, HiveSmartPlug):
         return await self.set_status_on(device)
 
     async def turn_off(self, device: Device):
-        """Home Assisatnt wrapper for turning switch off.
+        """Home Assistant wrapper for turning switch off.
 
         Args:
             device (dict): Device to switch off.

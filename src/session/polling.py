@@ -63,8 +63,7 @@ class PollingMixin:
 
     def get_cached_device(self, device):
         """Get cached state for a specific entity."""
-        cache_key = self._entity_cache_key(device)
-        return self.entity_cache.get(cache_key)
+        return self.entity_cache.get(self._entity_cache_key(device))
 
     def set_cached_device(self, device):
         """Store device state in cache and return it."""
@@ -99,15 +98,15 @@ class PollingMixin:
         for product_id, product in new_products.items():
             previous = self.data.products.get(product_id) or {}
             previous_state = previous.get("state")
+            if not isinstance(previous_state, dict):
+                previous_state = {}
             new_state = product.get("state")
             if not isinstance(new_state, dict):
                 new_state = {}
-            missing: list[str] = []
-            if isinstance(previous_state, dict):
-                missing = sorted(
-                    (previous_state.keys() & REQUIRED_STATE_KEYS) - new_state.keys()
-                )
-            if not isinstance(previous_state, dict) or not missing:
+            missing = sorted(
+                (previous_state.keys() & REQUIRED_STATE_KEYS) - new_state.keys()
+            )
+            if not missing:
                 self._stale_state_polls.pop(product_id, None)
                 continue
             name = previous_state.get("name", product_id)
@@ -175,39 +174,121 @@ class PollingMixin:
         Returns:
             boolean: True/False if update was successful
         """
-        updated = False
-        ep = self.config.last_update + self.config.scan_interval
-        if datetime.now() >= ep:
-            current_task = asyncio.current_task()
-            if self.update_lock.locked() and (
-                self._update_task is None or current_task is not self._update_task
-            ):
-                _LOGGER.debug("update_data - Update poll already in progress")
-                return updated
-            async with self.update_lock:
-                # Re-check after acquiring lock — another caller may have already updated
-                ep = self.config.last_update + self.config.scan_interval
-                if datetime.now() < ep:
-                    return updated
-                self._update_task = current_task
-                try:
-                    _LOGGER.debug("Polling Hive API for device updates.")
-                    updated = await self._poll_devices()
-                    if updated:
-                        _LOGGER.debug(
-                            "update_data - Device update completed successfully."
-                        )
-                    else:
-                        _LOGGER.debug(
-                            "update_data - Device update failed, will retry after scan interval."
-                        )
-                finally:
-                    if self._update_task is current_task:
-                        self._update_task = None
-
+        if datetime.now() < self.config.last_update + self.config.scan_interval:
+            return False
+        current_task = asyncio.current_task()
+        if self.update_lock.locked() and (
+            self._update_task is None or current_task is not self._update_task
+        ):
+            _LOGGER.debug("update_data - Update poll already in progress")
+            return False
+        async with self.update_lock:
+            # Re-check after acquiring lock — another caller may have already updated
+            if datetime.now() < self.config.last_update + self.config.scan_interval:
+                return False
+            self._update_task = current_task
+            try:
+                _LOGGER.debug("Polling Hive API for device updates.")
+                updated = await self._poll_devices()
+                if updated:
+                    _LOGGER.debug("update_data - Device update completed successfully.")
+                else:
+                    _LOGGER.debug(
+                        "update_data - Device update failed, will retry after scan interval."
+                    )
+            finally:
+                if self._update_task is current_task:
+                    self._update_task = None
         return updated
 
-    async def get_devices(self, _n_id: str):  # pylint: disable=too-many-locals,too-many-statements  # noqa: PLR0912, PLR0915
+    async def _fetch_all_nodes(self) -> dict | None:
+        """Refresh tokens, then fetch every product, device and action from the API.
+
+        Re-logs in and retries when the API rejects the token, and records
+        whether the call was slow.
+
+        Raises:
+            HTTPException: The API answered with a non-2xx status.
+            HiveApiError: The API answered without a parsed body.
+
+        Returns:
+            dict | None: The ``{"original": ..., "parsed": ...}`` response.
+        """
+        _LOGGER.debug("get_devices - Refreshing tokens before fetching devices.")
+        await self.hive_refresh_tokens()  # type: ignore[attr-defined]
+        _LOGGER.debug("get_devices - Fetching all devices from Hive API.")
+        api_call_start = time.monotonic()
+        try:
+            api_resp_d = await self.api.get_all()
+            api_call_duration = time.monotonic() - api_call_start
+            if api_call_duration > self._slow_poll_threshold:
+                _LOGGER.debug(
+                    "get_devices - Hive API response took %.1fs — marking poll as slow.",
+                    api_call_duration,
+                )
+                self._last_poll_slow = True
+            else:
+                self._last_poll_slow = False
+        except HiveAuthError:
+            self._last_poll_slow = False
+            _LOGGER.warning(
+                "Auth error (401/403) after token refresh, "
+                "falling back to full device re-login."
+            )
+            await self._retry_login()  # type: ignore[attr-defined]
+            api_resp_d = await self._retry_with_backoff(  # type: ignore[attr-defined]
+                self.api.get_all,
+                reraise_as=HiveReauthRequired,
+            )
+        if api_resp_d is None:
+            return None
+        if not str(api_resp_d["original"]).startswith("2"):
+            raise HTTPException
+        if api_resp_d["parsed"] is None:
+            raise HiveApiError
+        return api_resp_d
+
+    def _store_nodes(self, nodes: Any) -> None:
+        """Store the user, home, products, devices and actions from a poll.
+
+        Args:
+            nodes: The parsed JSON body of the all-nodes response.
+        """
+        products = {}
+        devices = {}
+        actions = {}
+        for key in nodes:
+            if key == "user":
+                self.data.user = nodes[key]
+                self.config.user_id = nodes[key].get("id")
+            elif key == "products":
+                for product in nodes[key]:
+                    products[product["id"]] = product
+            elif key == "devices":
+                for device in nodes[key]:
+                    devices[device["id"]] = device
+            elif key == "actions":
+                for action in nodes[key]:
+                    actions[action["id"]] = action
+            elif key == "homes":
+                homes_data = nodes[key]
+                if isinstance(homes_data, dict) and homes_data.get("homes"):
+                    self.config.home_id = homes_data["homes"][0]["id"]
+
+        _LOGGER.debug(
+            "get_devices - API returned %d products, %d devices, %d actions.",
+            len(products),
+            len(devices),
+            len(actions),
+        )
+        if products:
+            self._keep_missing_state(products)
+            self.data.products = products
+        if devices:
+            self.data.devices = devices
+        self.data.actions = actions
+
+    async def get_devices(self, _n_id: str):
         """Get latest data for Hive nodes.
 
         Args:
@@ -220,90 +301,19 @@ class PollingMixin:
         Returns:
             boolean: True/False if update was successful.
         """
-        get_nodes_successful = False
-        api_resp_d = None
-
         try:
             if self.config.file:
                 _LOGGER.debug("get_devices - Loading device data from file.")
                 api_resp_d = self.open_file("data.json")  # type: ignore[attr-defined]
             elif self.tokens is not None:
-                _LOGGER.debug(
-                    "get_devices - Refreshing tokens before fetching devices."
-                )
-                await self.hive_refresh_tokens()  # type: ignore[attr-defined]
-                _LOGGER.debug("get_devices - Fetching all devices from Hive API.")
-                api_call_start = time.monotonic()
-                try:
-                    api_resp_d = await self.api.get_all()
-                    api_call_duration = time.monotonic() - api_call_start
-                    if api_call_duration > self._slow_poll_threshold:
-                        _LOGGER.debug(
-                            "get_devices - Hive API response took %.1fs — marking poll as slow.",
-                            api_call_duration,
-                        )
-                        self._last_poll_slow = True
-                    else:
-                        self._last_poll_slow = False
-                except HiveAuthError:
-                    self._last_poll_slow = False
-                    _LOGGER.warning(
-                        "Auth error (401/403) after token refresh, "
-                        "falling back to full device re-login."
-                    )
-                    await self._retry_login()  # type: ignore[attr-defined]
-                    api_resp_d = await self._retry_with_backoff(  # type: ignore[attr-defined]
-                        self.api.get_all,
-                        reraise_as=HiveReauthRequired,
-                    )
-                if api_resp_d is None:
-                    return get_nodes_successful
-                if not str(api_resp_d["original"]).startswith("2"):
-                    raise HTTPException
-                if api_resp_d["parsed"] is None:
-                    raise HiveApiError
-
+                api_resp_d = await self._fetch_all_nodes()
+            else:
+                api_resp_d = None
             if api_resp_d is None:
-                return get_nodes_successful
-            api_resp_p = api_resp_d["parsed"]
-            tmp_products = {}
-            tmp_devices = {}
-            tmp_actions = {}
-
-            for hive_type_key in api_resp_p:
-                if hive_type_key == "user":
-                    self.data.user = api_resp_p[hive_type_key]
-                    self.config.user_id = api_resp_p[hive_type_key].get("id")
-                if hive_type_key == "products":
-                    for a_product in api_resp_p[hive_type_key]:
-                        tmp_products.update({a_product["id"]: a_product})
-                if hive_type_key == "devices":
-                    for a_device in api_resp_p[hive_type_key]:
-                        tmp_devices.update({a_device["id"]: a_device})
-                if hive_type_key == "actions":
-                    for a_action in api_resp_p[hive_type_key]:
-                        tmp_actions.update({a_action["id"]: a_action})
-                if hive_type_key == "homes":
-                    homes_data = api_resp_p[hive_type_key]
-                    if isinstance(homes_data, dict):
-                        homes_list = homes_data.get("homes") or []
-                        if homes_list:
-                            self.config.home_id = homes_list[0]["id"]
-
-            _LOGGER.debug(
-                "get_devices - API returned %d products, %d devices, %d actions.",
-                len(tmp_products),
-                len(tmp_devices),
-                len(tmp_actions),
-            )
-            if tmp_products:
-                self._keep_missing_state(tmp_products)
-                self.data.products = tmp_products
-            if tmp_devices:
-                self.data.devices = tmp_devices
-            self.data.actions = tmp_actions
+                return False
+            self._store_nodes(api_resp_d["parsed"])
             self.config.last_update = datetime.now()
-            get_nodes_successful = True
+            return True
         except HiveReauthRequired:
             _LOGGER.error("Reauthentication required, propagating to caller.")
             self.config.last_update = datetime.now()
@@ -314,7 +324,7 @@ class PollingMixin:
             self.config.last_update = (
                 datetime.now() - self.config.scan_interval + timedelta(seconds=30)
             )
-            get_nodes_successful = False
+            return False
         except (
             OSError,
             RuntimeError,
@@ -327,6 +337,4 @@ class PollingMixin:
             self.config.last_update = (
                 datetime.now() - self.config.scan_interval + timedelta(seconds=30)
             )
-            get_nodes_successful = False
-
-        return get_nodes_successful
+            return False

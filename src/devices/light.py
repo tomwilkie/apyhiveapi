@@ -1,7 +1,6 @@
 """Hive Light Module."""
 
 import logging
-from typing import Any
 
 from ..helper.compat_aliases import LightCompatMixin
 from ..helper.const import HIVETOHA
@@ -19,7 +18,6 @@ class HiveLight(LightColorHandler, BaseDeviceHandler):
         object: Hivelight
     """
 
-    session: Any
     light_type = "Light"
 
     async def get_state(self, device: Device):
@@ -31,20 +29,14 @@ class HiveLight(LightColorHandler, BaseDeviceHandler):
         Returns:
             str: State of the light.
         """
-        state = None
-        final = None
-        device_name = device.ha_name
-
         try:
-            data = self.session.data.products[device.hive_id]
-            state = data["state"]["status"]
-            final = HIVETOHA[self.light_type].get(state, state)
+            state = self.session.data.products[device.hive_id]["state"]["status"]
+            return HIVETOHA[self.light_type].get(state, state)
         except KeyError as e:
             _LOGGER.error(
-                "KeyError getting light state for %s: %s", device_name, str(e)
+                "KeyError getting light state for %s: %s", device.ha_name, str(e)
             )
-
-        return final
+        return None
 
     async def get_brightness(self, device: Device):
         """Get light current brightness.
@@ -55,20 +47,14 @@ class HiveLight(LightColorHandler, BaseDeviceHandler):
         Returns:
             int: Brightness value.
         """
-        state = None
-        final = None
-        device_name = device.ha_name
-
         try:
             data = self.session.data.products[device.hive_id]
-            state = data["state"]["brightness"]
-            final = int((state / 100) * 255)
+            return int((data["state"]["brightness"] / 100) * 255)
         except (KeyError, TypeError) as e:
             _LOGGER.error(
-                "Error getting light brightness for %s: %s", device_name, str(e)
+                "Error getting light brightness for %s: %s", device.ha_name, str(e)
             )
-
-        return final
+        return None
 
     async def set_status_off(self, device: Device):
         """Set light to turn off.
@@ -119,14 +105,6 @@ class Light(LightCompatMixin, HiveLight):
         HiveLight (object): HiveLight Code.
     """
 
-    def __init__(self, session: Any = None):
-        """Initialise light.
-
-        Args:
-            session (object, optional): Used to interact with the hive account. Defaults to None.
-        """
-        self.session = session
-
     async def get_light(self, device: Device):
         """Get light data.
 
@@ -136,55 +114,43 @@ class Light(LightCompatMixin, HiveLight):
         Returns:
             dict: Updated device.
         """
-        if self.session.should_use_cached_data():
-            cached = self.session.get_cached_device(device)
-            if cached is not None:
-                _LOGGER.debug(
-                    "get_light - Returning cached state for light %s (slow/busy poll).",
-                    device.ha_name,
-                )
-                return cached
-        online = await self.session.attr.online_offline(device.device_id)
-        if not isinstance(device.device_data, dict):
-            device.device_data = {}
-        device.device_data["online"] = online
-
-        if device.device_data["online"]:
-            self.session.helper.device_recovered(device.device_id)
-            _LOGGER.debug("get_light - Updating light data for %s.", device.ha_name)
-            data = self.session.data.devices[device.device_id]
-            device.status = {
-                "state": await self.get_state(device),
-                "brightness": await self.get_brightness(device),
-            }
-            props = data.get("props") or {}
-            props["online"] = online
-            device.device_data = props
-            device.parent_device = data.get("parent", None)
-            device.attributes = await self.session.attr.state_attributes(
-                device.device_id, device.hive_type
-            )
-
-            if device.hive_type in ("tuneablelight", "colourtuneablelight"):
-                device.status["color_temp"] = await self.get_color_temp(device)
-            if device.hive_type == "colourtuneablelight":
-                mode = await self.get_color_mode(device)
-                device.status["mode"] = mode
-                if mode == "COLOUR":
-                    device.status["hs_color"] = await self.get_color(device)
-
+        cached = self._cached_if_busy(device)
+        if cached is not None:
             _LOGGER.debug(
-                "get_light - Light device data for %s: %s",
+                "get_light - Returning cached state for light %s (slow/busy poll).",
                 device.ha_name,
-                device.status,
             )
+            return cached
+        online = await self._update_online_status(device)
+        if not online:
+            return await self._report_offline(device, {"state": None})
 
-            return self.session.set_cached_device(device)
-        await self.session.helper.error_check(
-            device.device_id, "ERROR", device.device_data["online"]
+        self.session.helper.device_recovered(device.device_id)
+        _LOGGER.debug("get_light - Updating light data for %s.", device.ha_name)
+        data = self.session.data.devices[device.device_id]
+        device.status = {
+            "state": await self.get_state(device),
+            "brightness": await self.get_brightness(device),
+        }
+        self._apply_device_props(device, data, online)
+        device.attributes = await self.session.attr.state_attributes(
+            device.device_id, device.hive_type
         )
-        device.status = device.status or {"state": None}
-        return device
+
+        if device.hive_type in ("tuneablelight", "colourtuneablelight"):
+            device.status["color_temp"] = await self.get_color_temp(device)
+        if device.hive_type == "colourtuneablelight":
+            mode = await self.get_color_mode(device)
+            device.status["mode"] = mode
+            if mode == "COLOUR":
+                device.status["hs_color"] = await self.get_color(device)
+
+        _LOGGER.debug(
+            "get_light - Light device data for %s: %s",
+            device.ha_name,
+            device.status,
+        )
+        return self.session.set_cached_device(device)
 
     async def turn_on(
         self,

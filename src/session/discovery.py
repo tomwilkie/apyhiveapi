@@ -10,7 +10,7 @@ from typing import Any
 
 from ..helper.const import DEVICES, EXPECTED_DEVICE_DATA_LENGTH, HIVE_TYPES, PRODUCTS
 from ..helper.hive_exceptions import HiveConnectionError, HiveUnknownConfiguration
-from ..helper.hivedataclasses import Device
+from ..helper.hivedataclasses import Device, EntityConfig
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
 
@@ -80,11 +80,8 @@ class DiscoveryMixin:
                 )
             else:
                 device_data = self.helper.get_device_data(data)
-                device_name = (
-                    device_data["state"]["name"]
-                    if device_data["state"]["name"] != "Receiver"
-                    else "Heating"
-                )
+                state_name = device_data["state"]["name"]
+                device_name = "Heating" if state_name == "Receiver" else state_name
 
                 ha_name = kwargs.get("ha_name", "")
                 if ha_name.startswith(" "):
@@ -186,21 +183,21 @@ class DiscoveryMixin:
         if scan_interval is not None:
             await self.update_interval(scan_interval)  # type: ignore[attr-defined]
 
-        if config != {}:
-            if "tokens" in config and not self.config.file:
+        if config and not self.config.file:
+            if "tokens" in config:
                 _LOGGER.debug("start_session - Updating tokens from config")
                 await self.update_tokens(config["tokens"], False)  # type: ignore[attr-defined]
 
-            if "username" in config and not self.config.file:
+            if "username" in config:
                 self.auth.username = config["username"]
 
-            if "password" in config and not self.config.file:
+            if "password" in config:
                 self.auth.password = config["password"]
 
-            if "device_data" in config and not self.config.file:
+            if "device_data" in config:
                 self._apply_device_data(config["device_data"])
 
-            if not self.config.file and "tokens" not in config:
+            if "tokens" not in config:
                 raise HiveUnknownConfiguration
 
         fetched = await self.get_devices("No_ID")  # type: ignore[attr-defined]
@@ -214,6 +211,18 @@ class DiscoveryMixin:
             raise HiveUnknownConfiguration
 
         return await self.create_devices()
+
+    @staticmethod
+    def _entity_kwargs(entity_config: EntityConfig) -> dict[str, Any]:
+        """Return the ``add_list`` keyword arguments that an entity config sets."""
+        kwargs: dict[str, Any] = {}
+        if entity_config.ha_name:
+            kwargs["ha_name"] = entity_config.ha_name
+        if entity_config.hive_type:
+            kwargs["hive_type"] = entity_config.hive_type
+        if entity_config.category:
+            kwargs["category"] = entity_config.category
+        return kwargs
 
     async def create_devices(  # noqa: PLR0912, PLR0915
         self,
@@ -233,28 +242,23 @@ class DiscoveryMixin:
         self.device_list["switch"] = []
         self.device_list["water_heater"] = []
 
-        hive_type = HIVE_TYPES["Thermo"] + HIVE_TYPES["Sensor"]
-
         # Find hub device first
-        for a_device in self.data["devices"]:
-            if self.data["devices"][a_device]["type"] == "hub":
-                self.hub_id = a_device
-                hub_name = (
-                    self.data["devices"][a_device]
-                    .get("state", {})
-                    .get("name", a_device)
-                )
+        for device_id, device in self.data["devices"].items():
+            if device["type"] == "hub":
+                self.hub_id = device_id
+                hub_name = device.get("state", {}).get("name", device_id)
                 _LOGGER.debug(
-                    "create_devices - Found hub device: %s (ID: %s)", hub_name, a_device
+                    "create_devices - Found hub device: %s (ID: %s)",
+                    hub_name,
+                    device_id,
                 )
                 break
         else:
             _LOGGER.warning("create_devices - No hub device found in device list")
 
         # Process devices
-        device_count = 0
-        for a_device in self.data["devices"]:
-            d = self.data.devices[a_device]
+        battery_types = HIVE_TYPES["Thermo"] + HIVE_TYPES["Sensor"]
+        for a_device, d in self.data["devices"].items():
             device_name = d.get("state", {}).get("name", a_device)
             device_type = d.get("type", "Unknown")
             _LOGGER.debug(
@@ -265,13 +269,7 @@ class DiscoveryMixin:
             )
 
             for entity_config in DEVICES.get(device_type, []):
-                kwargs = {}
-                if entity_config.ha_name:
-                    kwargs["ha_name"] = entity_config.ha_name
-                if entity_config.hive_type:
-                    kwargs["hive_type"] = entity_config.hive_type
-                if entity_config.category:
-                    kwargs["category"] = entity_config.category
+                kwargs = self._entity_kwargs(entity_config)
                 try:
                     self.add_list(entity_config.entity_type, d, **kwargs)
                 except (KeyError, TypeError, AttributeError) as e:
@@ -281,21 +279,18 @@ class DiscoveryMixin:
                         str(e),
                     )
 
-            if device_type in hive_type:
+            if device_type in battery_types:
                 self.config.battery.add(d.get("id", a_device))
                 _LOGGER.debug(
                     "create_devices - Added device %s to battery monitoring list",
                     device_name,
                 )
 
-            device_count += 1
-
         # Process actions
         _LOGGER.debug(
             "create_devices - Processing %d actions", len(self.data["actions"])
         )
-        for action_id in self.data["actions"]:
-            action = self.data["actions"][action_id]
+        for action_id, action in self.data["actions"].items():
             try:
                 self.add_list(
                     "switch", action, ha_name=action["name"], hive_type="action"
@@ -308,7 +303,7 @@ class DiscoveryMixin:
                 )
 
         # Process products
-        hive_type = HIVE_TYPES["Heating"] + HIVE_TYPES["Switch"] + HIVE_TYPES["Light"]
+        mode_types = HIVE_TYPES["Heating"] + HIVE_TYPES["Switch"] + HIVE_TYPES["Light"]
         product_count = 0
         for a_product, p in self.data.products.items():
             if "error" in p:
@@ -335,13 +330,7 @@ class DiscoveryMixin:
                 continue
 
             for entity_config in PRODUCTS.get(product_type, []):
-                kwargs = {}
-                if entity_config.ha_name:
-                    kwargs["ha_name"] = entity_config.ha_name
-                if entity_config.hive_type:
-                    kwargs["hive_type"] = entity_config.hive_type
-                if entity_config.category:
-                    kwargs["category"] = entity_config.category
+                kwargs = self._entity_kwargs(entity_config)
                 if entity_config.entity_type == "climate":
                     kwargs["temperature_unit"] = self.data["user"].get(
                         "temperatureUnit"
@@ -357,7 +346,7 @@ class DiscoveryMixin:
                         e,
                     )
 
-            if product_type in hive_type:
+            if product_type in mode_types:
                 self.config.mode.add(p.get("id", a_product))
                 _LOGGER.debug(
                     "create_devices - Added product %s to mode list", product_name
@@ -369,7 +358,7 @@ class DiscoveryMixin:
             "Device discovery completed: %d devices, %d products processed. "
             "Found: %d parent, %d binary_sensor, %d climate,"
             " %d light, %d sensor, %d switch, %d water_heater",
-            device_count,
+            len(self.data["devices"]),
             product_count,
             len(self.device_list.get("parent", [])),
             len(self.device_list.get("binary_sensor", [])),

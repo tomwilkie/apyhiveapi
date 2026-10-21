@@ -61,7 +61,7 @@ class HiveApiAsync:
     async def request(self, method: str, url: str, **kwargs) -> ClientResponse:
         """Make a request."""
         _LOGGER.debug("API %s request to %s", method.upper(), url)
-        data = kwargs.get("data", None)
+        data = kwargs.get("data")
 
         headers = {
             "content-type": "application/json",
@@ -71,16 +71,12 @@ class HiveApiAsync:
         try:
             headers["Authorization"] = self.session.tokens.token_data["token"]
         except KeyError as exc:
-            if "sso" in url:
-                pass
-            else:
+            if "sso" not in url:
                 raise NoApiToken from exc
 
         auth_token = headers.get("Authorization", "")
         _LOGGER.debug(
-            "Using token (len=%d, tail=…%s)",
-            len(auth_token),
-            auth_token[-4:] if len(auth_token) >= 4 else auth_token,  # noqa: PLR2004
+            "Using token (len=%d, tail=…%s)", len(auth_token), auth_token[-4:]
         )
 
         timeout = ClientTimeout(total=self.timeout)
@@ -123,8 +119,8 @@ class HiveApiAsync:
         json_return: dict = {}
         try:
             resp = await self.request(method, url, data=data)
-            json_return.update({"original": resp.status})
-            json_return.update({"parsed": await resp.json(content_type=None)})
+            json_return["original"] = resp.status
+            json_return["parsed"] = await resp.json(content_type=None)
         except asyncio.TimeoutError:
             _LOGGER.warning("Hive API request timed out calling %s", url)
             raise
@@ -132,6 +128,14 @@ class HiveApiAsync:
             await self.error()
 
         return json_return
+
+    async def _call_unless_file_mode(self, method: str, url: str, data=None) -> dict:
+        """Call a state-changing endpoint, or return a stub response in file mode."""
+        try:
+            await self.is_file_being_used()
+        except FileInUse:
+            return {"original": "file"}
+        return await self._call_endpoint(method, url, data=data)
 
     async def get_all(self):
         """Build and query all endpoint."""
@@ -176,21 +180,13 @@ class HiveApiAsync:
         _LOGGER.debug("set_state - Setting state for %s/%s: %s", n_type, n_id, kwargs)
         jsc = json.dumps(kwargs)
         url = self.urls["nodes"].format(n_type, n_id)
-        try:
-            await self.is_file_being_used()
-        except FileInUse:
-            return {"original": "file"}
-        return await self._call_endpoint("post", url, data=jsc)
+        return await self._call_unless_file_mode("post", url, data=jsc)
 
     async def set_action(self, n_id, data):
         """Set the state of a Action."""
         _LOGGER.debug("Setting action %s", n_id)
         url = self.urls["actions"] + "/" + n_id
-        try:
-            await self.is_file_being_used()
-        except FileInUse:
-            return {"original": "file"}
-        return await self._call_endpoint("put", url, data=data)
+        return await self._call_unless_file_mode("put", url, data=data)
 
     async def get_holiday_mode(self):
         """Get the current holiday mode configuration."""
@@ -211,20 +207,14 @@ class HiveApiAsync:
             temperature,
         )
         jsc = json.dumps({"start": start, "end": end, "temperature": temperature})
-        try:
-            await self.is_file_being_used()
-        except FileInUse:
-            return {"original": "file"}
-        return await self._call_endpoint("post", self.urls["holiday_mode"], data=jsc)
+        return await self._call_unless_file_mode(
+            "post", self.urls["holiday_mode"], data=jsc
+        )
 
     async def cancel_holiday_mode(self):
         """Cancel any scheduled or active holiday mode."""
         _LOGGER.debug("cancel_holiday_mode - Cancelling holiday mode.")
-        try:
-            await self.is_file_being_used()
-        except FileInUse:
-            return {"original": "file"}
-        return await self._call_endpoint(
+        return await self._call_unless_file_mode(
             "delete", self.urls["holiday_mode"], data=json.dumps({})
         )
 

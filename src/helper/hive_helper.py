@@ -11,6 +11,21 @@ from .const import HIVE_TYPES
 
 _LOGGER = logging.getLogger(__name__)
 
+# Payload keys whose values are masked in logs. A key is masked when its
+# lower-cased name contains any of these, so "token" also covers keys such
+# as "accessToken" and "tokens".
+_SENSITIVE_KEY_PARTS = (
+    "password",
+    "token",
+    "secret",
+    "code",
+    "session",
+    "device_data",
+    "authenticationresult",
+    "responsemetadata",
+    "newdevicemetadata",
+)
+
 
 def epoch_time(date_time: Any, pattern: str, action: str) -> Any:
     """Convert between a datetime string and a Unix epoch integer.
@@ -64,21 +79,16 @@ class HiveHelper:
         except KeyError:
             pass
 
-        if not product_name and not device_name:
-            _LOGGER.warning(
-                "get_device_name - No product or device name found for ID: %s", n_id
-            )
-
         if product_name:
-            final_name = product_name
-        elif device_name:
-            final_name = device_name
-        elif n_id == "No_ID":
-            final_name = "Hive"
-        else:
-            final_name = n_id
-
-        return final_name
+            return product_name
+        if device_name:
+            return device_name
+        _LOGGER.warning(
+            "get_device_name - No product or device name found for ID: %s", n_id
+        )
+        if n_id == "No_ID":
+            return "Hive"
+        return n_id
 
     def device_recovered(self, n_id: str):
         """Register that a device has recovered from being offline.
@@ -86,13 +96,10 @@ class HiveHelper:
         Args:
             n_id (str): ID of the device.
         """
-        # name = HiveHelper.get_device_name(n_id)
-        if n_id in self.session.config.error_list:
-            self.session.config.error_list.pop(n_id)
+        self.session.config.error_list.pop(n_id, None)
 
     async def error_check(self, n_id, _n_type, error_type, **_kwargs):
         """Error has occurred."""
-        message = None
         name = await self.get_device_name(n_id)
         device_name = name if isinstance(name, str) else n_id
 
@@ -100,12 +107,12 @@ class HiveHelper:
             message = "Device offline could not update entity - " + str(device_name)
             if n_id not in self.session.config.error_list:
                 _LOGGER.warning(message)
-                self.session.config.error_list.update({n_id: datetime.datetime.now()})
+                self.session.config.error_list[n_id] = datetime.datetime.now()
         elif error_type == "Failed":
             message = "ERROR - No data found for device - " + str(device_name)
             if n_id not in self.session.config.error_list:
                 _LOGGER.error(message)
-                self.session.config.error_list.update({n_id: datetime.datetime.now()})
+                self.session.config.error_list[n_id] = datetime.datetime.now()
 
     def get_device_from_id(self, n_id: str):
         """Get product/device data from ID.
@@ -156,27 +163,24 @@ class HiveHelper:
         product_type = product["type"]
         if product_type in ("heating", "hotwater"):
             product_zone = product.get("props", {}).get("zone")
-            for a_device in self.session.data.devices:
-                if self.session.data.devices[a_device]["type"] in HIVE_TYPES["Thermo"]:
-                    device_zone = (
-                        self.session.data.devices[a_device].get("props", {}).get("zone")
-                    )
+            for candidate in self.session.data.devices.values():
+                if candidate["type"] in HIVE_TYPES["Thermo"]:
+                    device_zone = candidate.get("props", {}).get("zone")
                     if product_zone and device_zone and product_zone == device_zone:
-                        device = self.session.data.devices[a_device]
+                        device = candidate
         elif product_type == "trvcontrol":
-            trv_present = len(product["props"]["trvs"]) > 0
-            if trv_present:
-                device = self.session.data.devices[product["props"]["trvs"][0]]
+            trvs = product["props"]["trvs"]
+            if len(trvs) > 0:
+                device = self.session.data.devices[trvs[0]]
             else:
                 _LOGGER.error(
                     "get_device_data - No TRVs found for product %s", product_id
                 )
                 raise KeyError
-        elif (
+        elif product_type == "sense" or (
             product_type == "warmwhitelight" and product["props"]["model"] == "SIREN001"
         ):
-            device = self.session.data.devices[product["parent"]]
-        elif product_type == "sense":
+            # Hive Sense and sirens use their parent device's data.
             device = self.session.data.devices[product["parent"]]
         else:
             device = self.session.data.devices[product["id"]]
@@ -196,8 +200,7 @@ class HiveHelper:
         converted_time = datetime.datetime.strptime(
             str(hours_converted) + ":" + str(minutes_converted), "%H:%M"
         )
-        converted_time_string = converted_time.strftime("%H:%M")
-        return converted_time_string
+        return converted_time.strftime("%H:%M")
 
     def get_schedule_nnl(self, hive_api_schedule: dict):  # pylint: disable=too-many-locals
         """Get the schedule now, next and later of a given nodes schedule.
@@ -234,9 +237,7 @@ class HiveHelper:
         for day_index, day_name in enumerate(days_rolling_list):
             current_day_schedule = hive_api_schedule[day_name]
             current_day_schedule_sorted = sorted(
-                current_day_schedule,
-                key=operator.itemgetter("start"),
-                reverse=False,
+                current_day_schedule, key=operator.itemgetter("start")
             )
             _LOGGER.debug(
                 "get_schedule_nnl - Processing day %s with %d schedule slots",
@@ -259,9 +260,7 @@ class HiveHelper:
                 full_schedule_list.append(slot_copy)
 
         fsl_sorted = sorted(
-            full_schedule_list,
-            key=operator.itemgetter("Start_DateTime"),
-            reverse=False,
+            full_schedule_list, key=operator.itemgetter("Start_DateTime")
         )
 
         if len(fsl_sorted) >= 3:  # noqa: PLR2004
@@ -269,9 +268,7 @@ class HiveHelper:
             schedule_next = fsl_sorted[0]
             schedule_later = fsl_sorted[1]
 
-            schedule_now["Start_DateTime"] = schedule_now[
-                "Start_DateTime"
-            ] - datetime.timedelta(days=7)
+            schedule_now["Start_DateTime"] -= datetime.timedelta(days=7)
 
             schedule_now["End_DateTime"] = schedule_next["Start_DateTime"]
             schedule_next["End_DateTime"] = schedule_later["Start_DateTime"]
@@ -315,22 +312,7 @@ class HiveHelper:
                 result: dict[str, Any] = {}
                 for key, value in node.items():
                     key_lower = key.lower()
-                    if any(
-                        part in key_lower
-                        for part in (
-                            "password",
-                            "token",
-                            "tokens",
-                            "secret",
-                            "code",
-                            "session",
-                            "accesstoken",
-                            "device_data",
-                            "authenticationresult",
-                            "responsemetadata",
-                            "newdevicemetadata",
-                        )
-                    ):
+                    if any(part in key_lower for part in _SENSITIVE_KEY_PARTS):
                         result[key] = _mask(value)
                     else:
                         result[key] = _walk(value)

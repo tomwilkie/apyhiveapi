@@ -2,7 +2,6 @@
 
 import json
 import logging
-from typing import Any
 
 from ..helper.compat_aliases import ActionCompatMixin
 from ..helper.const import HTTP_OK
@@ -21,14 +20,6 @@ class HiveAction(ActionCompatMixin, BaseDeviceHandler):
 
     action_type = "Actions"
 
-    def __init__(self, session: Any = None):
-        """Initialise Action.
-
-        Args:
-            session (object, optional): session to interact with hive account. Defaults to None.
-        """
-        self.session = session
-
     async def get_action(self, device: Device):
         """Action device to update.
 
@@ -38,14 +29,13 @@ class HiveAction(ActionCompatMixin, BaseDeviceHandler):
         Returns:
             dict: Updated device.
         """
-        if self.session.should_use_cached_data():
-            cached = self.session.get_cached_device(device)
-            if cached is not None:
-                _LOGGER.debug(
-                    "Returning cached state for action %s (slow/busy poll).",
-                    device.ha_name,
-                )
-                return cached
+        cached = self._cached_if_busy(device)
+        if cached is not None:
+            _LOGGER.debug(
+                "Returning cached state for action %s (slow/busy poll).",
+                device.ha_name,
+            )
+            return cached
         if device.hive_id in self.session.data.actions:
             device.status = {"state": await self.get_state(device)}
             device.device_data = {}
@@ -61,15 +51,11 @@ class HiveAction(ActionCompatMixin, BaseDeviceHandler):
         Returns:
             str: Return state.
         """
-        final = None
-
         try:
-            data = self.session.data.actions[device.hive_id]
-            final = data["enabled"]
+            return self.session.data.actions[device.hive_id]["enabled"]
         except KeyError as e:
             _LOGGER.error(e)
-
-        return final
+        return None
 
     async def _set_action_state(self, device: Device, enabled: bool) -> bool:
         """Set action enabled/disabled state.
@@ -81,23 +67,22 @@ class HiveAction(ActionCompatMixin, BaseDeviceHandler):
         Returns:
             bool: True if successful.
         """
-        final = False
+        if device.hive_id not in self.session.data.actions:
+            return False
 
-        if device.hive_id in self.session.data.actions:
-            _LOGGER.debug(
-                "%s action %s.",
-                "Enabling" if enabled else "Disabling",
-                device.ha_name,
-            )
-            await self.session.hive_refresh_tokens()
-            data = self.session.data.actions[device.hive_id].copy()
-            data.update({"enabled": enabled})
-            resp = await self.session.api.set_action(device.hive_id, json.dumps(data))
-            if resp["original"] == HTTP_OK:
-                final = True
-                await self.session.get_devices(device.hive_id)
-
-        return final
+        _LOGGER.debug(
+            "%s action %s.",
+            "Enabling" if enabled else "Disabling",
+            device.ha_name,
+        )
+        await self.session.hive_refresh_tokens()
+        data = self.session.data.actions[device.hive_id].copy()
+        data["enabled"] = enabled
+        resp = await self.session.api.set_action(device.hive_id, json.dumps(data))
+        if resp["original"] != HTTP_OK:
+            return False
+        await self.session.get_devices(device.hive_id)
+        return True
 
     async def set_status_on(self, device: Device):
         """Set action turn on.

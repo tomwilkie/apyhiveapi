@@ -187,12 +187,8 @@ class HiveAuth:
             "SRP_A": long_to_hex(self.large_a_value),
         }
         if self.client_secret is not None:
-            auth_params.update(
-                {
-                    "SECRET_HASH": self.get_secret_hash(
-                        self.username, self._client_id, self.client_secret
-                    )
-                }
+            auth_params["SECRET_HASH"] = self.get_secret_hash(
+                self.username, self._client_id, self.client_secret
             )
         return auth_params
 
@@ -286,12 +282,8 @@ class HiveAuth:
             "DEVICE_KEY": self.device_key,
         }
         if self.client_secret is not None:
-            response.update(
-                {
-                    "SECRET_HASH": self.get_secret_hash(
-                        username, self._client_id, self.client_secret
-                    )
-                }
+            response["SECRET_HASH"] = self.get_secret_hash(
+                username, self._client_id, self.client_secret
             )
         return response
 
@@ -328,12 +320,8 @@ class HiveAuth:
             "PASSWORD_CLAIM_SIGNATURE": signature_string.decode("utf-8"),
         }
         if self.client_secret is not None:
-            response.update(
-                {
-                    "SECRET_HASH": self.get_secret_hash(
-                        self.username, self._client_id, self.client_secret
-                    )
-                }
+            response["SECRET_HASH"] = self.get_secret_hash(
+                self.username, self._client_id, self.client_secret
             )
 
         return response
@@ -440,14 +428,12 @@ class HiveAuth:
                     "USERNAME": self.user_id,
                 },
             )
-            if "NewDeviceMetadata" in result["AuthenticationResult"]:
-                self.access_token = result["AuthenticationResult"]["AccessToken"]
-                self.device_group_key = result["AuthenticationResult"][
-                    "NewDeviceMetadata"
-                ]["DeviceGroupKey"]
-                self.device_key = result["AuthenticationResult"]["NewDeviceMetadata"][
-                    "DeviceKey"
-                ]
+            auth_result = result["AuthenticationResult"]
+            if "NewDeviceMetadata" in auth_result:
+                self.access_token = auth_result["AccessToken"]
+                new_device = auth_result["NewDeviceMetadata"]
+                self.device_group_key = new_device["DeviceGroupKey"]
+                self.device_key = new_device["DeviceKey"]
         except botocore.exceptions.ClientError as err:
             if err.__class__.__name__ in (
                 "NotAuthorizedException",
@@ -521,7 +507,7 @@ class HiveAuth:
         result = None
         auth_params: dict[str, str] = {"REFRESH_TOKEN": token}
         if self.device_key is not None:
-            auth_params = {"REFRESH_TOKEN": token, "DEVICE_KEY": self.device_key}
+            auth_params["DEVICE_KEY"] = self.device_key
         try:
             result = self.client.initiate_auth(
                 ClientId=self._client_id,

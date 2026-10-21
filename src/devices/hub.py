@@ -2,7 +2,6 @@
 
 import logging
 from datetime import datetime
-from typing import Any
 
 from ..helper.const import HIVETOHA, HTTP_OK
 from ..helper.device_handler_base import BaseDeviceHandler
@@ -20,14 +19,6 @@ class HiveHub(BaseDeviceHandler):
 
     hub_type = "Hub"
     log_type = "Sensor"
-
-    def __init__(self, session: Any = None):
-        """Initialise hub.
-
-        Args:
-            session (object, optional): session to interact with Hive account. Defaults to None.
-        """
-        self.session = session
 
     async def get_smoke_status(self, device: Device):
         """Get the hub smoke status.

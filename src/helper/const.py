@@ -61,6 +61,45 @@ HIVE_TYPES = {
     "Switch": ["activeplug"],
 }
 
+
+def _diagnostic_sensor(ha_name: str, hive_type: str) -> EntityConfig:
+    """Return the config for a diagnostic sensor entity."""
+    return EntityConfig(
+        entity_type="sensor",
+        ha_name=ha_name,
+        hive_type=hive_type,
+        category="diagnostic",
+    )
+
+
+def _heating_sensors() -> list[EntityConfig]:
+    """Return the diagnostic sensors shared by heating zones and TRV controls."""
+    return [
+        _diagnostic_sensor(" Current Temperature", "Heating_Current_Temperature"),
+        _diagnostic_sensor(" Target Temperature", "Heating_Target_Temperature"),
+        _diagnostic_sensor(" State", "Heating_State"),
+        _diagnostic_sensor(" Mode", "Heating_Mode"),
+        _diagnostic_sensor(" Boost", "Heating_Boost"),
+    ]
+
+
+def _light_entities() -> list[EntityConfig]:
+    """Return the entities created for every type of Hive light."""
+    return [
+        EntityConfig(entity_type="light"),
+        _diagnostic_sensor(" Mode", "Mode"),
+        _diagnostic_sensor(" Availability", "Availability"),
+    ]
+
+
+def _battery_and_availability_sensors() -> list[EntityConfig]:
+    """Return the sensors created for battery-powered devices."""
+    return [
+        _diagnostic_sensor(" Battery Level", "Battery"),
+        _diagnostic_sensor(" Availability", "Availability"),
+    ]
+
+
 PRODUCTS = {
     "sense": [
         EntityConfig(
@@ -85,165 +124,27 @@ PRODUCTS = {
             hive_type="Heating_Heat_On_Demand",
             category="config",
         ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Current Temperature",
-            hive_type="Heating_Current_Temperature",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Target Temperature",
-            hive_type="Heating_Target_Temperature",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" State",
-            hive_type="Heating_State",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Mode",
-            hive_type="Heating_Mode",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Boost",
-            hive_type="Heating_Boost",
-            category="diagnostic",
-        ),
+        *_heating_sensors(),
     ],
-    "trvcontrol": [
-        EntityConfig(entity_type="climate"),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Current Temperature",
-            hive_type="Heating_Current_Temperature",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Target Temperature",
-            hive_type="Heating_Target_Temperature",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" State",
-            hive_type="Heating_State",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Mode",
-            hive_type="Heating_Mode",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Boost",
-            hive_type="Heating_Boost",
-            category="diagnostic",
-        ),
-    ],
+    "trvcontrol": [EntityConfig(entity_type="climate"), *_heating_sensors()],
     "hotwater": [
         EntityConfig(entity_type="water_heater"),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name="Hotwater State",
-            hive_type="Hotwater_State",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name="Hotwater Mode",
-            hive_type="Hotwater_Mode",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name="Hotwater Boost",
-            hive_type="Hotwater_Boost",
-            category="diagnostic",
-        ),
+        _diagnostic_sensor("Hotwater State", "Hotwater_State"),
+        _diagnostic_sensor("Hotwater Mode", "Hotwater_Mode"),
+        _diagnostic_sensor("Hotwater Boost", "Hotwater_Boost"),
     ],
     "activeplug": [
         EntityConfig(entity_type="switch"),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Mode",
-            hive_type="Mode",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Availability",
-            hive_type="Availability",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Power",
-            hive_type="Power",
-            category="diagnostic",
-        ),
+        _diagnostic_sensor(" Mode", "Mode"),
+        _diagnostic_sensor(" Availability", "Availability"),
+        _diagnostic_sensor(" Power", "Power"),
     ],
-    "warmwhitelight": [
-        EntityConfig(entity_type="light"),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Mode",
-            hive_type="Mode",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Availability",
-            hive_type="Availability",
-            category="diagnostic",
-        ),
-    ],
-    "tuneablelight": [
-        EntityConfig(entity_type="light"),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Mode",
-            hive_type="Mode",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Availability",
-            hive_type="Availability",
-            category="diagnostic",
-        ),
-    ],
-    "colourtuneablelight": [
-        EntityConfig(entity_type="light"),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Mode",
-            hive_type="Mode",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Availability",
-            hive_type="Availability",
-            category="diagnostic",
-        ),
-    ],
+    "warmwhitelight": _light_entities(),
+    "tuneablelight": _light_entities(),
+    "colourtuneablelight": _light_entities(),
     "motionsensor": [
         EntityConfig(entity_type="binary_sensor"),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Current Temperature",
-            hive_type="Current_Temperature",
-            category="diagnostic",
-        ),
+        _diagnostic_sensor(" Current Temperature", "Current_Temperature"),
     ],
     "contactsensor": [
         EntityConfig(entity_type="binary_sensor"),
@@ -251,20 +152,7 @@ PRODUCTS = {
 }
 
 DEVICES = {
-    "contactsensor": [
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Battery Level",
-            hive_type="Battery",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Availability",
-            hive_type="Availability",
-            category="diagnostic",
-        ),
-    ],
+    "contactsensor": _battery_and_availability_sensors(),
     "hub": [
         EntityConfig(
             entity_type="binary_sensor",
@@ -273,20 +161,7 @@ DEVICES = {
             category="diagnostic",
         ),
     ],
-    "motionsensor": [
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Battery Level",
-            hive_type="Battery",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Availability",
-            hive_type="Availability",
-            category="diagnostic",
-        ),
-    ],
+    "motionsensor": _battery_and_availability_sensors(),
     "sense": [
         EntityConfig(
             entity_type="binary_sensor",
@@ -294,32 +169,6 @@ DEVICES = {
             hive_type="Connectivity",
         ),
     ],
-    "thermostatui": [
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Battery Level",
-            hive_type="Battery",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Availability",
-            hive_type="Availability",
-            category="diagnostic",
-        ),
-    ],
-    "trv": [
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Battery Level",
-            hive_type="Battery",
-            category="diagnostic",
-        ),
-        EntityConfig(
-            entity_type="sensor",
-            ha_name=" Availability",
-            hive_type="Availability",
-            category="diagnostic",
-        ),
-    ],
+    "thermostatui": _battery_and_availability_sensors(),
+    "trv": _battery_and_availability_sensors(),
 }

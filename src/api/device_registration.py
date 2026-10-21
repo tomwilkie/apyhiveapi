@@ -144,12 +144,8 @@ class DeviceRegistrationMixin:
             "DEVICE_KEY": self.device_key,
         }
         if self.client_secret is not None:
-            response.update(
-                {
-                    "SECRET_HASH": self.get_secret_hash(
-                        username, self._client_id, self.client_secret
-                    )
-                }
+            response["SECRET_HASH"] = self.get_secret_hash(
+                username, self._client_id, self.client_secret
             )
         return response
 
@@ -167,12 +163,11 @@ class DeviceRegistrationMixin:
         if device_name is None:
             device_name = socket.gethostname()
 
-        result = None
         try:
             device_secret_verifier_config = self.generate_hash_device(
                 self.device_group_key, self.device_key
             )
-            result = await self.loop.run_in_executor(
+            return await self.loop.run_in_executor(
                 None,
                 functools.partial(
                     self.client.confirm_device,
@@ -190,15 +185,12 @@ class DeviceRegistrationMixin:
         except botocore.exceptions.EndpointConnectionError as err:
             raise HiveApiError from err
 
-        return result
-
     async def update_device_status(self):
         """Update Device Hive."""
         if self.client is None:
             await self.async_init()  # type: ignore[attr-defined]
-        result = None
         try:
-            result = await self.loop.run_in_executor(
+            return await self.loop.run_in_executor(
                 None,
                 functools.partial(
                     self.client.update_device_status,
@@ -209,8 +201,6 @@ class DeviceRegistrationMixin:
             )
         except botocore.exceptions.EndpointConnectionError as err:
             raise HiveApiError from err
-
-        return result
 
     async def get_device_data(self):
         """Get key device information for device authentication.
@@ -320,10 +310,8 @@ class DeviceRegistrationMixin:
         """Forget device registered with Hive."""
         if self.client is None:
             await self.async_init()  # type: ignore[attr-defined]
-        result = None
-
         try:
-            result = await self.loop.run_in_executor(
+            return await self.loop.run_in_executor(
                 None,
                 functools.partial(
                     self.client.forget_device,
@@ -331,9 +319,8 @@ class DeviceRegistrationMixin:
                     DeviceKey=device_key,
                 ),
             )
-        except botocore.exceptions.ClientError as err:
+        except (
+            botocore.exceptions.ClientError,
+            botocore.exceptions.EndpointConnectionError,
+        ) as err:
             raise HiveApiError from err
-        except botocore.exceptions.EndpointConnectionError as err:
-            raise HiveApiError from err
-
-        return result

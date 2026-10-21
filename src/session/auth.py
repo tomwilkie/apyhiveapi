@@ -94,39 +94,41 @@ class SessionAuthMixin:
         if "AuthenticationResult" in tokens:
             data = tokens.get("AuthenticationResult") or {}
             if "IdToken" in data:
-                self.tokens.token_data.update({"token": data["IdToken"]})
+                self.tokens.token_data["token"] = data["IdToken"]
             if "RefreshToken" in data:
-                self.tokens.token_data.update({"refreshToken": data["RefreshToken"]})
+                self.tokens.token_data["refreshToken"] = data["RefreshToken"]
             if "AccessToken" in data:
-                self.tokens.token_data.update({"accessToken": data["AccessToken"]})
+                self.tokens.token_data["accessToken"] = data["AccessToken"]
             if update_expiry_time:
                 self.tokens.token_created = datetime.now()
         elif "token" in tokens:
             data = tokens
-            self.tokens.token_data.update({"token": data["token"]})
+            self.tokens.token_data["token"] = data["token"]
             if "refreshToken" in data:
-                self.tokens.token_data.update({"refreshToken": data["refreshToken"]})
+                self.tokens.token_data["refreshToken"] = data["refreshToken"]
             if "accessToken" in data:
-                self.tokens.token_data.update({"accessToken": data["accessToken"]})
+                self.tokens.token_data["accessToken"] = data["accessToken"]
             if update_expiry_time:
                 self.tokens.token_created = datetime.now()
 
         if "ExpiresIn" in data:
             self.tokens.token_expiry = timedelta(seconds=data["ExpiresIn"])
 
+        id_token = self.tokens.token_data.get("token", "")
+        access_token = self.tokens.token_data.get("accessToken", "")
+        refresh_token = self.tokens.token_data.get("refreshToken", "")
         _LOGGER.debug(
             "update_tokens — Final session tokens: IdToken: len=%d tail=…%s | "
             "AccessToken: len=%d tail=…%s | "
             "RefreshToken: %s | "
             "ExpiresIn: %s | token_created: %s | token_expiry: %s",
-            len(self.tokens.token_data.get("token", "")),
-            self.tokens.token_data.get("token", "")[-4:],
-            len(self.tokens.token_data.get("accessToken", "")),
-            self.tokens.token_data.get("accessToken", "")[-4:],
+            len(id_token),
+            id_token[-4:],
+            len(access_token),
+            access_token[-4:],
             (
-                f"present (len={len(self.tokens.token_data.get('refreshToken', ''))}"
-                f" tail=…{self.tokens.token_data.get('refreshToken', '')[-4:]})"
-                if self.tokens.token_data.get("refreshToken")
+                f"present (len={len(refresh_token)} tail=…{refresh_token[-4:]})"
+                if refresh_token
                 else "not present"
             ),
             data.get("ExpiresIn", "N/A"),
@@ -152,7 +154,6 @@ class SessionAuthMixin:
         Returns:
             dict: result of the authentication request.
         """
-        result = None
         if not self.auth:
             raise HiveUnknownConfiguration
 
@@ -239,7 +240,6 @@ class SessionAuthMixin:
         Returns:
             dict: result of the authentication request with device data if registered.
         """
-        result = None
         if not self.auth:
             _LOGGER.error("2FA failed: authentication not initialised.")
             raise HiveUnknownConfiguration
@@ -326,71 +326,71 @@ class SessionAuthMixin:
         Returns:
             boolean: True/False if update was successful
         """
-        result = None
+        if self.config.file:
+            return None
 
-        if not self.config.file:
+        expiry_time = self.tokens.token_created + (
+            self.tokens.token_expiry * self._refresh_threshold
+        )
+        _LOGGER.debug(
+            "hive_refresh_tokens - Session token expiry time ( Current: %s | Expiry: %s)",
+            datetime.now(),
+            expiry_time,
+        )
+        if datetime.now() < expiry_time and not force_refresh:
+            return None
+
+        async with self._refresh_lock:
+            # Re-check after acquiring lock — another caller may have already refreshed
             expiry_time = self.tokens.token_created + (
                 self.tokens.token_expiry * self._refresh_threshold
             )
+            if datetime.now() < expiry_time and not force_refresh:
+                return None
+            actual_expiry = self.tokens.token_created + self.tokens.token_expiry
             _LOGGER.debug(
-                "hive_refresh_tokens - Session token expiry time ( Current: %s | Expiry: %s)",
-                datetime.now(),
+                "hive_refresh_tokens - Session Token created: %s | Actual expiry: %s | "
+                "Early refresh (×%s): %s | Now: %s | Force refresh: %s",
+                self.tokens.token_created,
+                actual_expiry,
+                self._refresh_threshold,
                 expiry_time,
+                datetime.now(),
+                force_refresh,
             )
-            if datetime.now() >= expiry_time or force_refresh:
-                async with self._refresh_lock:
-                    # Re-check after acquiring lock — another caller may have already refreshed
-                    expiry_time = self.tokens.token_created + (
-                        self.tokens.token_expiry * self._refresh_threshold
-                    )
-                    if datetime.now() < expiry_time and not force_refresh:
-                        return result
-                    actual_expiry = self.tokens.token_created + self.tokens.token_expiry
-                    _LOGGER.debug(
-                        "hive_refresh_tokens - Session Token created: %s | Actual expiry: %s | "
-                        "Early refresh (×%s): %s | Now: %s | Force refresh: %s",
-                        self.tokens.token_created,
-                        actual_expiry,
-                        self._refresh_threshold,
-                        expiry_time,
-                        datetime.now(),
-                        force_refresh,
-                    )
-                    try:
-                        result = await self.auth.refresh_token(
-                            self.tokens.token_data.get("refreshToken")
-                        )
+            result = None
+            try:
+                result = await self.auth.refresh_token(
+                    self.tokens.token_data.get("refreshToken")
+                )
 
-                        if result and "AuthenticationResult" in result:
-                            auth_keys = list(result["AuthenticationResult"].keys())
-                            _LOGGER.debug(
-                                "hive_refresh_tokens - Token refresh"
-                                " — AuthenticationResult keys: %s",
-                                auth_keys,
-                            )
-                            await self.update_tokens(result)
-                            new_expiry = (
-                                self.tokens.token_created + self.tokens.token_expiry
-                            )
-                            _LOGGER.debug(
-                                "hive_refresh_tokens - Session Token refresh"
-                                " successful. New expiry: %s",
-                                new_expiry,
-                            )
-                    except (HiveRefreshTokenExpired, HiveFailedToRefreshTokens) as exc:
-                        _LOGGER.warning(
-                            "Session Token refresh failed (%s), falling back to login.",
-                            type(exc).__name__,
-                        )
-                        if not force_refresh:
-                            await self._retry_login()
-                        else:
-                            _LOGGER.error(
-                                "Token refresh failed during retry attempt, giving up."
-                            )
-                            raise HiveReauthRequired from exc
-                    except HiveApiError:
-                        _LOGGER.error("API error during token refresh.")
-                        raise
+                if result and "AuthenticationResult" in result:
+                    auth_keys = list(result["AuthenticationResult"].keys())
+                    _LOGGER.debug(
+                        "hive_refresh_tokens - Token refresh"
+                        " — AuthenticationResult keys: %s",
+                        auth_keys,
+                    )
+                    await self.update_tokens(result)
+                    new_expiry = self.tokens.token_created + self.tokens.token_expiry
+                    _LOGGER.debug(
+                        "hive_refresh_tokens - Session Token refresh"
+                        " successful. New expiry: %s",
+                        new_expiry,
+                    )
+            except (HiveRefreshTokenExpired, HiveFailedToRefreshTokens) as exc:
+                _LOGGER.warning(
+                    "Session Token refresh failed (%s), falling back to login.",
+                    type(exc).__name__,
+                )
+                if force_refresh:
+                    _LOGGER.error(
+                        "Token refresh failed during retry attempt, giving up."
+                    )
+                    raise HiveReauthRequired from exc
+                await self._retry_login()
+            except HiveApiError:
+                _LOGGER.error("API error during token refresh.")
+                raise
 
         return result
