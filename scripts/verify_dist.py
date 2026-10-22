@@ -23,10 +23,6 @@ from pathlib import Path
 # Packages shipped by this distribution.
 FLAVOURS = ("apyhiveapi",)
 
-# Subpackages that must be present. Guards against the packages list in
-# pyproject.toml drifting behind the source layout.
-REQUIRED_SUBPACKAGES = ("api", "devices", "helper", "session")
-
 # Package data that must ship alongside the code.
 REQUIRED_DATA = {"apyhiveapi": ["data/data.json"]}
 
@@ -37,16 +33,14 @@ REQUIRED_ATTRS = {"apyhiveapi": ["Auth", "Hive", "HiveReauthRequired"]}
 # Runs inside the throwaway venv, so it must stay stdlib-only.
 PROBE = """
 import importlib
-import importlib.util
 import json
 import pathlib
 import pkgutil
 import sys
 
 flavours = json.loads(sys.argv[1])
-required_subpackages = json.loads(sys.argv[2])
-required_data = json.loads(sys.argv[3])
-required_attrs = json.loads(sys.argv[4])
+required_data = json.loads(sys.argv[2])
+required_attrs = json.loads(sys.argv[3])
 
 failures = []
 imported = 0
@@ -59,10 +53,6 @@ for flavour in flavours:
         continue
 
     root = top.__path__[0]
-    for sub in required_subpackages:
-        if not importlib.util.find_spec(f"{flavour}.{sub}"):
-            failures.append(f"{flavour}.{sub}: subpackage not shipped")
-
     for rel in required_data.get(flavour, []):
         if not (pathlib.Path(root) / rel).is_file():
             failures.append(f"{flavour}/{rel}: package data not shipped")
@@ -143,7 +133,6 @@ def main(argv: list[str]) -> int:
                 "-c",
                 PROBE,
                 json.dumps(FLAVOURS),
-                json.dumps(REQUIRED_SUBPACKAGES),
                 json.dumps(REQUIRED_DATA),
                 json.dumps(REQUIRED_ATTRS),
             ],
@@ -166,7 +155,7 @@ def main(argv: list[str]) -> int:
         for failure in failures:
             print(f"  - {failure}")
         print(
-            "\nIf a subpackage is missing, add it to `[tool.setuptools] packages` "
+            "\nIf package data is missing, check `[tool.setuptools]` "
             "in pyproject.toml.",
         )
         return 1

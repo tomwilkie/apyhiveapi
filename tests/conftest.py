@@ -3,9 +3,9 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from apyhiveapi import Hive
-from apyhiveapi.helper.hivedataclasses import Device, SessionConfig
-from apyhiveapi.helper.map import Map
+from apyhiveapi.models import Device, SessionConfig, SessionData
 
 
 @pytest.fixture
@@ -16,19 +16,15 @@ async def file_session():
         yield hive
 
 
-@pytest.fixture
-def fake_session():
-    """Lightweight stub session for module-level tests."""
+def make_session(products=None, devices=None, user=None):
+    """Return a mock Hive session with the attributes the handlers use."""
     session = MagicMock()
-    session.data = Map({"products": {}, "devices": {}, "user": {}})
+    session.data = SessionData(
+        products=products or {}, devices=devices or {}, user=user or {}
+    )
     session.config = SessionConfig()
-    session.helper = MagicMock()
-    session.helper.get_schedule_nnl = MagicMock(return_value={})
-    session.helper.device_recovered = MagicMock()
-    session.helper.error_check = AsyncMock()
-    session.attr = MagicMock()
-    session.attr.online_offline = AsyncMock(return_value=True)
-    session.attr.state_attributes = AsyncMock(return_value={})
+    session.device_recovered = MagicMock()
+    session.report_device_offline = MagicMock()
     session.api = MagicMock()
     session.api.set_state = AsyncMock(return_value={"original": 200, "parsed": {}})
     session.hive_refresh_tokens = AsyncMock()
@@ -39,9 +35,16 @@ def fake_session():
     return session
 
 
+@pytest.fixture
+def fake_session():
+    """Lightweight stub session for module-level tests."""
+    return make_session()
+
+
 def make_device(hive_id="prod-1", device_id="dev-1", hive_type="heating", **kwargs):
     """Build a Device with sensible defaults for tests."""
     ha_type = kwargs.pop("ha_type", "climate")
+    device_data = kwargs.pop("device_data", {"online": True})
     return Device(
         hive_id=hive_id,
         hive_name="Test",
@@ -49,6 +52,6 @@ def make_device(hive_id="prod-1", device_id="dev-1", hive_type="heating", **kwar
         ha_type=ha_type,
         device_id=device_id,
         device_name="Test",
-        device_data={"online": True},
+        device_data=device_data,
         **kwargs,
     )

@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/Pyhass/Pyhive/actions/workflows/ci.yml/badge.svg) ![PyPI](https://img.shields.io/pypi/v/pyhive-integration) ![Python](https://img.shields.io/pypi/pyversions/pyhive-integration) ![License](https://img.shields.io/github/license/Pyhass/Pyhive)
 
-An async Python library (`apyhiveapi`) for the [Hive](https://www.hivehome.com/) smart home platform. It exists to power the Hive integration for [Home Assistant](https://www.home-assistant.io/) and exposes exactly what that integration needs.
+An async Python library (`apyhiveapi`) for the [Hive](https://www.hivehome.com/) smart home platform. It exists to power the Hive integration for [Home Assistant](https://www.home-assistant.io/) and exposes exactly what that integration needs: Hive heating (thermostats and TRVs) and hot water.
 
 > **Package rename notice:** This package replaces the legacy `pyhiveapi` package on PyPI. The import name is `apyhiveapi`.
 
@@ -21,12 +21,10 @@ An async Python library (`apyhiveapi`) for the [Hive](https://www.hivehome.com/)
 
 | Device Type | Capabilities |
 | --- | --- |
-| **Heating** (thermostat, TRV) | Current / target temperature, mode (schedule / manual / off), boost on/off, heat-on-demand |
-| **Hot Water** | Mode (schedule / on / off), boost on/off, state |
-| **Lights** | On/off, brightness, colour temperature, full RGB colour, colour mode |
-| **Smart Plugs** | On/off, power usage |
-| **Sensors** | Motion, contact (open/close), battery level, hub connectivity |
-| **Hub / Sense** | Smoke, CO, dog bark, glass break detection |
+| **Heating** (thermostat, TRV) | Current / target temperature, mode (schedule / manual / off), boost on/off |
+| **Hot Water** | Mode (schedule / on / off), boost on/off |
+
+Lights, smart plugs, sensors and the hub are not supported: the Home Assistant integration this library serves does not use them.
 
 ---
 
@@ -118,14 +116,7 @@ await hive.heating.set_boost_off(device)
 # Hot water
 await hive.hotwater.set_mode(device, "MANUAL")
 await hive.hotwater.set_boost_on(device, 60)
-
-# Lights (brightness %, colour temperature in Kelvin, colour as (hue, saturation, 100))
-await hive.light.turn_on(device, 80, 4000, None)
-await hive.light.turn_off(device)
-
-# Smart plug and Heat on Demand
-await hive.switch.turn_on(device)
-await hive.switch.turn_off(device)
+await hive.hotwater.set_boost_off(device)
 
 # Refresh state (rate limited to the configured scan interval)
 await hive.update_data(device)
@@ -136,7 +127,7 @@ device = await hive.heating.get_climate(device)
 
 ## Offline / File-Based Testing
 
-Set `username="use@file.com"` to load device state from bundled JSON fixtures in `src/data/` instead of making live API calls. Useful for development without real Hive credentials.
+Set `username="use@file.com"` to load device state from the bundled JSON fixture in `src/apyhiveapi/data/` instead of making live API calls. Useful for development without real Hive credentials.
 
 ```python
 async with Hive(username="use@file.com", password="") as hive:

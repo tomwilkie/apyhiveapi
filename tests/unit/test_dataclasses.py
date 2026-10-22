@@ -1,9 +1,10 @@
-"""Unit tests for Device, SessionTokens, and SessionConfig dataclasses."""
+"""Unit tests for the Device, SessionData, SessionTokens and SessionConfig models."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from apyhiveapi.helper.hivedataclasses import Device, SessionConfig, SessionTokens
+
+from apyhiveapi.models import Device, SessionConfig, SessionData, SessionTokens
 
 # Test constants
 DEFAULT_MAGIC_VALUE = 42
@@ -74,11 +75,17 @@ class TestDevice:
         d = _make_device()
         assert d.get("nonexistent", DEFAULT_MAGIC_VALUE) == DEFAULT_MAGIC_VALUE
 
-    def test_missing_key_raises_keyerror(self):
-        """Test __getitem__ raises KeyError for unknown keys."""
-        d = _make_device()
-        with pytest.raises(KeyError):
-            _ = d["totally_unknown_key"]
+
+class TestSessionData:
+    """Tests for SessionData dataclass."""
+
+    def test_defaults_are_independent_empty_dicts(self):
+        first = SessionData()
+        second = SessionData()
+        first.products["p1"] = {}
+        assert second.products == {}
+        assert second.devices == {}
+        assert second.user == {}
 
 
 class TestSessionTokens:
@@ -89,10 +96,11 @@ class TestSessionTokens:
         t = SessionTokens()
         assert t.token_data == {}
 
-    def test_default_token_created_is_datetime_min(self):
-        """Test token_created defaults to datetime.min."""
+    def test_default_token_created_is_the_epoch(self):
+        """Test token_created defaults to the earliest aware UTC datetime."""
         t = SessionTokens()
-        assert t.token_created == datetime.min
+        assert t.token_created == datetime.min.replace(tzinfo=UTC)
+        assert t.token_created.tzinfo is UTC
 
     def test_default_token_expiry_is_one_hour(self):
         """Test token_expiry defaults to 3600 seconds."""
@@ -113,42 +121,12 @@ class TestSessionConfig:
         c = SessionConfig()
         assert c.scan_interval == timedelta(seconds=120)
 
-    def test_default_battery_is_empty_set(self):
-        """Test battery defaults to empty set."""
+    def test_default_last_update_is_aware(self):
+        """Test last_update defaults to an aware UTC datetime."""
         c = SessionConfig()
-        assert c.battery == set()
+        assert c.last_update.tzinfo is UTC
 
     def test_username_stored(self):
         """Test username can be set and retrieved."""
         c = SessionConfig(username="user@example.com")
         assert c.username == "user@example.com"
-
-
-class TestSessionConfigCollectionTypes:
-    """battery and mode must be sets for O(1) membership checks."""
-
-    def test_battery_is_set(self):
-        """SessionConfig.battery is a set (not a list)."""
-        config = SessionConfig()
-        assert isinstance(config.battery, set), (
-            f"Expected set, got {type(config.battery).__name__}"
-        )
-
-    def test_mode_is_set(self):
-        """SessionConfig.mode is a set (not a list)."""
-        config = SessionConfig()
-        assert isinstance(config.mode, set), (
-            f"Expected set, got {type(config.mode).__name__}"
-        )
-
-    def test_battery_supports_membership_check(self):
-        """Can check membership in battery using 'in' after add."""
-        config = SessionConfig()
-        config.battery.add("d1")
-        assert "d1" in config.battery
-
-    def test_mode_supports_membership_check(self):
-        """Can check membership in mode using 'in' after add."""
-        config = SessionConfig()
-        config.mode.add("p1")
-        assert "p1" in config.mode

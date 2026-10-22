@@ -1,7 +1,8 @@
 """Unit tests for the hive_exceptions hierarchy."""
 
 import pytest
-from apyhiveapi.helper.hive_exceptions import (
+
+from apyhiveapi.exceptions import (
     FileInUse,
     HiveApiError,
     HiveAuthCredentialError,

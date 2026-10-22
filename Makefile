@@ -52,8 +52,6 @@ help:
 	@echo "  set-temp DEVICE TEMP      Set a heating target temperature"
 	@echo "  boost DEVICE MINS [TEMP]  Start a boost (heating needs TEMP)"
 	@echo "  boost-off DEVICE          Cancel a boost"
-	@echo "  turn-on DEVICE            Turn a light or plug on"
-	@echo "  turn-off DEVICE           Turn a light or plug off"
 	@echo ""
 	@echo "Examples"
 	@echo "  make simulate-file INTERVAL=2 POLLS=8"

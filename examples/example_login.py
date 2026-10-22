@@ -20,17 +20,16 @@ Only the Hive account owner can log in. Guest accounts are not supported.
 import asyncio
 import getpass
 import json
-import os
 import sys
 from pathlib import Path
+from typing import Any
 
-from apyhiveapi import SMS_REQUIRED, Auth, Hive
-from apyhiveapi.helper.hive_exceptions import HiveInvalidDeviceAuthentication
+from apyhiveapi import SMS_REQUIRED, Auth, Hive, HiveInvalidDeviceAuthentication
 
 DEVICE_FILE = Path("hive_device.json")
 
 
-def load_device() -> dict:
+def load_device() -> dict[str, Any]:
     """Return the saved username and device credentials, or an empty dict."""
     if not DEVICE_FILE.exists():
         return {}
@@ -40,16 +39,16 @@ def load_device() -> dict:
         return {}
 
 
-def save_device(username: str, device_data: list) -> None:
+def save_device(username: str, device_data: list[str]) -> None:
     """Save the username and device credentials with owner-only permissions."""
     DEVICE_FILE.write_text(
         json.dumps({"username": username, "device_data": device_data}, indent=2),
         encoding="utf-8",
     )
-    os.chmod(DEVICE_FILE, 0o600)
+    DEVICE_FILE.chmod(0o600)
 
 
-def tokens_from(result: dict) -> dict:
+def tokens_from(result: dict[str, Any]) -> dict[str, str]:
     """Convert a Cognito AuthenticationResult into start_session tokens."""
     auth_result = result["AuthenticationResult"]
     return {
@@ -59,7 +58,9 @@ def tokens_from(result: dict) -> dict:
     }
 
 
-async def device_login(username: str, password: str, device_data: list) -> dict:
+async def device_login(
+    username: str, password: str, device_data: list[str]
+) -> dict[str, Any]:
     """Log in with saved device credentials. Returns {} if Hive rejects them."""
     auth = Auth(username, password, *device_data)
     try:
@@ -73,7 +74,7 @@ async def device_login(username: str, password: str, device_data: list) -> dict:
     return result if "AuthenticationResult" in result else {}
 
 
-async def sms_login(username: str, password: str) -> tuple[dict, list]:
+async def sms_login(username: str, password: str) -> tuple[dict[str, Any], list[str]]:
     """Log in with password + SMS code and register this machine as a device."""
     auth = Auth(username, password)
     result = await auth.login()
@@ -83,23 +84,25 @@ async def sms_login(username: str, password: str) -> tuple[dict, list]:
     if "AuthenticationResult" not in result:
         sys.exit(f"Login did not complete: {result.get('ChallengeName')}")
 
-    device_data: list = []
+    device_data: list[str] = []
     if auth.device_key:
         # Cognito ties the new tokens to this device. Without registering it
         # the refresh token is rejected and every login would need an SMS.
         await auth.device_registration()
-        device_data = list((await auth.get_device_data())[:3])
+        group_key, key, device_password = (await auth.get_device_data())[:3]
+        if group_key and key and device_password:
+            device_data = [group_key, key, device_password]
     return result, device_data
 
 
-async def build_config() -> dict:
+async def build_config() -> dict[str, Any]:
     """Log in (reusing saved device credentials when possible)."""
     stored = load_device()
     username = stored.get("username") or input("Hive email: ").strip()
     password = getpass.getpass("Hive password (hidden, not stored): ")
     device_data = stored.get("device_data") or []
 
-    result: dict = {}
+    result: dict[str, Any] = {}
     if device_data:
         print("Logging in with the saved device credentials (no SMS)...")
         result = await device_login(username, password, device_data)

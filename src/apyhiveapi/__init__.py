@@ -1,8 +1,8 @@
 """Async Python library for the Hive smart home API."""
 
-from .api.hive_auth_async import HiveAuthAsync as Auth
-from .helper.const import SMS_REQUIRED
-from .helper.hive_exceptions import (
+from apyhiveapi.auth import HiveAuth as Auth
+from apyhiveapi.const import SMS_REQUIRED
+from apyhiveapi.exceptions import (
     HiveApiError,
     HiveAuthCredentialError,
     HiveAuthError,
@@ -18,11 +18,13 @@ from .helper.hive_exceptions import (
     HiveRefreshTokenExpired,
     HiveUnknownConfiguration,
 )
-from .hive import Hive
+from apyhiveapi.hive import Hive
+from apyhiveapi.models import Device
 
 __all__ = [
     "SMS_REQUIRED",
     "Auth",
+    "Device",
     "Hive",
     "HiveApiError",
     "HiveAuthCredentialError",

@@ -1,9 +1,12 @@
-"""Hive API Module."""
+"""HTTP client for the Hive API."""
+
+from __future__ import annotations
 
 import json
 import logging
 import re
 import time
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from aiohttp import (
     ClientError,
@@ -13,14 +16,17 @@ from aiohttp import (
     web_exceptions,
 )
 
-from ..helper.const import HTTP_FORBIDDEN, HTTP_UNAUTHORIZED
-from ..helper.hive_exceptions import (
+from apyhiveapi.const import HTTP_FORBIDDEN, HTTP_UNAUTHORIZED
+from apyhiveapi.exceptions import (
     FileInUse,
     HiveApiError,
     HiveAuthError,
     HiveConnectionError,
     NoApiToken,
 )
+
+if TYPE_CHECKING:
+    from apyhiveapi.hive import Hive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,12 +39,25 @@ _REQUEST_ERRORS = (ClientError, OSError, RuntimeError, json.JSONDecodeError)
 _FIRST_SCRIPT = re.compile(r"<script[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
 _SSO_ASSIGNMENT = re.compile(r"""window\.(\w+)\s*=\s*(["'])(.*?)\2""")
 
+type JsonValue = str | int | float | bool | None
 
-class HiveApiAsync:
-    """Hive API Code."""
 
-    def __init__(self, hive_session=None, websession: ClientSession | None = None):
-        """Hive API initialisation."""
+class HiveApi:
+    """Calls to the Hive REST API and the SSO login page."""
+
+    def __init__(
+        self,
+        session: Hive | None = None,
+        websession: ClientSession | None = None,
+    ) -> None:
+        """Set up the client.
+
+        Args:
+            session: The Hive session whose tokens authenticate API calls. The
+                auth flow uses a client without one, for the login page only.
+            websession: The aiohttp session to use. One is created on first
+                use when none is given.
+        """
         self.base_url = "https://beekeeper.hivehome.com/1.0"
         self.urls = {
             "properties": "https://sso.hivehome.com/",
@@ -46,11 +65,7 @@ class HiveApiAsync:
             "nodes": f"{self.base_url}/nodes/{{0}}/{{1}}",
         }
         self.timeout = 5
-        self.json_return = {
-            "original": "No response to Hive API request",
-            "parsed": "No response to Hive API request",
-        }
-        self.session = hive_session
+        self.session = session
         self.websession = websession
 
     def _get_websession(self) -> ClientSession:
@@ -63,7 +78,7 @@ class HiveApiAsync:
             self.websession = ClientSession()
         return self.websession
 
-    async def get_login_info(self) -> dict | None:
+    async def get_login_info(self) -> dict[str, str] | None:
         """Fetch the Cognito pool details embedded in the Hive SSO login page.
 
         Returns:
@@ -83,8 +98,9 @@ class HiveApiAsync:
                 async with ClientSession() as websession:
                     page = await self._fetch_page(websession, url)
         except (ClientError, OSError) as err:
-            _LOGGER.error("Failed to get login info: %s", err)
-            raise HiveConnectionError("Could not reach the Hive login page") from err
+            _LOGGER.warning("Failed to get login info: %s", err)
+            message = "Could not reach the Hive login page"
+            raise HiveConnectionError(message) from err
 
         script = _FIRST_SCRIPT.search(page)
         script_text = script.group(1) if script else ""
@@ -98,7 +114,7 @@ class HiveApiAsync:
                 "REGION": sso_values["HiveSSOPoolId"],
             }
         except KeyError as err:
-            _LOGGER.error("Failed to get login info: missing %s", err)
+            _LOGGER.warning("Failed to get login info: missing %s", err)
             return None
         _LOGGER.debug("get_login_info - Login info extracted successfully")
         return login_data
@@ -112,11 +128,19 @@ class HiveApiAsync:
             )
             return await resp.text()
 
-    async def request(self, method: str, url: str, **kwargs) -> ClientResponse:
-        """Make a request."""
-        _LOGGER.debug("API %s request to %s", method.upper(), url)
-        data = kwargs.get("data")
+    async def request(
+        self, method: str, url: str, data: str | None = None
+    ) -> ClientResponse:
+        """Make an authenticated request and return the 2xx response.
 
+        Raises:
+            NoApiToken: The session has no token to send.
+            HiveAuthError: Hive rejected the token (401/403).
+            HiveApiError: Hive answered with any other non-2xx status.
+        """
+        _LOGGER.debug("API %s request to %s", method.upper(), url)
+        if self.session is None:
+            raise NoApiToken
         headers = {
             "content-type": "application/json",
             "Accept": "*/*",
@@ -129,7 +153,7 @@ class HiveApiAsync:
 
         auth_token = headers["Authorization"]
         _LOGGER.debug(
-            "Using token (len=%d, tail=…%s)", len(auth_token), auth_token[-4:]
+            "Using token (len=%d, tail=...%s)", len(auth_token), auth_token[-4:]
         )
 
         timeout = ClientTimeout(total=self.timeout)
@@ -140,7 +164,7 @@ class HiveApiAsync:
             resp_body = await resp.text()
             req_duration = time.monotonic() - req_start
             _LOGGER.debug(
-                "API %s %s completed in %.2fs — HTTP %s",
+                "API %s %s completed in %.2fs - HTTP %s",
                 method.upper(),
                 url,
                 req_duration,
@@ -151,25 +175,26 @@ class HiveApiAsync:
 
         if resp.status in (HTTP_UNAUTHORIZED, HTTP_FORBIDDEN):
             _LOGGER.error(
-                "Hive token rejected calling %s - HTTP %s — response: %s",
+                "Hive token rejected calling %s - HTTP %s - response: %s",
                 url,
                 resp.status,
                 resp_body[:200],
             )
-            raise HiveAuthError(
-                f"Token expired or forbidden calling {url} — HTTP {resp.status}"
-            )
+            message = f"Token expired or forbidden calling {url} - HTTP {resp.status}"
+            raise HiveAuthError(message)
         _LOGGER.error(
-            "Something has gone wrong calling %s - HTTP status is - %s — response: %s",
+            "Something has gone wrong calling %s - HTTP status is - %s - response: %s",
             url,
             resp.status,
             resp_body[:200],
         )
         raise HiveApiError
 
-    async def _call_endpoint(self, method: str, url: str, data=None) -> dict:
+    async def _call_endpoint(
+        self, method: str, url: str, data: str | None = None
+    ) -> dict[str, Any]:
         """Call an endpoint and return {"original": status, "parsed": json}."""
-        json_return: dict = {}
+        json_return: dict[str, Any] = {}
         try:
             resp = await self.request(method, url, data=data)
             json_return["original"] = resp.status
@@ -182,7 +207,9 @@ class HiveApiAsync:
 
         return json_return
 
-    async def _call_unless_file_mode(self, method: str, url: str, data=None) -> dict:
+    async def _call_unless_file_mode(
+        self, method: str, url: str, data: str | None = None
+    ) -> dict[str, Any]:
         """Call a state-changing endpoint, or return a stub response in file mode."""
         try:
             await self.is_file_being_used()
@@ -190,23 +217,25 @@ class HiveApiAsync:
             return {"original": "file"}
         return await self._call_endpoint(method, url, data=data)
 
-    async def get_all(self):
-        """Build and query all endpoint."""
+    async def get_all(self) -> dict[str, Any]:
+        """Fetch every product and device on the account."""
         return await self._call_endpoint("get", self.urls["all"])
 
-    async def set_state(self, n_type, n_id, **kwargs):
-        """Set the state of a Device."""
+    async def set_state(
+        self, n_type: str, n_id: str, **kwargs: JsonValue
+    ) -> dict[str, Any]:
+        """Set the state of a product."""
         _LOGGER.debug("set_state - Setting state for %s/%s: %s", n_type, n_id, kwargs)
         jsc = json.dumps(kwargs)
         url = self.urls["nodes"].format(n_type, n_id)
         return await self._call_unless_file_mode("post", url, data=jsc)
 
-    async def error(self):
-        """An error has occurred interacting with the Hive API."""
+    async def error(self) -> NoReturn:
+        """Report a failed request and raise an HTTP error for the caller."""
         _LOGGER.error("HTTP error occurred during Hive API interaction.")
         raise web_exceptions.HTTPError
 
-    async def is_file_being_used(self):
-        """Check if running in file mode."""
-        if self.session.config.file:
-            raise FileInUse()
+    async def is_file_being_used(self) -> None:
+        """Raise FileInUse when the session runs in file mode."""
+        if self.session is not None and self.session.config.file:
+            raise FileInUse

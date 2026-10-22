@@ -1,7 +1,6 @@
 """E2E integration tests using the bundled data.json fixture (use@file.com)."""
 
 # pylint: disable=redefined-outer-name
-import pytest
 
 
 class TestGetDeviceStatus:
@@ -15,39 +14,12 @@ class TestGetDeviceStatus:
         for field in ("current_temperature", "target_temperature", "mode", "boost"):
             assert field in updated.status
 
-    async def test_get_light_returns_state_and_brightness(self, file_session):
-        """Light status has state and brightness keys."""
-        device = file_session.device_list["light"][0]
-        updated = await file_session.light.get_light(device)
-        assert updated.status is not None
-        assert "state" in updated.status
-        assert "brightness" in updated.status
-
     async def test_get_water_heater_returns_current_operation(self, file_session):
         """Hot-water status has current_operation key."""
         device = file_session.device_list["water_heater"][0]
         updated = await file_session.hotwater.get_water_heater(device)
         assert updated.status is not None
         assert "current_operation" in updated.status
-
-    async def test_get_switch_returns_state(self, file_session):
-        """Switch status has state key."""
-        device = file_session.device_list["switch"][0]
-        updated = await file_session.switch.get_switch(device)
-        assert updated.status is not None
-        assert "state" in updated.status
-
-    async def test_get_sensor_returns_state(self, file_session):
-        """Contact/motion sensor status has state key."""
-        devices = file_session.device_list.get("binary_sensor", [])
-        sensor_devices = [
-            d for d in devices if d.hive_type in ("contactsensor", "motionsensor")
-        ]
-        if not sensor_devices:
-            pytest.skip("No contact/motion sensor in fixture")
-        updated = await file_session.sensor.get_sensor(sensor_devices[0])
-        assert updated.status is not None
-        assert "state" in updated.status
 
 
 class TestRateLimitingAndCaching:
@@ -70,7 +42,10 @@ class TestRateLimitingAndCaching:
 
 
 class TestDeviceListIntegrity:
-    """Tests that create_devices populated all expected entity types."""
+    """Tests that create_devices populated the expected entity types."""
+
+    async def test_only_supported_entity_types_are_created(self, file_session):
+        assert set(file_session.device_list) == {"parent", "climate", "water_heater"}
 
     async def test_all_devices_have_ha_name(self, file_session):
         """Every device in every entity-type list has a non-empty ha_name."""
@@ -80,22 +55,18 @@ class TestDeviceListIntegrity:
                     f"{entity_type} device {device.hive_id} missing ha_name"
                 )
 
+    async def test_hub_is_the_parent_device(self, file_session):
+        parents = file_session.device_list["parent"]
+        assert len(parents) == 1
+        assert parents[0].hive_type == "hub"
+        assert parents[0].device_id == file_session.hub_id
+        for key in ("model", "manufacturer", "version"):
+            assert key in parents[0].device_data
+
     async def test_climate_devices_present(self, file_session):
         """Fixture produces at least one climate device."""
-        assert file_session.device_list.get("climate")
-
-    async def test_light_devices_present(self, file_session):
-        """Fixture produces at least one light device."""
-        assert file_session.device_list.get("light")
-
-    async def test_switch_devices_present(self, file_session):
-        """Fixture produces at least one switch device."""
-        assert file_session.device_list.get("switch")
+        assert file_session.device_list["climate"]
 
     async def test_water_heater_devices_present(self, file_session):
         """Fixture produces at least one water_heater device."""
-        assert file_session.device_list.get("water_heater")
-
-    async def test_binary_sensor_devices_present(self, file_session):
-        """Fixture produces at least one binary_sensor device."""
-        assert file_session.device_list.get("binary_sensor")
+        assert file_session.device_list["water_heater"]

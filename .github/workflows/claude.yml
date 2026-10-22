@@ -99,11 +99,11 @@ env:
 
     ## Project context
     `CLAUDE.md` in the repository root is already loaded. It holds the
-    project rules, the architecture, and the Home Assistant links. Follow
-    its "Always check the Home Assistant source" rule on every review:
-    fetch the Home Assistant files that call the changed code with
-    WebFetch, and for dependency changes fetch Home Assistant's pins.
-    Report a bug if Home Assistant would break, quoting the line you
+    project rules, the architecture, and the links to the Home Assistant
+    fork this library serves. Follow its "Always check the fork's source"
+    rule on every review: fetch the fork's files that call the changed
+    code with WebFetch, and for dependency changes fetch Home Assistant's
+    pins. Report a bug if the fork would break, quoting the line you
     checked.
 
     ## What to look for, in priority order
@@ -125,14 +125,13 @@ env:
          early or leave the session half-updated
        - state that doesn't match what Home Assistant expects in
          `device.status` or `device_list`
-       - behaviour that differs between the async source and the
-         generated sync package (`asyncio` -> `threading`)
        For each bug, state the concrete input or scenario that triggers
        it and what goes wrong. If you can't describe a trigger, it's
        not a bug report — leave it out or mark it as a question.
     2. Security: secrets or real credentials in code, tokens or PII in
-       log output (log payloads via `HiveHelper.sanitize_payload`),
-       unsafe HTTP or Cognito usage, un-anonymised data in `src/data/*.json`.
+       log output (log payloads via `apyhiveapi.helpers.sanitize_payload`),
+       unsafe HTTP or Cognito usage, un-anonymised data in
+       `src/apyhiveapi/data/*.json`.
     3. Project rules: anything that breaks the "Project rules" section of
        `CLAUDE.md`. The placeholder AWS credential strings it mentions are
        not leaked secrets; do not flag them.

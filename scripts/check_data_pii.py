@@ -1,8 +1,9 @@
-"""Pre-commit hook: block PII patterns in src/data/*.json files."""
+"""Pre-commit hook: block PII patterns in src/apyhiveapi/data/*.json files."""
 
 import json
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 REAL_UUID_RE = re.compile(
@@ -16,15 +17,16 @@ UK_POSTCODE_RE = re.compile(r"[A-Z]{1,2}[0-9][0-9A-Z]?\s[0-9][A-Z]{2}")
 # First octet 1-255 (our anonymised IP starts with "000." which won't match)
 REAL_IP_RE = re.compile(r"\b[1-9][0-9]{0,2}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b")
 
-PATTERN_CHECKS = [
-    (REAL_UUID_RE, "real UUID", lambda m: True),
+type PatternCheck = tuple[re.Pattern[str], str, Callable[[re.Match[str]], bool]]
+PATTERN_CHECKS: list[PatternCheck] = [
+    (REAL_UUID_RE, "real UUID", lambda _: True),
     (EMAIL_RE, "real email", lambda m: m.group().lower() not in ALLOWED_EMAILS),
-    (PHONE_RE, "phone number", lambda m: True),
-    (UK_POSTCODE_RE, "UK postcode", lambda m: True),
-    (REAL_IP_RE, "real IP address", lambda m: True),
+    (PHONE_RE, "phone number", lambda _: True),
+    (UK_POSTCODE_RE, "UK postcode", lambda _: True),
+    (REAL_IP_RE, "real IP address", lambda _: True),
 ]
 
-errors = []
+errors: list[str] = []
 
 for filepath in sys.argv[1:]:
     path = Path(filepath)
@@ -53,9 +55,11 @@ for filepath in sys.argv[1:]:
     # PII pattern checks (run on raw text for speed)
     for lineno, line in enumerate(text.splitlines(), 1):
         for pattern, label, should_flag in PATTERN_CHECKS:
-            for match in pattern.finditer(line):
-                if should_flag(match):
-                    errors.append(f"{filepath}:{lineno}: {label}: {match.group()!r}")
+            errors.extend(
+                f"{filepath}:{lineno}: {label}: {match.group()!r}"
+                for match in pattern.finditer(line)
+                if should_flag(match)
+            )
 
 if errors:
     print("Data file check FAILED:")

@@ -6,10 +6,10 @@ automatic PR review and `@claude` mentions) load this file, so project
 knowledge and rules belong here, not in the workflow prompt.
 
 This is pyhive-integration, the async Python library (`apyhiveapi`) behind
-the Hive integration for Home Assistant. The source lives in `src/`
-(`api/`, `session/`, `devices/`, `helper/`) and is published as the single
-package `apyhiveapi`. There is no sync package, no deprecation shims and no
-camelCase compatibility aliases: the public API is snake_case only.
+the Hive integration for Home Assistant. It covers Hive heating (thermostats
+and TRVs) and hot water only. The source is one flat package in
+`src/apyhiveapi/`: no sync package, no mixins, no deprecation shims and no
+camelCase compatibility aliases. The public API is snake_case only.
 
 ## The Home Assistant fork is the only consumer
 
@@ -29,18 +29,17 @@ explicitly: that code is a removal candidate.
 
 - The fork (the actual caller): `~/Documents/repos/ha-hive/custom_components/hive/`
   with `__init__.py`, `config_flow.py`, `entity.py`, `const.py`, `climate.py`,
-  `water_heater.py`, `light.py`, `switch.py`, `binary_sensor.py`, `sensor.py`
-  and `manifest.json` (which pins this library's version).
+  `water_heater.py` and `manifest.json` (which pins this library's version).
+  Its `light.py`, `switch.py`, `binary_sensor.py` and `sensor.py` platforms
+  have no counterpart in this library any more. In GitHub Actions, where the
+  local checkout is not available, fetch the raw files from
+  `https://raw.githubusercontent.com/tomwilkie/ha-hive/main/custom_components/hive/<file>`.
 - Upstream integration, for reference only:
   <https://github.com/home-assistant/core/tree/dev/homeassistant/components/hive>
 - Developer docs:
   - Entities overview: <https://developers.home-assistant.io/docs/core/entity/>
   - climate: <https://developers.home-assistant.io/docs/core/entity/climate/>
   - water_heater: <https://developers.home-assistant.io/docs/core/entity/water-heater/>
-  - light: <https://developers.home-assistant.io/docs/core/entity/light/>
-  - switch: <https://developers.home-assistant.io/docs/core/entity/switch/>
-  - binary_sensor: <https://developers.home-assistant.io/docs/core/entity/binary-sensor/>
-  - sensor: <https://developers.home-assistant.io/docs/core/entity/sensor/>
   - Config flow (login, SMS 2FA, reauth): <https://developers.home-assistant.io/docs/config_entries_config_flow_handler/>
   - Setup failures (`ConfigEntryNotReady` / `ConfigEntryAuthFailed`): <https://developers.home-assistant.io/docs/integration_setup_failures/>
   - Blocking calls in the event loop: <https://developers.home-assistant.io/docs/asyncio_blocking_operations/>
@@ -50,17 +49,22 @@ or `device.status` value type/unit it reads changes, a new exception is raised
 that it doesn't catch, or something blocks the event loop. The public API it
 depends on is:
 
-- `Hive(websession)`, `hive.session` (the same object), `start_session`,
-  `update_data`, `update_interval`, `device_list`
-- `Auth(username, password)` with `login`, `sms_2fa`, `is_device_registered`,
-  `device_registration`, `get_device_data`, `forget_device`
-- `Device` attributes read dict-style with snake_case keys (`device["hive_id"]`,
-  `device["device_data"]`, `device["status"]`, `device.get("attributes", {})`)
-- `device.status` keys and value types, and the `hive.*` device module methods
-  (`get_climate`, `set_mode`, `set_target_temperature`, `set_boost_on`,
-  `set_boost_off`, `get_water_heater`, `get_light`, `turn_on`, `turn_off`,
-  `get_switch`, `get_sensor`)
-- the exceptions in `helper/hive_exceptions.py` and aiohttp's `HTTPException`
+- `Hive(websession)` with `start_session`, `update_data`, `update_interval`,
+  `device_list` and `close`
+- `Auth(username, password)` (the `HiveAuth` class) with `login`, `sms_2fa`,
+  `device_login`, `is_device_registered`, `device_registration`,
+  `get_device_data` and `forget_device`
+- `Device` attributes, read attribute-style or dict-style with snake_case keys
+  (`device.hive_id`, `device["device_data"]`, `device.get("status")`)
+- `device.status` keys and value types, and the `hive.heating` /
+  `hive.hotwater` methods (`get_climate`, `get_water_heater`, `get_mode`,
+  `set_mode`, `set_target_temperature`, `set_boost_on`, `set_boost_off`)
+- the exceptions exported from `apyhiveapi` and aiohttp's `HTTPException`
+
+The fork still uses the previous names (`hive.session.*`, camelCase methods
+and `Device` keys, imports from `apyhiveapi.helper.hive_exceptions`). It has
+to be migrated to this API before its `manifest.json` is bumped to this
+version.
 
 ### Dependency changes
 
@@ -80,13 +84,18 @@ requires Python 3.14; this library supports 3.13 and later.
 
 ## Project rules
 
-- Edit the source in `src/` only; there is no generated code.
-- Do not add compatibility aliases or shims. Rename in the fork instead.
+- Edit the source in `src/apyhiveapi/` only; there is no generated code.
+- Keep it flat and concrete: plain classes and functions, no mixins, no
+  compatibility aliases or shims. When a name changes, rename it in the fork.
+- Everything is fully annotated and `mypy --strict` passes on `src/`. Ruff runs
+  with every rule enabled (`select = ["ALL"]`); the ignore lists in
+  `pyproject.toml` are deliberate and short, so fix findings rather than
+  adding `noqa` comments.
 - The placeholder `aws_access_key_id` / `aws_secret_access_key` /
-  `aws_session_token` strings in `hive_auth_async.py` must stay; they are not
-  leaked secrets and boto3 Cognito auth breaks without them.
-- Never log tokens or PII; log payloads via `HiveHelper.sanitize_payload`.
-  Data in `src/data/*.json` must be anonymised.
+  `aws_session_token` strings in `auth.py` must stay; they are not leaked
+  secrets and boto3 Cognito auth breaks without them.
+- Never log tokens or PII; log payloads via `apyhiveapi.helpers.sanitize_payload`.
+  Data in `src/apyhiveapi/data/*.json` must be anonymised.
 - New behaviour and bug fixes need tests in `tests/unit`, `tests/module` or
   `tests/e2e`; coverage must stay at 99%.
 
@@ -104,15 +113,15 @@ pre-commit run --all-files
 # Run tests (always run the full suite — coverage is measured against all of src/)
 pytest tests/
 
-# Run a single test
-pytest tests/module/test_hub.py::TestHiveHubSensorStatus
+# Run a single test class
+pytest tests/unit/test_heating.py::TestGetClimate
 
 # Build the wheel and check it imports in a clean venv
 make verify-dist
 
 # Individual linters
-ruff check --fix src/
-ruff format src/
+ruff check --fix src/ tests/ scripts/ examples/
+ruff format src/ tests/ scripts/ examples/
 pylint src/
 mypy src/
 bandit --configfile=tests/bandit.yaml src/
@@ -121,7 +130,20 @@ bandit --configfile=tests/bandit.yaml src/
 The `no-commit-to-branch` pre-commit hook blocks commits to `master`; day-to-day
 work happens on `main`.
 
-A PII check pre-commit hook (`scripts/check_data_pii.py`) runs on any `src/data/*.json` changes — ensure fixture data is anonymised before committing.
+A PII check pre-commit hook (`scripts/check_data_pii.py`) runs on any
+`src/apyhiveapi/data/*.json` change — ensure fixture data is anonymised before
+committing.
+
+### Development scripts
+
+- `scripts/run_session.py` (`make run-file`, `make run-live`, `make call ...`)
+  runs a polling session in the background against the fixture or a real
+  account and takes admin commands over a local socket. Read-only unless
+  started with `WRITE=1`.
+- `scripts/verify_dist.py` installs the built wheel in a throwaway venv and
+  imports every module (`make verify-dist`).
+- `examples/example_login.py` is the minimal standalone login example the
+  README points at.
 
 ### Test organisation
 
@@ -131,201 +153,134 @@ Tests are split into three subdirectories under `tests/`:
 |---|---|
 | `tests/unit/` | Pure unit tests — heavily mocked, no I/O |
 | `tests/module/` | Module-level tests using the file-based session (`username="use@file.com"`) |
-| `tests/e2e/` | End-to-end / integration tests |
+| `tests/e2e/` | End-to-end tests over the whole library in file mode |
 
-`pyproject.toml` sets `asyncio_mode = "auto"`, so async test functions do **not** need `@pytest.mark.asyncio`.
+`tests/conftest.py` provides the `file_session` fixture (a started file-mode
+`Hive`), `make_session()` (a `MagicMock` session with the attributes the
+device handlers use) and `make_device()`.
 
-Coverage is enforced at **99%** (`fail_under = 99` in `pyproject.toml`). Running only a subset of tests will report very low coverage and fail — always verify with the full `pytest tests/` run.
+`pyproject.toml` sets `asyncio_mode = "auto"`, so async test functions do
+**not** need `@pytest.mark.asyncio`.
+
+Coverage is enforced at **99%** (`fail_under = 99` in `pyproject.toml`).
+Running only a subset of tests will report very low coverage and fail — always
+verify with the full `pytest tests/` run.
 
 ## Architecture
-
-### Entry Point
-
-`src/hive.py` — `Hive` class is the public API. It inherits `HiveSession` and composes all device modules:
-
-```python
-from apyhiveapi import Hive
-
-hive = Hive(websession)
-device_list = await hive.start_session(config)
-```
-
-`hive.session` is `hive` itself; the fork calls `hive.session.start_session(...)`.
 
 ### Source layout
 
 ```text
-src/
-├── hive.py                      ← Hive — public entry point; inherits HiveSession
-├── __init__.py                  ← exports Hive, Auth, SMS_REQUIRED, all exceptions
-├── api/
-│   ├── hive_async_api.py        ← HiveApiAsync — HTTP calls to beekeeper API and the SSO login page
-│   ├── hive_auth_async.py       ← HiveAuthAsync — AWS Cognito SRP login flows
-│   ├── device_registration.py   ← DeviceRegistrationMixin — Cognito device lifecycle
-│   └── srp_crypto.py            ← pure SRP/HKDF crypto functions and constants
-├── session/
-│   ├── __init__.py              ← HiveSession — composes the three session mixins
-│   ├── auth.py                  ← SessionAuthMixin — login, token refresh, retry backoff
-│   ├── polling.py               ← PollingMixin — rate-limited polling, cache, get_devices
-│   └── discovery.py             ← DiscoveryMixin — start_session, create_devices, add_list
-├── devices/
-│   ├── heating.py               ← HiveHeating / Climate
-│   ├── hotwater.py              ← HiveHotwater / WaterHeater
-│   ├── light.py                 ← HiveLight / Light
-│   ├── plug.py                  ← HiveSmartPlug / Switch
-│   ├── sensor.py                ← HiveSensor / Sensor
-│   ├── hub.py                   ← HiveHub
-│   ├── boost.py                 ← BoostMixin (shared by heating + hotwater)
-│   └── color.py                 ← LightColorHandler (colour sub-domain for lights)
-└── helper/
-    ├── const.py                 ← HIVE_TYPES, PRODUCTS, DEVICES, HIVETOHA, HTTP_OK …
-    ├── hivedataclasses.py       ← Device, EntityConfig, SessionTokens, SessionConfig
-    ├── device_attributes.py     ← HiveAttributes — HA state attribute computation
-    ├── device_handler_base.py   ← BaseDeviceHandler — shared get_*/set_state plumbing
-    ├── hive_helper.py           ← HiveHelper — name resolution, schedule parsing
-    ├── hive_exceptions.py       ← all custom exceptions
-    └── map.py                   ← Map — dict with attribute-style access
+src/apyhiveapi/
+├── __init__.py         ← public exports: Hive, Auth, Device, SMS_REQUIRED, the exceptions
+├── hive.py             ← Hive — the session: login and token refresh, polling and the
+│                         entity cache, start_session / create_devices, device bookkeeping
+├── auth.py             ← HiveAuth (exported as Auth) — Cognito SRP login, SMS 2FA,
+│                         token refresh, trusted-device registration
+├── api.py              ← HiveApi — HTTP calls to beekeeper.hivehome.com and the
+│                         SSO login-page scrape (get_login_info)
+├── srp.py              ← pure SRP/HKDF crypto functions and constants
+├── device_handler.py   ← DeviceHandler — shared get_* / set_state plumbing, boost status
+├── heating.py          ← Climate (hive.heating): thermostats and TRV controls
+├── hotwater.py         ← WaterHeater (hive.hotwater)
+├── models.py           ← Device, SessionData, SessionTokens, SessionConfig dataclasses
+├── const.py            ← SMS_REQUIRED, HTTP codes, PRODUCT_ENTITY_TYPES, THERMOSTAT_DEVICE_TYPES
+├── exceptions.py       ← all custom exceptions
+├── helpers.py          ← sanitize_payload for logging
+└── data/data.json      ← anonymised fixture for file mode
 ```
 
-### Core Session
+### `Hive` (`hive.py`)
 
-`src/session/__init__.py` — `HiveSession` inherits three mixins:
+`Hive(websession=None, username=None, password=None)` is the whole session.
+It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens`,
+`hive.config`, `hive.data` (`SessionData` with `products`, `devices` and
+`user`, dicts keyed by Hive ID), `hive.device_list`, `hive.heating` and
+`hive.hotwater`.
 
-| Mixin | File | Responsibility |
-|---|---|---|
-| `SessionAuthMixin` | `session/auth.py` | Token storage, refresh at 90% lifetime, `_retry_login` backoff |
-| `PollingMixin` | `session/polling.py` | Rate-limited polling, entity cache, `update_data`, `update_interval`, `get_devices` |
-| `DiscoveryMixin` | `session/discovery.py` | `start_session`, `create_devices`, `add_list`, file-mode loading |
+- **Login and tokens** — `login()`, `update_tokens()`, `hive_refresh_tokens()`
+  (proactive refresh at 90% of the token lifetime, `REFRESH_THRESHOLD`) and
+  `_retry_login()` (three attempts, `_RETRY_DELAYS`). On
+  `HiveRefreshTokenExpired` or `HiveFailedToRefreshTokens` the session falls
+  back to a fresh login; `HiveReauthRequired` propagates when the user has to
+  act (SMS 2FA). That is the only exception the fork has to handle itself.
+- **Polling** — `update_data(device)` is rate limited to `config.scan_interval`
+  (`update_interval()` sets it, never below `MIN_SCAN_INTERVAL`) and serialised
+  through `update_lock`. `get_devices()` fetches `/nodes/all` and stores
+  products, devices and user. Products that come back without their
+  `REQUIRED_STATE_KEYS` keep the previous state for up to
+  `MAX_STALE_STATE_POLLS` polls. `should_use_cached_data()`,
+  `get_cached_device()` and `set_cached_device()` keep entities stable during
+  slow or concurrent polls.
+- **Discovery** — `start_session(config)` applies the config (username and
+  password, `tokens`, `device_data`, `options.scan_interval`; the username
+  `use@file.com` switches to file mode), polls once and calls
+  `create_devices()`, which builds `device_list` with the keys `parent`,
+  `climate` and `water_heater` from `PRODUCT_ENTITY_TYPES`. Heating and hot
+  water products attach to the thermostat in their zone, TRV controls to their
+  first TRV.
+- **Device bookkeeping** — `device_recovered()`, `report_device_offline()`
+  (logs once until the device recovers) and `_device_name()`.
 
-`HiveSession` creates its own `aiohttp.ClientSession` when none is passed and
-closes it in `close()` / `__aexit__`. The fork always passes Home Assistant's
-shared session; the owned-session path exists for the tests and the dev
-scripts.
+`Hive` creates its own `aiohttp.ClientSession` when none is passed and closes
+it in `close()` / `__aexit__`. The fork always passes Home Assistant's shared
+session; the owned-session path exists for the tests and the dev scripts.
 
-### API Layer
+### Device handlers
 
-- **`src/api/hive_async_api.py` (`HiveApiAsync`)** — async HTTP calls to `beekeeper.hivehome.com` (`get_all`, `set_state`) and `get_login_info`, which scrapes the Cognito pool details from the SSO login page
-- **`src/api/hive_auth_async.py` (`HiveAuthAsync`)** — AWS Cognito SRP authentication flows; stores `self.access_token` (Cognito AccessToken) after `login()` or `sms_2fa()`
-- **`src/api/device_registration.py` (`DeviceRegistrationMixin`)** — mixed into `HiveAuthAsync`; device registration, confirm, forget, `get_device_data()`. Uses `self.access_token` (not `self.session.tokens`).
-- **`src/api/srp_crypto.py`** — pure stateless SRP/HKDF crypto functions (`N_HEX`, `compute_hkdf`, etc.)
+`DeviceHandler(session)` (`device_handler.py`) holds what `Climate` and
+`WaterHeater` share: `_get_product_state()` (safe nested read from
+`session.data.products`), `_is_available()`, `_cached_if_busy()`,
+`_update_online_status()`, `_apply_device_props()`, `_report_offline()`,
+`get_boost_status()` and `_execute_state_change(device, **state)`, which
+refreshes the tokens, calls `api.set_state()` and re-polls. It returns `True`
+on HTTP 200 and `False` when the device is offline or the call fails.
 
-### Device Modules (all in `src/devices/`)
-
-After `start_session()`, device modules are available as attributes on `hive`:
-
-| `hive.*` | Class | File | Covers |
+| `hive.*` | Class | Hive types | `device.status` after `get_*` |
 |---|---|---|---|
-| `hive.heating` | `Climate` | `devices/heating.py` | Thermostats, TRV controls |
-| `hive.hotwater` | `WaterHeater` | `devices/hotwater.py` | Hot water |
-| `hive.light` | `Light` | `devices/light.py` | All Hive light types |
-| `hive.switch` | `Switch` | `devices/plug.py` | Smart plugs, Heat on Demand |
-| `hive.sensor` | `Sensor` | `devices/sensor.py` | Motion, contact and diagnostic sensors |
-| `hive.hub` | `HiveHub` | `devices/hub.py` | Hub / Sense detection |
+| `hive.heating` | `Climate` | `heating`, `trvcontrol` | `current_temperature` (float), `target_temperature` (float), `action` (bool, calling for heat), `mode` (`SCHEDULE` / `MANUAL` / `OFF`), `boost` (`ON` / `OFF`); each `None` when unknown |
+| `hive.hotwater` | `WaterHeater` | `hotwater` | `current_operation` (`SCHEDULE` / `ON` / `OFF` / `None`) |
 
-All device handlers inherit `BaseDeviceHandler` (`src/helper/device_handler_base.py`), which provides:
+`get_climate()` also sets `device.min_temp` / `device.max_temp`
+(`MIN_TARGET_TEMPERATURE` 5.0, `MAX_TARGET_TEMPERATURE` 32.0). Both handlers
+offer `get_mode`, `set_mode`, `set_boost_on` and `set_boost_off`; `Climate`
+adds `set_target_temperature`. While a boost is active Hive reports `BOOST`,
+so `get_mode` reports the mode the boost will return to.
 
-- `_cached_if_busy`, `_update_online_status`, `_apply_device_props`, `_report_offline` — the shared per-poll steps of every `get_*` method
-- `_execute_state_change(device, **state_kwargs)` — token refresh → `set_state` → `get_devices`
-- `_get_product_state(device, *path_keys, default=None)` — safe nested read from `session.data.products`
-- `_map_hive_to_ha(mapping_key, value)` — translate Hive API value through `HIVETOHA`
+### `Device` (`models.py`)
 
-`BoostMixin` (`devices/boost.py`) is composed into `HiveHeating` and `HiveHotwater`.
-`LightColorHandler` (`devices/color.py`) is composed into `HiveLight` for colour sub-domain.
+`Device` is a dataclass: `hive_id`, `hive_name`, `hive_type`, `ha_type`,
+`device_id`, `device_name`, `device_data`, `parent_device`, `ha_name`,
+`temperature_unit`, `status`, `min_temp`, `max_temp`. It supports
+attribute-style and dict-style access (`device["hive_id"]`, `device.get(...)`,
+`"status" in device`) with the snake_case names only.
 
-### Supported Devices
-
-| Device | HA entity type | Hive types |
-|---|---|---|
-| Heating (thermostat, TRV) | `climate` | `heating`, `trvcontrol` |
-| Hot Water | `water_heater` | `hotwater` |
-| Lights | `light` | `warmwhitelight`, `tuneablelight`, `colourtuneablelight` |
-| Smart Plugs | `switch` | `activeplug` |
-| Motion Sensor | `binary_sensor` | `motionsensor` |
-| Contact Sensor | `binary_sensor` | `contactsensor` |
-| Hub / Sense | `binary_sensor` | `hub`, `sense` |
-
-Hive "actions" (automations) are not supported: the fork never creates
-entities for them.
-
-### Device Discovery (`create_devices`)
-
-`PRODUCTS` and `DEVICES` dicts in `src/helper/const.py` map Hive product/device types to lists of `EntityConfig` dataclass instances (entity_type, ha_name, hive_type, temperature_unit). `DiscoveryMixin.create_devices()` iterates these configs and calls `add_list(...)` for each to build `device_list` for Home Assistant entity creation. Only entity types the fork matches on `hive_type` are created.
-
-### `device_list` structure
-
-`hive.device_list` is a dict keyed by HA entity type, populated by `start_session()`:
-
-```python
-{
-    "parent": [...],  # physical Hive hub devices
-    "binary_sensor": [...],  # motion/contact sensors, hub connectivity, Sense detection
-    "climate": [...],  # heating zones, TRVs
-    "light": [...],
-    "sensor": [...],  # battery, power, temperatures, heating/hot water state
-    "switch": [...],  # smart plugs, Heat on Demand
-    "water_heater": [...],
-}
-```
-
-Each entry is a `Device` instance. After calling the relevant `get_*` module method, `device.status` holds the current state:
-
-```python
-# Heating
-device.status["current_temperature"]  # float
-device.status["target_temperature"]  # float
-device.status["mode"]  # "SCHEDULE" | "MANUAL" | "OFF"
-device.status["boost"]  # "ON" | "OFF"
-
-# Light
-device.status["state"]  # bool
-device.status["brightness"]  # int 0-255
-device.status.get("color_temp")  # int mireds (tunable/colour only)
-device.status.get("hs_color")  # tuple (colour lights in COLOUR mode)
-
-# Switch / Smart Plug
-device.status["state"]  # bool
-device.status.get("power_usage")  # float watts (activeplug only)
-```
-
-### Data Model
-
-`session.data` (a `Map`) holds:
-
-- `products` / `devices` — dicts keyed by device ID from the Hive API
-- `user` — account info
-
-### Helpers
-
-- `src/helper/const.py` — `HIVE_TYPES`, `PRODUCTS`, `DEVICES`, `HIVETOHA` mappings, HTTP constants
-- `src/helper/hivedataclasses.py` — `Device`, `EntityConfig`, `SessionTokens`, `SessionConfig` dataclasses. `Device` supports attribute-style (`device.hive_id`) and dict-style (`device["hive_id"]`, `device.get(...)`, `"status" in device`) access with the snake_case attribute names.
-- `src/helper/hive_helper.py` (`HiveHelper`) — device name resolution, error tracking, schedule NNL parsing (`get_schedule_nnl`), payload sanitisation for logs
-- `src/helper/hive_exceptions.py` — all custom exceptions (`HiveReauthRequired`, `HiveAuthError`, etc.)
-- `src/helper/map.py` — `Map` class: dict wrapper allowing attribute-style access (`session.config.home_id`)
-- `src/helper/device_attributes.py` (`HiveAttributes`) — computes HA state attributes (online/offline, battery, mode) for all device types
-- `src/helper/device_handler_base.py` (`BaseDeviceHandler`) — shared `get_*` / `_execute_state_change` / `_get_product_state` plumbing inherited by all device handlers
-- `src/data/*.json` — fixture files for offline/file-based testing
-
-### Authentication
+### Authentication (`auth.py`)
 
 Two flows:
 
-1. **First login** — `Auth.login()` returns `ChallengeName == "SMS_MFA"` (use the `SMS_REQUIRED` constant). Call `auth.sms_2fa(code, result)`, then save the three device credentials from `await auth.get_device_data()` (`device_group_key`, `device_key`, `device_password`). Device registration happens automatically inside `sms_2fa()` — no separate registration call needed.
-
-2. **Subsequent logins** — pass saved `device_data` in the `start_session` config. The library calls `device_login()` internally — no SMS required.
-
-`get_device_data()` is `async def` — always `await` it in async code.
+1. **First login** — `Auth.login()` returns `ChallengeName == "SMS_MFA"` (use
+   the `SMS_REQUIRED` constant). Call `auth.sms_2fa(code, result)`, then save
+   the device credentials from `await auth.get_device_data()`
+   (`device_group_key`, `device_key`, `device_password`). Device registration
+   happens automatically inside `sms_2fa()`.
+2. **Subsequent logins** — pass the saved `device_data` in the `start_session`
+   config. `login()` is answered with a device challenge, which
+   `device_login()` completes without an SMS.
 
 Only the Hive account owner is supported. Guest accounts cannot authenticate.
 
-### File-Based Testing
-
-Set `username="use@file.com"` to make the session load data from `src/data/data.json` instead of calling the API. Used for development without live credentials.
-
-### Token Refresh Strategy
-
-Tokens refresh proactively at 90% of their lifetime (`_refresh_threshold = 0.90`). On `HiveRefreshTokenExpired` or `HiveFailedToRefreshTokens`, the session falls back to `_retry_login` (3 attempts with backoff). A `HiveReauthRequired` exception propagates up when user interaction is needed (SMS 2FA). This is the only exception application code needs to handle explicitly — all intermediate refresh failures are handled internally.
-
 Token layers are distinct:
 
-- `HiveAuthAsync.access_token` — Cognito AccessToken stored on the auth object during `login()`/`sms_2fa()`; used by `DeviceRegistrationMixin`
-- `HiveSession.tokens.token_data` — session-layer token store (`"token"`, `"accessToken"`, `"refreshToken"`); used by `HiveApiAsync` for API requests
+- `HiveAuth.access_token` — Cognito AccessToken stored on the auth object by
+  `login()` / `sms_2fa()`; used by the trusted-device methods
+- `Hive.tokens.token_data` — session-layer token store (`"token"`,
+  `"accessToken"`, `"refreshToken"`); used by `HiveApi` for API requests
+
+All timestamps are timezone-aware UTC `datetime`s.
+
+### File-based testing
+
+Set `username="use@file.com"` to make the session load
+`src/apyhiveapi/data/data.json` instead of calling the API. Used for
+development without live credentials.

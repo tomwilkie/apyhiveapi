@@ -1,6 +1,6 @@
 """Unit tests for pure SRP/HKDF crypto helpers — no mocking needed."""
 
-from apyhiveapi.api.srp_crypto import (
+from apyhiveapi.srp import (
     calculate_u,
     compute_hkdf,
     hash_sha256,

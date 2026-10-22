@@ -1,12 +1,14 @@
-"""Unit tests for HiveAuthAsync."""
+"""Unit tests for HiveAuth."""
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import botocore.exceptions
 import pytest
-from apyhiveapi.helper.hive_exceptions import (
+
+from apyhiveapi.exceptions import (
     HiveApiError,
     HiveConnectionError,
     HiveFailedToRefreshTokens,
@@ -53,17 +55,15 @@ async def _make_auth(
     device_key: str | None = None,
     device_group_key: str | None = None,
     device_password: str | None = None,
-    client_secret: str | None = None,
 ):
-    from apyhiveapi.api.hive_auth_async import HiveAuthAsync
+    from apyhiveapi.auth import HiveAuth
 
-    auth = HiveAuthAsync(
+    auth = HiveAuth(
         username=username,
         password=password,
         device_key=device_key,
         device_group_key=device_group_key,
         device_password=device_password,
-        client_secret=client_secret,
     )
     # Bypass async_init — inject mocked internals directly.
     auth.client = MagicMock()
@@ -82,48 +82,61 @@ _LOGIN_INFO = {
 }
 
 
+class TestLoopProperty:
+    """Tests for the lazily resolved event loop."""
+
+    async def test_running_loop_is_remembered_on_first_use(self):
+        auth = await _make_auth()
+        auth.loop = None
+        assert auth._loop is asyncio.get_running_loop()
+        assert auth.loop is asyncio.get_running_loop()
+
+
 # ---------------------------------------------------------------------------
-# Tests: __init__
+# Tests for __init__
 # ---------------------------------------------------------------------------
 
 
-class TestHiveAuthAsyncInit:
+class TestHiveAuthInit:
     def test_pool_region_no_longer_accepted(self):
-        from apyhiveapi.api.hive_auth_async import HiveAuthAsync
+        # pylint: disable=unexpected-keyword-arg
+        from apyhiveapi.auth import HiveAuth
 
         with pytest.raises(TypeError):
-            HiveAuthAsync(username="u", password="p", pool_region="eu-west-1")
+            HiveAuth(username="u", password="p", pool_region="eu-west-1")
 
     async def test_async_init_sets_running_loop(self):
-        from apyhiveapi.api.hive_auth_async import HiveAuthAsync
+        from apyhiveapi.auth import HiveAuth
 
-        auth = HiveAuthAsync(username="u@test.com", password="pass")
+        auth = HiveAuth(username="u@test.com", password="pass")
         assert auth.loop is None  # not set until async_init
         mock_data = {
             "UPID": "eu-west-1_Test",
             "CLIID": "client-id",
             "REGION": "eu-west-1_Test",
         }
-        with patch.object(auth.api, "get_login_info", return_value=mock_data):
-            with patch("boto3.client", return_value=MagicMock()):
-                await auth.async_init()
+        with (
+            patch.object(auth.api, "get_login_info", return_value=mock_data),
+            patch("boto3.client", return_value=MagicMock()),
+        ):
+            await auth.async_init()
         assert auth.loop is not None
 
     async def test_file_flag_set_for_magic_username(self):
-        from apyhiveapi.api.hive_auth_async import HiveAuthAsync
+        from apyhiveapi.auth import HiveAuth
 
-        auth = HiveAuthAsync(username="use@file.com", password="")
+        auth = HiveAuth(username="use@file.com", password="")
         assert auth.use_file is True
 
     async def test_file_flag_not_set_for_normal_username(self):
-        from apyhiveapi.api.hive_auth_async import HiveAuthAsync
+        from apyhiveapi.auth import HiveAuth
 
-        auth = HiveAuthAsync(username="real@user.com", password="pass")
+        auth = HiveAuth(username="real@user.com", password="pass")
         assert auth.use_file is False
 
 
 # ---------------------------------------------------------------------------
-# Tests: _to_int
+# Tests for _to_int
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +164,7 @@ class TestToInt:
 
 
 # ---------------------------------------------------------------------------
-# Tests: get_auth_params
+# Tests for get_auth_params
 # ---------------------------------------------------------------------------
 
 
@@ -162,18 +175,6 @@ class TestGetAuthParams:
         params = await auth.get_auth_params()
         assert "USERNAME" in params
         assert "SRP_A" in params
-
-    @pytest.mark.asyncio
-    async def test_no_client_secret_no_secret_hash(self):
-        auth = await _make_auth()
-        params = await auth.get_auth_params()
-        assert "SECRET_HASH" not in params
-
-    @pytest.mark.asyncio
-    async def test_with_client_secret_adds_secret_hash(self):
-        auth = await _make_auth(client_secret="my-secret")
-        params = await auth.get_auth_params()
-        assert "SECRET_HASH" in params
 
     @pytest.mark.asyncio
     async def test_device_login_adds_device_key(self):
@@ -189,7 +190,7 @@ class TestGetAuthParams:
 
 
 # ---------------------------------------------------------------------------
-# Tests: login
+# Tests for login
 # ---------------------------------------------------------------------------
 
 
@@ -412,7 +413,7 @@ class TestLogin:
 
 
 # ---------------------------------------------------------------------------
-# Tests: device_login
+# Tests for device_login
 # ---------------------------------------------------------------------------
 
 
@@ -451,7 +452,7 @@ class TestDeviceLogin:
 
 
 # ---------------------------------------------------------------------------
-# Tests: sms_2fa
+# Tests for sms_2fa
 # ---------------------------------------------------------------------------
 
 
@@ -521,7 +522,7 @@ class TestSms2fa:
 
 
 # ---------------------------------------------------------------------------
-# Tests: refresh_token
+# Tests for refresh_token
 # ---------------------------------------------------------------------------
 
 
@@ -599,13 +600,13 @@ class TestRefreshToken:
 
 
 class TestAsyncInit:
-    """Cover lines 98-112: async_init() sets pool_id, client_id, region and boto3 client."""
+    """async_init() sets pool_id, client_id, region and the boto3 client."""
 
     async def test_async_init_sets_pool_id_and_client_id(self):
         """async_init reads login info and sets internal auth fields."""
-        from apyhiveapi.api.hive_auth_async import HiveAuthAsync
+        from apyhiveapi.auth import HiveAuth
 
-        auth = HiveAuthAsync(username="user@test.com", password="pass")
+        auth = HiveAuth(username="user@test.com", password="pass")
         auth.client = None
 
         mock_boto_client = MagicMock()
@@ -625,9 +626,9 @@ class TestAsyncInit:
 
     async def test_async_init_splits_region_correctly(self):
         """Region is extracted as the part before the underscore in UPID/REGION."""
-        from apyhiveapi.api.hive_auth_async import HiveAuthAsync
+        from apyhiveapi.auth import HiveAuth
 
-        auth = HiveAuthAsync(username="user@test.com", password="pass")
+        auth = HiveAuth(username="user@test.com", password="pass")
         auth.client = None
 
         login_info = {
@@ -652,14 +653,16 @@ class TestCalculateA:
     """Cover line 141: safety check when big_a % big_n == 0."""
 
     async def test_safety_check_raises_when_a_is_zero_mod_n(self):
-        """If pow(g, a, n) == 0 mod n (i.e., equals big_n or 0), ValueError is raised."""
+        """A zero SRP A value raises ValueError."""
         auth = await _make_auth()
-        with patch("builtins.pow", return_value=auth.big_n):
-            with pytest.raises(ValueError, match="Safety check for A failed"):
-                auth.calculate_a()
+        with (
+            patch("builtins.pow", return_value=auth.big_n),
+            pytest.raises(ValueError, match="Safety check for A failed"),
+        ):
+            auth.calculate_a()
 
     async def test_safety_check_passes_normally(self):
-        """Under normal random inputs, calculate_a does not raise and returns positive int."""
+        """calculate_a returns a positive int for normal random inputs."""
         auth = await _make_auth()
         result = auth.calculate_a()
         assert result > 0
@@ -671,12 +674,12 @@ class TestGetPasswordAuthenticationKey:
     async def test_returns_bytes(self):
         """With valid SRP inputs, the method returns a bytes-like value."""
         auth = await _make_auth()
-        from apyhiveapi.api.srp_crypto import get_random
+        from apyhiveapi.srp import get_random
 
-        server_b_value = hex(get_random(128))[2:]
-        salt = hex(get_random(16))[2:]
+        server_b_value = f"{get_random(128):x}"
+        salt = f"{get_random(16):x}"
 
-        with patch("apyhiveapi.api.hive_auth_async.calculate_u", return_value=99999):
+        with patch("apyhiveapi.auth.calculate_u", return_value=99999):
             result = auth.get_password_authentication_key(
                 "testuser", "testpass", server_b_value, salt
             )
@@ -686,26 +689,28 @@ class TestGetPasswordAuthenticationKey:
     async def test_u_value_zero_raises_value_error(self):
         """If calculate_u returns 0, ValueError is raised."""
         auth = await _make_auth()
-        from apyhiveapi.api.srp_crypto import get_random
+        from apyhiveapi.srp import get_random
 
-        server_b_value = hex(get_random(128))[2:]
-        salt = hex(get_random(16))[2:]
+        server_b_value = f"{get_random(128):x}"
+        salt = f"{get_random(16):x}"
 
-        with patch("apyhiveapi.api.hive_auth_async.calculate_u", return_value=0):
-            with pytest.raises(ValueError, match="U cannot be zero"):
-                auth.get_password_authentication_key(
-                    "testuser", "testpass", server_b_value, salt
-                )
+        with (
+            patch("apyhiveapi.auth.calculate_u", return_value=0),
+            pytest.raises(ValueError, match="U cannot be zero"),
+        ):
+            auth.get_password_authentication_key(
+                "testuser", "testpass", server_b_value, salt
+            )
 
     async def test_accepts_integer_server_b(self):
         """server_b_value can be passed as an integer (handled by _to_int)."""
         auth = await _make_auth()
-        from apyhiveapi.api.srp_crypto import get_random
+        from apyhiveapi.srp import get_random
 
         server_b_int = get_random(128)
-        salt = hex(get_random(16))[2:]
+        salt = f"{get_random(16):x}"
 
-        with patch("apyhiveapi.api.hive_auth_async.calculate_u", return_value=12345):
+        with patch("apyhiveapi.auth.calculate_u", return_value=12345):
             result = auth.get_password_authentication_key(
                 "testuser", "testpass", server_b_int, salt
             )
@@ -749,24 +754,6 @@ class TestProcessChallenge:
         params = self._make_challenge_params()
         await auth.process_challenge(params)
         assert auth.user_id == "challenge-user@test.com"
-
-    async def test_with_client_secret_adds_secret_hash(self):
-        """When client_secret is set, SECRET_HASH is added to the response."""
-        auth = await _make_auth(client_secret="my-secret")
-        fake_hkdf = b"\x00" * 32
-        auth.loop.run_in_executor = AsyncMock(return_value=fake_hkdf)
-        params = self._make_challenge_params()
-        result = await auth.process_challenge(params)
-        assert "SECRET_HASH" in result
-
-    async def test_without_client_secret_no_secret_hash(self):
-        """When client_secret is None, SECRET_HASH is absent from the response."""
-        auth = await _make_auth(client_secret=None)
-        fake_hkdf = b"\x00" * 32
-        auth.loop.run_in_executor = AsyncMock(return_value=fake_hkdf)
-        params = self._make_challenge_params()
-        result = await auth.process_challenge(params)
-        assert "SECRET_HASH" not in result
 
     async def test_with_device_key_adds_device_key(self):
         """When device_key is set, DEVICE_KEY is added to the response."""
@@ -822,28 +809,28 @@ class TestLoginClientNone:
             auth._pool_id = "eu-west-1_TestPool"
             auth._region = "eu-west-1"
 
-        with patch.object(auth, "async_init", side_effect=fake_async_init) as mock_init:
-            with patch.object(
-                auth, "process_challenge", new_callable=AsyncMock
-            ) as mock_ch:
-                mock_ch.return_value = {
-                    "TIMESTAMP": "Mon Jan 01 00:00:00 UTC 2024",
-                    "USERNAME": "user",
-                }
-                auth.loop.run_in_executor = AsyncMock(
-                    side_effect=[challenge_response, auth_result]
-                )
-                result = await auth.login()
+        with (
+            patch.object(auth, "async_init", side_effect=fake_async_init) as mock_init,
+            patch.object(auth, "process_challenge", new_callable=AsyncMock) as mock_ch,
+        ):
+            mock_ch.return_value = {
+                "TIMESTAMP": "Mon Jan 01 00:00:00 UTC 2024",
+                "USERNAME": "user",
+            }
+            auth.loop.run_in_executor = AsyncMock(
+                side_effect=[challenge_response, auth_result]
+            )
+            result = await auth.login()
 
         mock_init.assert_called_once()
         assert "AuthenticationResult" in result
 
 
 class TestLoginUnsupportedChallenge:
-    """Cover lines 335-337: non-PASSWORD_VERIFIER challenge raises NotImplementedError."""
+    """A non-PASSWORD_VERIFIER challenge raises NotImplementedError."""
 
     async def test_new_password_required_raises_not_implemented(self):
-        """NEW_PASSWORD_REQUIRED challenge is not supported and raises NotImplementedError."""
+        """NEW_PASSWORD_REQUIRED is not supported and raises NotImplementedError."""
         auth = await _make_auth()
         auth.loop.run_in_executor = AsyncMock(
             return_value={
@@ -871,7 +858,7 @@ class TestLoginResourceNotFound:
     """Cover lines 307-311: ResourceNotFoundException in respond_to_auth_challenge."""
 
     async def test_resource_not_found_raises_invalid_device_authentication(self):
-        """ResourceNotFoundException during challenge → HiveInvalidDeviceAuthentication."""
+        """ResourceNotFoundException becomes HiveInvalidDeviceAuthentication."""
         auth = await _make_auth()
         challenge_response = {
             "ChallengeName": "PASSWORD_VERIFIER",
@@ -1009,7 +996,7 @@ class TestSms2faNoNewDeviceMetadata:
     """Cover line 441: sms_2fa when NewDeviceMetadata is absent in result."""
 
     async def test_no_new_device_metadata_does_not_set_device_keys(self):
-        """When NewDeviceMetadata is absent, device_group_key and device_key stay None."""
+        """Without NewDeviceMetadata the device keys stay None."""
         auth = await _make_auth()
         original_group_key = auth.device_group_key
         original_device_key = auth.device_key
@@ -1138,7 +1125,7 @@ class TestLoginChallengeSwallowedClientError:
     """Arc 307->319: ClientError caught in challenge response with name not matching."""
 
     async def test_other_client_error_in_challenge_falls_through(self):
-        """ClientError that is neither NotAuthorized nor ResourceNotFound raises HiveApiError."""
+        """Any other ClientError raises HiveApiError."""
         auth = await _make_auth()
 
         challenge_response = {
@@ -1166,7 +1153,7 @@ class TestLoginChallengeSwallowedClientError:
 
 
 class TestLoginChallengeSwallowedEndpointError:
-    """EndpointConnectionError in respond_to_auth_challenge always raises HiveApiError."""
+    """EndpointConnectionError in the challenge step raises HiveApiError."""
 
     async def test_wrong_name_endpoint_error_in_challenge_raises_api_error(self):
         """Any EndpointConnectionError subclass in SRP challenge raises HiveApiError."""
@@ -1197,10 +1184,10 @@ class TestLoginChallengeSwallowedEndpointError:
 
 
 class TestDeviceLoginSuccessPath:
-    """Lines 364-367, 391: device_login processes device challenge and returns result."""
+    """device_login processes the device challenge and returns the result."""
 
     async def test_successful_device_login_returns_auth_result(self):
-        """Full device_login success: process_device_challenge called, result returned."""
+        """process_device_challenge is called and its result returned."""
         auth = await _make_auth(device_key="dk-abc", device_group_key="grp-abc")
         auth.device_password = "dev-pass"  # pragma: allowlist secret
 
@@ -1233,7 +1220,7 @@ class TestDeviceLoginSuccessPath:
         assert result is final_result
 
     async def test_device_login_calls_second_respond_to_auth_challenge(self):
-        """Lines 367-375: second respond_to_auth_challenge is called with device challenge."""
+        """The second respond_to_auth_challenge carries the device challenge."""
         auth = await _make_auth(device_key="dk-xyz", device_group_key="grp-xyz")
         auth.device_password = "dev-pass-xyz"  # pragma: allowlist secret
 
@@ -1336,31 +1323,35 @@ class TestRefreshTokenSwallowedEndpointError:
 
 
 class TestAsyncInitMissingKeys:
-    """async_init must raise HiveUnknownConfiguration when login info keys are absent."""
+    """async_init raises HiveUnknownConfiguration when login info is incomplete."""
 
     async def test_async_init_missing_region_raises_configuration_error(self):
         """If REGION is absent from login info, raise HiveUnknownConfiguration."""
-        from apyhiveapi.api.hive_auth_async import HiveAuthAsync
+        from apyhiveapi.auth import HiveAuth
 
-        auth = HiveAuthAsync(username="user@test.com", password="pass")
+        auth = HiveAuth(username="user@test.com", password="pass")
         bad_login_info = {"UPID": "eu-west-1_TestPool", "CLIID": "test-client-id"}
-        with patch.object(auth.api, "get_login_info", return_value=bad_login_info):
-            with pytest.raises(HiveUnknownConfiguration):
-                await auth.async_init()
+        with (
+            patch.object(auth.api, "get_login_info", return_value=bad_login_info),
+            pytest.raises(HiveUnknownConfiguration),
+        ):
+            await auth.async_init()
 
     async def test_async_init_missing_upid_raises_configuration_error(self):
         """If UPID is absent from login info, raise HiveUnknownConfiguration."""
-        from apyhiveapi.api.hive_auth_async import HiveAuthAsync
+        from apyhiveapi.auth import HiveAuth
 
-        auth = HiveAuthAsync(username="user@test.com", password="pass")
+        auth = HiveAuth(username="user@test.com", password="pass")
         bad_login_info = {"CLIID": "test-client-id", "REGION": "eu-west-1_TestPool"}
-        with patch.object(auth.api, "get_login_info", return_value=bad_login_info):
-            with pytest.raises(HiveUnknownConfiguration):
-                await auth.async_init()
+        with (
+            patch.object(auth.api, "get_login_info", return_value=bad_login_info),
+            pytest.raises(HiveUnknownConfiguration),
+        ):
+            await auth.async_init()
 
 
 class TestGetPasswordAuthKeyNonePoolId:
-    """get_password_authentication_key must not crash with AttributeError when _pool_id is None."""
+    """get_password_authentication_key copes with a missing _pool_id."""
 
     async def test_none_pool_id_raises_configuration_error(self):
         """If _pool_id is None, raise HiveUnknownConfiguration (not AttributeError)."""
@@ -1374,7 +1365,7 @@ class TestLoginUnhandledClientError:
     """Unhandled ClientError codes in login() must raise HiveApiError, not crash."""
 
     async def test_initiate_auth_unhandled_error_raises_hive_api_error(self):
-        """Non-UserNotFoundException ClientError from initiate_auth raises HiveApiError."""
+        """Other ClientErrors from initiate_auth raise HiveApiError."""
         auth = await _make_auth()
         err = botocore.exceptions.ClientError(
             {"Error": {"Code": "TooManyRequestsException", "Message": "too many"}},
@@ -1414,12 +1405,14 @@ class TestAsyncInitNoneGuard:
     """async_init must guard against get_login_info returning None."""
 
     async def test_async_init_raises_when_login_info_is_none(self):
-        """async_init raises HiveUnknownConfiguration when get_login_info returns None."""
-        from apyhiveapi.api.hive_auth_async import HiveAuthAsync
+        """get_login_info returning None raises HiveUnknownConfiguration."""
+        from apyhiveapi.auth import HiveAuth
 
-        auth = HiveAuthAsync(username="user@test.com", password="pass")
+        auth = HiveAuth(username="user@test.com", password="pass")
         auth.client = None
 
-        with patch.object(auth.api, "get_login_info", return_value=None):
-            with pytest.raises(HiveUnknownConfiguration):
-                await auth.async_init()
+        with (
+            patch.object(auth.api, "get_login_info", return_value=None),
+            pytest.raises(HiveUnknownConfiguration),
+        ):
+            await auth.async_init()

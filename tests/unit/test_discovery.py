@@ -1,216 +1,303 @@
-"""Unit tests for DiscoveryMixin."""
+"""Tests for session start and device discovery on Hive."""
 
-# pylint: disable=protected-access,attribute-defined-outside-init
+# pylint: disable=protected-access
 
-from unittest.mock import MagicMock
+import logging
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
-from apyhiveapi.helper.hivedataclasses import Device, SessionConfig
-from apyhiveapi.helper.map import Map
-from apyhiveapi.session.discovery import DiscoveryMixin
+import pytest
 
+from apyhiveapi.exceptions import HiveConnectionError, HiveUnknownConfiguration
+from apyhiveapi.hive import Hive
 
-def _make_discovery():
-    class StubDiscovery(DiscoveryMixin):  # pylint: disable=too-few-public-methods
-        """Minimal concrete stub for testing DiscoveryMixin."""
-
-    d = StubDiscovery()
-    d.config = SessionConfig()  # type: ignore[attr-defined]
-    d.data = Map(  # type: ignore[attr-defined]
-        {
-            "products": {},
-            "devices": {},
-            "user": {},
-        }
-    )
-    d.helper = MagicMock()  # type: ignore[attr-defined]
-    d.helper.get_device_data = MagicMock(
-        return_value={
-            "id": "dev-1",
-            "state": {"name": "Living Room"},
-            "props": {"online": True},
-        }
-    )
-    d.hub_id = "hub-1"  # type: ignore[attr-defined]
-    d.device_list = {  # type: ignore[attr-defined]
-        "parent": [],
-        "binary_sensor": [],
-        "climate": [],
-        "light": [],
-        "sensor": [],
-        "switch": [],
-        "water_heater": [],
-    }
-    return d
+_HUB = {
+    "id": "hub-1",
+    "type": "hub",
+    "state": {"name": "Hive Hub"},
+    "props": {"online": True, "model": "HUB", "version": "1", "manufacturer": "Hive"},
+}
+_THERMOSTAT = {
+    "id": "thermo-1",
+    "type": "thermostatui",
+    "state": {"name": "Hallway"},
+    "props": {"zone": "zone-A", "online": True, "model": "SLT3"},
+}
+_HEATING = {"id": "heat-1", "type": "heating", "props": {"zone": "zone-A"}}
+_HOTWATER = {"id": "hw-1", "type": "hotwater", "props": {"zone": "zone-A"}}
+_DEVICES = {"hub-1": _HUB, "thermo-1": _THERMOSTAT}
 
 
-# ---------------------------------------------------------------------------
-# open_file
-# ---------------------------------------------------------------------------
+def _make_hive(products=None, devices=None, user=None):
+    """Return a Hive with the given data loaded and the network mocked out."""
+    hive = Hive(username="user@example.com", password="pw")
+    hive.data.products = products if products is not None else {}
+    hive.data.devices = devices if devices is not None else {}
+    hive.data.user = user or {}
+    hive.get_devices = AsyncMock(return_value=True)
+    hive.update_tokens = AsyncMock()
+    return hive
 
 
 class TestOpenFile:
-    """Tests for DiscoveryMixin.open_file."""
+    """Tests for Hive.open_file."""
 
-    def test_returns_dict(self):
-        """open_file returns a dict for data.json."""
-        d = _make_discovery()
-        result = d.open_file("data.json")
-        assert isinstance(result, dict)
-
-    def test_has_original_key(self):
-        """data.json has a top-level 'original' key."""
-        d = _make_discovery()
-        result = d.open_file("data.json")
+    def test_returns_the_fixture_with_original_and_parsed(self):
+        result = Hive().open_file("data.json")
         assert "original" in result
-
-    def test_has_parsed_key(self):
-        """data.json has a top-level 'parsed' key."""
-        d = _make_discovery()
-        result = d.open_file("data.json")
-        assert "parsed" in result
-
-    def test_parsed_value_is_dict_or_none(self):
-        """The 'parsed' value is either a dict or None — not an unexpected type."""
-        d = _make_discovery()
-        result = d.open_file("data.json")
-        assert result["parsed"] is None or isinstance(result["parsed"], dict)
-
-
-# ---------------------------------------------------------------------------
-# _configure_file_mode
-# ---------------------------------------------------------------------------
+        assert isinstance(result["parsed"], dict)
 
 
 class TestConfigureFileMode:
-    """Tests for DiscoveryMixin._configure_file_mode."""
+    """Tests for Hive._configure_file_mode."""
 
-    def test_magic_username_sets_file_true(self):
-        """The magic testing username 'use@file.com' enables file mode."""
-        d = _make_discovery()
-        d._configure_file_mode("use@file.com")
-        assert d.config.file is True
-
-    def test_other_username_leaves_file_false(self):
-        """A real username does not enable file mode."""
-        d = _make_discovery()
-        d._configure_file_mode("real@user.com")
-        assert d.config.file is False
-
-    def test_none_username_leaves_file_false(self):
-        """None username does not enable file mode."""
-        d = _make_discovery()
-        d._configure_file_mode(None)
-        assert d.config.file is False
-
-    def test_empty_string_leaves_file_false(self):
-        """Empty string username does not enable file mode."""
-        d = _make_discovery()
-        d._configure_file_mode("")
-        assert d.config.file is False
+    @pytest.mark.parametrize(
+        ("username", "expected"),
+        [("use@file.com", True), ("real@user.com", False), (None, False), ("", False)],
+    )
+    def test_only_the_magic_username_enables_file_mode(self, username, expected):
+        hive = Hive()
+        hive._configure_file_mode(username)
+        assert hive.config.file is expected
 
 
-# ---------------------------------------------------------------------------
-# add_list
-# ---------------------------------------------------------------------------
+class TestParseTokenCreated:
+    """Tests for Hive._parse_token_created."""
+
+    def test_aware_datetime_is_converted_to_utc(self):
+        value = datetime(2026, 1, 1, 12, tzinfo=UTC)
+        assert Hive._parse_token_created(value) == value
+
+    def test_naive_datetime_is_taken_as_local_time(self):
+        value = datetime(2026, 1, 1, 12)  # noqa: DTZ001 - naive input is the point
+        result = Hive._parse_token_created(value)
+        assert result == value.astimezone(UTC)
+        assert result.tzinfo is UTC
+
+    def test_iso_string_is_parsed(self):
+        result = Hive._parse_token_created("2026-01-01T12:00:00+00:00")
+        assert result == datetime(2026, 1, 1, 12, tzinfo=UTC)
+
+    def test_invalid_string_returns_none_and_warns(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="apyhiveapi.hive"):
+            assert Hive._parse_token_created("not a date") is None
+        assert "Ignoring invalid token_created" in caplog.text
+
+    @pytest.mark.parametrize("value", [None, "", 0])
+    def test_falsy_values_return_none(self, value):
+        assert Hive._parse_token_created(value) is None
 
 
-class TestAddList:
-    """Tests for DiscoveryMixin.add_list."""
+class TestApplyDeviceData:
+    """Tests for Hive._apply_device_data."""
 
-    def test_action_path_creates_device_with_action_type(self):
-        """hive_type='action' creates a Device with hive_type='action'."""
-        d = _make_discovery()
-        data = {"id": "action-1", "name": "Good Night"}
-        device = d.add_list("switch", data, hive_type="action", ha_name="Good Night")
-        assert device is not None
-        assert device.hive_type == "action"
-        assert device in d.device_list["switch"]
+    def test_too_few_values_raises(self):
+        hive = _make_hive()
+        with pytest.raises(HiveUnknownConfiguration):
+            hive._apply_device_data(["group", "key"])
 
-    def test_action_device_not_added_to_parent(self):
-        """Action devices are not added to the 'parent' list."""
-        d = _make_discovery()
-        data = {"id": "action-1", "name": "Good Night"}
-        d.add_list("switch", data, hive_type="action", ha_name="Good Night")
-        assert len(d.device_list["parent"]) == 0
+    def test_three_values_set_the_device_credentials(self):
+        hive = _make_hive()
+        hive._apply_device_data(["group", "key", "password"])
+        assert hive.auth.device_group_key == "group"
+        assert hive.auth.device_key == "key"
+        assert hive.auth.device_password == "password"
+        assert hive.tokens.token_created == datetime.min.replace(tzinfo=UTC)
 
-    def test_normal_path_creates_device_with_name_from_state(self):
-        """Non-action device gets its name from the device state."""
-        d = _make_discovery()
-        data = {"id": "heat-1", "type": "heating"}
-        device = d.add_list("climate", data)
-        assert device is not None
-        assert device.hive_name == "Living Room"
+    def test_fourth_value_sets_token_created(self):
+        hive = _make_hive()
+        issued = datetime(2026, 1, 1, 12, tzinfo=UTC)
+        hive._apply_device_data(["group", "key", "password", issued.isoformat()])
+        assert hive.tokens.token_created == issued
 
-    def test_normal_path_appends_to_entity_list(self):
-        """Created device is appended to the correct entity-type list."""
-        d = _make_discovery()
-        data = {"id": "heat-1", "type": "heating"}
-        device = d.add_list("climate", data)
-        assert device in d.device_list["climate"]
+    def test_invalid_fourth_value_leaves_token_created(self):
+        hive = _make_hive()
+        hive._apply_device_data(["group", "key", "password", "garbage"])
+        assert hive.tokens.token_created == datetime.min.replace(tzinfo=UTC)
 
-    def test_receiver_name_becomes_heating(self):
-        """A device state name of 'Receiver' is remapped to 'Heating'."""
-        d = _make_discovery()
-        d.helper.get_device_data.return_value = {
-            "id": "dev-1",
+
+class TestStartSession:
+    """Tests for Hive.start_session."""
+
+    async def test_no_config_in_file_mode_polls_and_builds_devices(self):
+        hive = _make_hive(products={"heat-1": _HEATING}, devices=_DEVICES)
+        hive.config.username = "use@file.com"
+        result = await hive.start_session()
+        assert hive.config.file is True
+        hive.get_devices.assert_awaited_once_with()
+        hive.update_tokens.assert_not_called()
+        assert [d.hive_id for d in result["climate"]] == ["heat-1"]
+
+    async def test_file_mode_username_in_config_enables_file_mode(self):
+        hive = _make_hive(products={"heat-1": _HEATING}, devices=_DEVICES)
+        await hive.start_session({"username": "use@file.com"})
+        assert hive.config.file is True
+
+    async def test_scan_interval_option_is_applied(self):
+        hive = _make_hive(products={"heat-1": _HEATING}, devices=_DEVICES)
+        hive.config.username = "use@file.com"
+        await hive.start_session({"options": {"scan_interval": 300}})
+        assert hive.config.scan_interval == timedelta(seconds=300)
+
+    async def test_tokens_credentials_and_device_data_are_applied(self):
+        hive = _make_hive(products={"heat-1": _HEATING}, devices=_DEVICES)
+        tokens = {"token": "t", "accessToken": "a", "refreshToken": "r"}
+        await hive.start_session(
+            {
+                "username": "real@user.com",
+                "password": "secret",  # pragma: allowlist secret
+                "tokens": tokens,
+                "device_data": ["group", "key", "password"],
+            }
+        )
+        hive.update_tokens.assert_awaited_once_with(tokens, update_expiry_time=False)
+        assert hive.auth.username == "real@user.com"
+        assert hive.auth.password == "secret"  # pragma: allowlist secret
+        assert hive.auth.device_key == "key"
+
+    async def test_config_without_tokens_raises(self):
+        hive = _make_hive(products={"heat-1": _HEATING}, devices=_DEVICES)
+        with pytest.raises(HiveUnknownConfiguration):
+            await hive.start_session({"username": "real@user.com"})
+        hive.get_devices.assert_not_called()
+
+    async def test_failed_poll_with_no_data_raises_connection_error(self):
+        hive = _make_hive()
+        hive.get_devices = AsyncMock(return_value=False)
+        with pytest.raises(HiveConnectionError):
+            await hive.start_session({"tokens": {"token": "t"}})
+
+    async def test_successful_poll_with_no_data_raises_unknown_configuration(self):
+        hive = _make_hive()
+        with pytest.raises(HiveUnknownConfiguration):
+            await hive.start_session({"tokens": {"token": "t"}})
+
+
+class TestCreateDevices:
+    """Tests for Hive.create_devices and Hive._add_device."""
+
+    def test_hub_becomes_the_parent_device(self):
+        hive = _make_hive(devices=_DEVICES)
+        result = hive.create_devices()
+        assert hive.hub_id == "hub-1"
+        parent = result["parent"][0]
+        assert parent.hive_type == "hub"
+        assert parent.ha_type == "parent"
+        assert parent.device_id == "hub-1"
+        assert parent.parent_device == "hub-1"
+        assert parent.device_data["model"] == "HUB"
+        assert result["climate"] == []
+        assert result["water_heater"] == []
+
+    def test_missing_hub_logs_a_warning(self, caplog):
+        hive = _make_hive(devices={"thermo-1": _THERMOSTAT})
+        with caplog.at_level(logging.WARNING, logger="apyhiveapi.hive"):
+            result = hive.create_devices()
+        assert result["parent"] == []
+        assert hive.hub_id is None
+        assert "No hub device found" in caplog.text
+
+    def test_heating_product_becomes_a_climate_device(self):
+        hive = _make_hive(
+            products={"heat-1": _HEATING},
+            devices=_DEVICES,
+            user={"temperatureUnit": "C"},
+        )
+        climate = hive.create_devices()["climate"][0]
+        assert climate.hive_id == "heat-1"
+        assert climate.hive_type == "heating"
+        assert climate.ha_type == "climate"
+        assert climate.device_id == "thermo-1"
+        assert climate.hive_name == "Hallway"
+        assert climate.ha_name == "Hallway"
+        assert climate.device_data["model"] == "SLT3"
+        assert climate.parent_device == "hub-1"
+        assert climate.temperature_unit == "C"
+
+    def test_hotwater_product_becomes_a_water_heater_without_unit(self):
+        hive = _make_hive(
+            products={"hw-1": _HOTWATER},
+            devices=_DEVICES,
+            user={"temperatureUnit": "C"},
+        )
+        heater = hive.create_devices()["water_heater"][0]
+        assert heater.ha_type == "water_heater"
+        assert heater.device_id == "thermo-1"
+        assert heater.temperature_unit is None
+
+    def test_trv_control_uses_its_trv(self):
+        trv = {"id": "trv-1", "type": "trv", "state": {"name": "Bedroom"}, "props": {}}
+        hive = _make_hive(
+            products={
+                "trvc-1": {
+                    "id": "trvc-1",
+                    "type": "trvcontrol",
+                    "props": {"trvs": ["trv-1"]},
+                }
+            },
+            devices={**_DEVICES, "trv-1": trv},
+        )
+        climate = hive.create_devices()["climate"][0]
+        assert climate.device_id == "trv-1"
+        assert climate.hive_type == "trvcontrol"
+        assert climate.ha_name == "Bedroom"
+
+    def test_receiver_is_renamed_heating(self):
+        receiver = {
+            "id": "rec-1",
+            "type": "thermostatui",
             "state": {"name": "Receiver"},
-            "props": {},
+            "props": {"zone": "zone-A"},
         }
-        data = {"id": "heat-1", "type": "heating"}
-        device = d.add_list("climate", data)
-        assert device.hive_name == "Heating"
+        hive = _make_hive(products={"heat-1": _HEATING}, devices={"rec-1": receiver})
+        climate = hive.create_devices()["climate"][0]
+        assert climate.hive_name == "Heating"
+        assert climate.ha_name == "Heating"
 
-    def test_ha_name_space_prefix_prepends_device_name(self):
-        """ha_name starting with a space gets device name prepended."""
-        d = _make_discovery()
-        data = {"id": "p1", "type": "heating"}
-        device = d.add_list("sensor", data, ha_name=" Current Temperature")
-        assert device.ha_name == "Living Room Current Temperature"
+    def test_product_with_error_is_skipped(self):
+        hive = _make_hive(
+            products={"bad": {"id": "bad", "type": "heating", "error": "not found"}},
+            devices=_DEVICES,
+        )
+        assert hive.create_devices()["climate"] == []
 
-    def test_ha_name_no_prefix_used_as_is(self):
-        """ha_name not starting with a space is used verbatim."""
-        d = _make_discovery()
-        data = {"id": "p1", "type": "heating"}
-        device = d.add_list("sensor", data, ha_name="My Sensor")
-        assert device.ha_name == "My Sensor"
+    def test_unsupported_product_type_is_skipped(self):
+        hive = _make_hive(
+            products={"lamp": {"id": "lamp", "type": "warmwhitelight"}},
+            devices=_DEVICES,
+        )
+        result = hive.create_devices()
+        assert result["climate"] == []
+        assert result["water_heater"] == []
 
-    def test_no_ha_name_kwarg_uses_device_name(self):
-        """When ha_name is not supplied, ha_name defaults to device name."""
-        d = _make_discovery()
-        data = {"id": "p1", "type": "heating"}
-        device = d.add_list("climate", data)
-        assert device.ha_name == "Living Room"
+    def test_group_hotwater_product_is_skipped(self):
+        hive = _make_hive(
+            products={"g1": {**_HOTWATER, "id": "g1", "isGroup": True}},
+            devices=_DEVICES,
+        )
+        assert hive.create_devices()["water_heater"] == []
 
-    def test_missing_key_returns_none(self):
-        """A KeyError from get_device_data causes add_list to return None."""
-        d = _make_discovery()
-        d.helper.get_device_data.side_effect = KeyError("id")
-        result = d.add_list("climate", {"id": "bad"})
-        assert result is None
+    def test_group_heating_product_is_kept(self):
+        hive = _make_hive(
+            products={"g1": {**_HEATING, "id": "g1", "isGroup": True}},
+            devices=_DEVICES,
+        )
+        assert len(hive.create_devices()["climate"]) == 1
 
-    def test_action_ha_name_from_kwarg(self):
-        """Action device ha_name comes from the ha_name kwarg."""
-        d = _make_discovery()
-        data = {"id": "a-1", "name": "Ignored Name"}
-        device = d.add_list("switch", data, hive_type="action", ha_name="Night Mode")
-        assert device.ha_name == "Night Mode"
+    def test_product_with_missing_device_is_skipped_with_warning(self, caplog):
+        trvc = {"id": "trvc-1", "type": "trvcontrol", "props": {"trvs": ["missing"]}}
+        hive = _make_hive(products={"trvc-1": trvc}, devices=_DEVICES)
+        with caplog.at_level(logging.WARNING, logger="apyhiveapi.hive"):
+            result = hive.create_devices()
+        assert result["climate"] == []
+        assert "Skipping trvcontrol trvc-1" in caplog.text
 
-    def test_hub_type_also_added_to_parent(self):
-        """Devices with type='hub' are added to device_list['parent'] as well."""
-        d = _make_discovery()
-        d.helper.get_device_data.return_value = {
-            "id": "hub-device",
-            "state": {"name": "Hive Hub"},
-            "props": {"online": True},
-        }
-        data = {"id": "hub-device", "type": "hub"}
-        device = d.add_list("binary_sensor", data)
-        assert device in d.device_list["parent"]
-        assert device in d.device_list["binary_sensor"]
+    def test_malformed_device_state_is_skipped(self):
+        broken = {**_THERMOSTAT, "state": ["not", "a", "dict"]}
+        hive = _make_hive(products={"heat-1": _HEATING}, devices={"thermo-1": broken})
+        assert hive.create_devices()["climate"] == []
 
-    def test_returns_device_instance(self):
-        """add_list returns the created Device object."""
-        d = _make_discovery()
-        data = {"id": "heat-1", "type": "heating"}
-        device = d.add_list("climate", data)
-        assert isinstance(device, Device)
+    def test_device_list_is_rebuilt_on_each_call(self):
+        hive = _make_hive(products={"heat-1": _HEATING}, devices=_DEVICES)
+        hive.create_devices()
+        assert len(hive.create_devices()["climate"]) == 1

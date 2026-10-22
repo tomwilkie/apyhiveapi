@@ -1,4 +1,4 @@
-"""Unit tests for HiveApiAsync."""
+"""Unit tests for HiveApi."""
 
 import asyncio
 import json
@@ -7,8 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 from aiohttp import web_exceptions
-from apyhiveapi.api.hive_async_api import HiveApiAsync
-from apyhiveapi.helper.hive_exceptions import (
+
+from apyhiveapi.api import HiveApi
+from apyhiveapi.exceptions import (
     FileInUse,
     HiveApiError,
     HiveAuthError,
@@ -47,7 +48,7 @@ def _make_api(status=200, json_data=None, token="test-token", file_mode=False):
     session.tokens.token_data = {"token": token}
     session.config = MagicMock()
     session.config.file = file_mode
-    return HiveApiAsync(hive_session=session, websession=websession)
+    return HiveApi(session=session, websession=websession)
 
 
 def _make_api_no_token():
@@ -59,15 +60,15 @@ def _make_api_no_token():
     session.tokens.token_data = {}
     session.config = MagicMock()
     session.config.file = False
-    return HiveApiAsync(hive_session=session, websession=websession)
+    return HiveApi(session=session, websession=websession)
 
 
 # ---------------------------------------------------------------------------
-# Tests: HiveApiAsync.request
+# Tests for HiveApi.request
 # ---------------------------------------------------------------------------
 
 
-class TestHiveApiAsyncRequest:
+class TestHiveApiRequest:
     async def test_successful_200_returns_response(self):
         api = _make_api(status=200, json_data={"ok": True})
         resp = await api.request("get", "https://beekeeper.hivehome.com/1.0/nodes/all")
@@ -78,10 +79,22 @@ class TestHiveApiAsyncRequest:
         resp = await api.request("post", "https://beekeeper.hivehome.com/1.0/nodes/x/y")
         assert resp.status == 201
 
-    async def test_non_sso_without_token_raises_no_api_token(self):
+    async def test_without_token_raises_no_api_token(self):
         api = _make_api_no_token()
         with pytest.raises(NoApiToken):
             await api.request("get", "https://beekeeper.hivehome.com/1.0/nodes/all")
+
+    async def test_without_session_raises_no_api_token(self):
+        api = HiveApi(websession=_make_mock_websession())
+        with pytest.raises(NoApiToken):
+            await api.request("get", "https://beekeeper.hivehome.com/1.0/nodes/all")
+
+    async def test_data_is_sent_with_the_request(self):
+        api = _make_api(status=200)
+        await api.request("post", "https://beekeeper.hivehome.com/1.0/x", data="{}")
+        _, kwargs = api.websession.request.call_args
+        assert kwargs["data"] == "{}"
+        assert kwargs["headers"]["Authorization"] == "test-token"
 
     async def test_401_raises_hive_auth_error(self):
         api = _make_api(status=401)
@@ -105,7 +118,7 @@ class TestHiveApiAsyncRequest:
 
 
 # ---------------------------------------------------------------------------
-# Tests: HiveApiAsync.get_all
+# Tests for HiveApi.get_all
 # ---------------------------------------------------------------------------
 
 
@@ -137,12 +150,7 @@ class TestGetAll:
 
 
 # ---------------------------------------------------------------------------
-# Tests: HiveApiAsync.get_devices / get_products / get_actions
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Tests: HiveApiAsync.set_state
+# Tests for HiveApi.set_state
 # ---------------------------------------------------------------------------
 
 
@@ -173,22 +181,7 @@ class TestSetState:
 
 
 # ---------------------------------------------------------------------------
-# Tests: HiveApiAsync.set_action
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Tests: HiveApiAsync holiday mode
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Tests: HiveApiAsync.motion_sensor
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Tests: HiveApiAsync.error
+# Tests for HiveApi.error
 # ---------------------------------------------------------------------------
 
 
@@ -200,7 +193,7 @@ class TestError:
 
 
 # ---------------------------------------------------------------------------
-# Tests: HiveApiAsync.is_file_being_used
+# Tests for HiveApi.is_file_being_used
 # ---------------------------------------------------------------------------
 
 
@@ -216,7 +209,7 @@ class TestIsFileBeingUsed:
 
 
 # ---------------------------------------------------------------------------
-# Tests: HiveApiAsync.__init__
+# Tests for HiveApi.__init__
 # ---------------------------------------------------------------------------
 
 
@@ -227,14 +220,14 @@ class TestInit:
         session.tokens = MagicMock()
         session.tokens.token_data = {"token": "tok"}
         session.config = MagicMock()
-        api = HiveApiAsync(hive_session=session)
+        api = HiveApi(session=session)
         assert api.websession is None
 
     def test_websession_created_lazily_and_cached(self):
         """The first _get_websession() call creates and caches a ClientSession."""
         session = MagicMock()
-        api = HiveApiAsync(hive_session=session)
-        with patch("apyhiveapi.api.hive_async_api.ClientSession") as mock_session_cls:
+        api = HiveApi(session=session)
+        with patch("apyhiveapi.api.ClientSession") as mock_session_cls:
             first = api._get_websession()
             second = api._get_websession()
         mock_session_cls.assert_called_once()
@@ -245,7 +238,7 @@ class TestInit:
     def test_custom_websession_is_used(self):
         session = MagicMock()
         ws = MagicMock()
-        api = HiveApiAsync(hive_session=session, websession=ws)
+        api = HiveApi(session=session, websession=ws)
         assert api.websession is ws
 
     def test_base_url_is_set(self):
@@ -285,14 +278,14 @@ class TestRequestNonAuthErrorBranch:
 
 
 class TestSetStateJsonEncoding:
-    """set_state must produce valid JSON even when kwarg values contain special characters."""
+    """set_state produces valid JSON for values with special characters."""
 
     async def test_set_state_escapes_quotes_in_value(self):
         """A value containing double-quotes must produce valid, parseable JSON."""
         session = MagicMock()
         session.tokens.token_data = {"token": "tok"}
         session.config.file = False
-        api = HiveApiAsync(hive_session=session)
+        api = HiveApi(session=session)
         api.urls = {"nodes": "https://beekeeper.hivehome.com/1.0/nodes/{}/{}"}
 
         captured = {}
@@ -304,16 +297,18 @@ class TestSetStateJsonEncoding:
             resp.json = AsyncMock(return_value={})
             return resp
 
-        with patch.object(api, "request", side_effect=fake_request):
-            with patch.object(api, "is_file_being_used", new=AsyncMock()):
-                await api.set_state("heating", "node-1", mode='MANUAL"injected')
+        with (
+            patch.object(api, "request", side_effect=fake_request),
+            patch.object(api, "is_file_being_used", new=AsyncMock()),
+        ):
+            await api.set_state("heating", "node-1", mode='MANUAL"injected')
 
         parsed = json.loads(captured["data"])
         assert parsed["mode"] == 'MANUAL"injected'
 
 
 # ---------------------------------------------------------------------------
-# Tests: HiveApiAsync.get_login_info
+# Tests for HiveApi.get_login_info
 # ---------------------------------------------------------------------------
 
 _SSO_PAGE = (
@@ -344,7 +339,7 @@ def _make_page_websession(html: str, status: int = 200):
 class TestGetLoginInfo:
     async def test_successful_parse_returns_login_data(self):
         """Parses HiveSSOPoolId and HiveSSOPublicCognitoClientId from the SSO page."""
-        api = HiveApiAsync(websession=_make_page_websession(_SSO_PAGE))
+        api = HiveApi(websession=_make_page_websession(_SSO_PAGE))
 
         result = await api.get_login_info()
 
@@ -362,7 +357,7 @@ class TestGetLoginInfo:
             "        window.HiveSSOState = '%%STATE%%'\n"
             "    </script>"
         )
-        api = HiveApiAsync(websession=_make_page_websession(html))
+        api = HiveApi(websession=_make_page_websession(html))
 
         assert await api.get_login_info() == _SSO_LOGIN_DATA
 
@@ -373,33 +368,33 @@ class TestGetLoginInfo:
             "<script>window.HiveSSOPoolId = 'p' "
             "window.HiveSSOPublicCognitoClientId = 'c'</script>"
         )
-        api = HiveApiAsync(websession=_make_page_websession(html))
+        api = HiveApi(websession=_make_page_websession(html))
 
         assert await api.get_login_info() is None
 
     async def test_mismatched_quotes_are_not_parsed(self):
         """A value must be closed by the same quote character it was opened with."""
         html = "<script>window.HiveSSOPoolId = 'eu-west-1_abc\"</script>"
-        api = HiveApiAsync(websession=_make_page_websession(html))
+        api = HiveApi(websession=_make_page_websession(html))
 
         assert await api.get_login_info() is None
 
     async def test_missing_keys_return_none(self):
         """A script block without the Cognito keys yields None."""
         html = "<script>window.SomeOtherKey=value</script>"
-        api = HiveApiAsync(websession=_make_page_websession(html))
+        api = HiveApi(websession=_make_page_websession(html))
 
         assert await api.get_login_info() is None
 
     async def test_page_without_script_returns_none(self):
-        api = HiveApiAsync(websession=_make_page_websession("<html></html>"))
+        api = HiveApi(websession=_make_page_websession("<html></html>"))
 
         assert await api.get_login_info() is None
 
     async def test_client_error_raises_connection_error(self):
         websession = _make_page_websession(_SSO_PAGE)
         websession.get.side_effect = aiohttp.ClientError("net error")
-        api = HiveApiAsync(websession=websession)
+        api = HiveApi(websession=websession)
 
         with pytest.raises(HiveConnectionError):
             await api.get_login_info()
@@ -408,7 +403,7 @@ class TestGetLoginInfo:
         """A timeout on the SSO page is transient, so it must not return None."""
         websession = _make_page_websession(_SSO_PAGE)
         websession.get.side_effect = TimeoutError()
-        api = HiveApiAsync(websession=websession)
+        api = HiveApi(websession=websession)
 
         with pytest.raises(HiveConnectionError):
             await api.get_login_info()
@@ -418,10 +413,10 @@ class TestGetLoginInfo:
         temp_session = _make_page_websession(_SSO_PAGE)
         temp_session.__aenter__ = AsyncMock(return_value=temp_session)
         temp_session.__aexit__ = AsyncMock(return_value=False)
-        api = HiveApiAsync()
+        api = HiveApi()
 
         with patch(
-            "apyhiveapi.api.hive_async_api.ClientSession", return_value=temp_session
+            "apyhiveapi.api.ClientSession", return_value=temp_session
         ) as session_cls:
             result = await api.get_login_info()
 

@@ -7,7 +7,7 @@ name: Tests
 on:
   push:
     branches:
-      - master
+      - main
   pull_request:
 
 # Least privilege: the default GITHUB_TOKEN is read-only.

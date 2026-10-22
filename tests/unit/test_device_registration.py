@@ -1,16 +1,21 @@
-"""Unit tests for DeviceRegistrationMixin."""
+"""Unit tests for the trusted-device methods of HiveAuth."""
 
 # pylint: disable=protected-access
 
 from __future__ import annotations
 
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import botocore.exceptions
 import pytest
-from apyhiveapi.api.device_registration import DeviceRegistrationMixin
-from apyhiveapi.api.srp_crypto import G_HEX, N_HEX, get_random, hex_to_long
-from apyhiveapi.helper.hive_exceptions import HiveApiError, HiveInvalid2FACode
+
+from apyhiveapi.auth import HiveAuth
+from apyhiveapi.exceptions import (
+    HiveApiError,
+    HiveInvalid2FACode,
+    HiveInvalidDeviceAuthentication,
+)
 
 # ---------------------------------------------------------------------------
 # Exception factories
@@ -37,42 +42,24 @@ def _endpoint_error() -> botocore.exceptions.EndpointConnectionError:
 
 
 async def _make_stub(
-    device_group_key: str = "grp-key",
-    device_key: str = "dev-key",
-    device_password: str = "dev-pass",
+    device_group_key: str | None = "grp-key",
+    device_key: str | None = "dev-key",
+    device_password: str | None = "dev-pass",
     access_token: str | None = "acc-token",
-    client_secret: str | None = None,
-) -> DeviceRegistrationMixin:
-    """Create a DeviceRegistrationMixin instance with all required attributes."""
-
-    class StubDRM(DeviceRegistrationMixin):
-        pass
-
-    stub = StubDRM()
+) -> HiveAuth:
+    """Create a HiveAuth with the Cognito client and event loop mocked."""
+    stub = HiveAuth(
+        "user@test.com",
+        "pass",  # pragma: allowlist secret
+        device_group_key=device_group_key,
+        device_key=device_key,
+        device_password=device_password,
+    )
     stub.client = MagicMock()
     stub.loop = MagicMock()
     stub.loop.run_in_executor = AsyncMock(return_value={"result": "ok"})
     stub._client_id = "test-client-id"
     stub.access_token = access_token
-    stub.device_group_key = device_group_key
-    stub.device_key = device_key
-    stub.device_password = device_password
-    stub.client_secret = client_secret
-    stub.token_created = None
-
-    # SRP values needed for get_device_authentication_key
-    big_n = hex_to_long(N_HEX)
-    g_value = hex_to_long(G_HEX)
-    small_a = get_random(128) % big_n
-    stub.big_n = big_n
-    stub.g_value = g_value
-    stub.k = hex_to_long("0e44fbef19a2a5b8c72d17c2b2a5a9b7e4c91dc0")
-    stub.small_a_value = small_a
-    stub.large_a_value = pow(g_value, small_a, big_n)
-
-    # get_secret_hash static method (provided by HiveAuthAsync normally)
-    stub.get_secret_hash = MagicMock(return_value="secret-hash-value")
-
     return stub
 
 
@@ -177,7 +164,7 @@ class TestConfirmDevice:
             return_value={"PasswordVerifier": "pv", "Salt": "s"}
         )
         with patch(
-            "apyhiveapi.api.device_registration.socket.gethostname",
+            "apyhiveapi.auth.socket.gethostname",
             return_value="my-host",
         ):
             await stub.confirm_device(None)
@@ -502,15 +489,17 @@ class TestGetDeviceAuthenticationKeyUZero:
     async def test_u_value_zero_raises_value_error(self):
         """When calculate_u returns 0, a ValueError is raised."""
         stub = await _make_stub()
-        with patch("apyhiveapi.api.device_registration.calculate_u", return_value=0):
-            with pytest.raises(ValueError, match="U cannot be zero"):
-                stub.get_device_authentication_key(
-                    stub.device_group_key,
-                    stub.device_key,
-                    stub.device_password,
-                    stub.large_a_value,  # server_b_value (any value)
-                    "aabbccdd",  # salt
-                )
+        with (
+            patch("apyhiveapi.auth.calculate_u", return_value=0),
+            pytest.raises(ValueError, match="U cannot be zero"),
+        ):
+            stub.get_device_authentication_key(
+                stub.device_group_key,
+                stub.device_key,
+                stub.device_password,
+                stub.large_a_value,  # server_b_value (any value)
+                "aabbccdd",  # salt
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +641,7 @@ class TestDeviceRegistration:
 
 
 class TestProcessDeviceChallenge:
-    _CHALLENGE_PARAMS = {
+    _CHALLENGE_PARAMS: ClassVar[dict[str, str]] = {
         "USERNAME": "user@test.com",
         "SALT": "aabbccdd",
         "SRP_B": "ccddee",
@@ -711,30 +700,12 @@ class TestProcessDeviceChallenge:
 
         assert result["PASSWORD_CLAIM_SECRET_BLOCK"] == "YWJj"
 
-    async def test_no_client_secret_no_secret_hash(self):
-        stub = await _make_stub(client_secret=None)
-        fake_hkdf = b"\x00" * 32
-        with patch.object(
-            stub,
-            "get_device_authentication_key",
-            return_value=fake_hkdf,
-        ):
-            result = await stub.process_device_challenge(self._CHALLENGE_PARAMS)
-
-        assert "SECRET_HASH" not in result
-
-    async def test_with_client_secret_adds_secret_hash(self):
-        stub = await _make_stub(client_secret="my-client-secret")
-        fake_hkdf = b"\x00" * 32
-        with patch.object(
-            stub,
-            "get_device_authentication_key",
-            return_value=fake_hkdf,
-        ):
-            result = await stub.process_device_challenge(self._CHALLENGE_PARAMS)
-
-        assert "SECRET_HASH" in result
-        assert result["SECRET_HASH"] == "secret-hash-value"
+    async def test_missing_device_keys_raise_invalid_device_authentication(self):
+        stub = await _make_stub(
+            device_group_key=None, device_key=None, device_password=None
+        )
+        with pytest.raises(HiveInvalidDeviceAuthentication):
+            await stub.process_device_challenge(self._CHALLENGE_PARAMS)
 
     async def test_timestamp_format_matches_cognito_pattern(self):
         """Timestamp must follow Cognito's format (day number without leading zero)."""
@@ -831,10 +802,10 @@ class TestGetDeviceAuthenticationKey:
 
 
 class TestConfirmDeviceWrongException:
-    """confirm_device must map NotAuthorizedException → HiveApiError (not HiveInvalid2FACode)."""
+    """confirm_device maps NotAuthorizedException to HiveApiError."""
 
     async def test_not_authorized_raises_hive_api_error(self):
-        """NotAuthorizedException in confirm_device raises HiveApiError, not HiveInvalid2FACode."""
+        """NotAuthorizedException raises HiveApiError, not HiveInvalid2FACode."""
         stub = await _make_stub()
         err = botocore.exceptions.ClientError(
             {"Error": {"Code": "NotAuthorizedException", "Message": "not auth"}},
@@ -846,7 +817,7 @@ class TestConfirmDeviceWrongException:
             await stub.confirm_device()
 
     async def test_not_authorized_does_not_raise_invalid_2fa(self):
-        """confirm_device must not raise HiveInvalid2FACode for NotAuthorizedException."""
+        """NotAuthorizedException does not become HiveInvalid2FACode."""
         stub = await _make_stub()
         err = botocore.exceptions.ClientError(
             {"Error": {"Code": "NotAuthorizedException", "Message": "not auth"}},
@@ -854,7 +825,7 @@ class TestConfirmDeviceWrongException:
         )
         stub.loop.run_in_executor = AsyncMock(side_effect=err)
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(HiveApiError) as exc_info:
             await stub.confirm_device()
 
         assert not isinstance(exc_info.value, HiveInvalid2FACode)
@@ -864,7 +835,7 @@ class TestForgetDeviceWrongException:
     """forget_device must map NotAuthorizedException → HiveApiError."""
 
     async def test_not_authorized_raises_hive_api_error(self):
-        """NotAuthorizedException in forget_device raises HiveApiError, not HiveInvalid2FACode."""
+        """NotAuthorizedException raises HiveApiError, not HiveInvalid2FACode."""
         stub = await _make_stub()
         err = botocore.exceptions.ClientError(
             {"Error": {"Code": "NotAuthorizedException", "Message": "not auth"}},
@@ -874,22 +845,3 @@ class TestForgetDeviceWrongException:
 
         with pytest.raises(HiveApiError):
             await stub.forget_device("tok", "key")
-
-
-# ---------------------------------------------------------------------------
-# generate_hash_device — unnecessary async removed
-# ---------------------------------------------------------------------------
-
-
-class TestUnnecessaryAsync:
-    """generate_hash_device should work without async (callable directly)."""
-
-    def test_generate_hash_device_returns_config(self):
-        """generate_hash_device returns the verifier config without needing await."""
-        r = DeviceRegistrationMixin.__new__(DeviceRegistrationMixin)
-        r.device_password = None
-        r.g_value = 2
-        r.big_n = 0xFFFF
-        result = r.generate_hash_device("grp", "key")
-        assert "PasswordVerifier" in result
-        assert "Salt" in result

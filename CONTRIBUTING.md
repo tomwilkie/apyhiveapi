@@ -41,16 +41,16 @@ pre-commit run --all-files
 Individual tools:
 
 ```bash
-ruff check src/          # lint
-ruff format src/         # format
-mypy src/                # type check
+ruff check src/ tests/ scripts/ examples/    # lint (every ruff rule is enabled)
+ruff format src/ tests/ scripts/ examples/   # format
+mypy src/                                    # type check (strict)
+pylint src/
 ```
 
 ## Submitting a PR
 
-1. Branch off `dev` (not `master`)
-2. Make your changes and ensure `pre-commit run --all-files` passes
-3. Push and open a PR against `dev`
-4. Direct PRs to `master` are blocked
+1. Branch off `main`
+2. Make your changes and ensure `pre-commit run --all-files` and `pytest tests/` pass
+3. Push and open a PR against `main`
 
 Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before contributing.

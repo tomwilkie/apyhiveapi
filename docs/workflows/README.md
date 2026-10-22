@@ -40,13 +40,13 @@ Direct pushes to `dev` and `master` are blocked via branch protection rules.
 1. Developer opens a PR from `feature/x` into `dev`. CI runs.
 2. PR reviewed and merged into `dev`.
 3. **`dev-release-pr.yml`** fires:
-   - If no open `dev → master` PR exists, it bumps the patch version in `setup.py`, commits to `dev` with `[skip ci]`, and opens a `dev → master` PR.
+   - If no open `dev → master` PR exists, it bumps the patch version in `pyproject.toml`, commits to `dev` with `[skip ci]`, and opens a `dev → master` PR.
    - If an open PR already exists, it does nothing (the PR auto-updates with the new commit).
 4. Subsequent feature PRs into `dev` keep updating the same release PR — **no further version bumps**.
 5. When ready to release, the maintainer merges the `dev → master` PR.
 6. **`guard-master.yml`** ensured the PR's source was `dev`; the merge is allowed.
 7. **`release-on-master.yml`** fires on the push to `master`:
-   - Reads the version from `setup.py`.
+   - Reads the version from `pyproject.toml`.
    - Creates tag `vX.Y.Z` and a GitHub Release with auto-generated notes.
 8. **`python-publish.yml`** fires on `release: published`:
    - Builds the sdist + wheel.
@@ -58,9 +58,9 @@ Direct pushes to `dev` and `master` are blocked via branch protection rules.
 ## Workflow reference
 
 ### `ci.yml` — Continuous Integration
-- **Triggers:** all `pull_request` events; `push` to `master`.
-- **Purpose:** Lint (bandit, black, codespell, flake8, isort, json, pyupgrade, etc.) and tests.
-- **Role:** Gates every PR via required status checks. Provides a final sanity run on `master` after a release PR merges.
+- **Triggers:** all `pull_request` events; `push` to `main`.
+- **Purpose:** Runs every pre-commit hook (ruff, pylint, mypy, bandit, codespell, yamllint, detect-secrets, the PII check) and the tests.
+- **Role:** Gates every PR via required status checks. Provides a final sanity run on `main` after a merge.
 
 ### `guard-master.yml` — Master branch guard
 - **Triggers:** `pull_request` targeting `master`.
@@ -71,14 +71,14 @@ Direct pushes to `dev` and `master` are blocked via branch protection rules.
 - **Triggers:** `push` to `dev`.
 - **Purpose:**
   - Checks for an open `dev → master` PR.
-  - If none exists: bumps the patch version in `setup.py`, commits with `[skip ci]`, opens the release PR.
+  - If none exists: bumps the patch version in `pyproject.toml`, commits with `[skip ci]`, opens the release PR.
   - If one exists: no-op.
 - **Role:** Guarantees exactly one version bump per release cycle, regardless of how many feature PRs land on `dev`.
 
 ### `release-on-master.yml` — Tag + GitHub Release
 - **Triggers:** `push` to `master`.
 - **Purpose:**
-  - Reads the version from `setup.py`.
+  - Reads the version from `pyproject.toml`.
   - Skips if a tag for that version already exists.
   - Otherwise creates tag `vX.Y.Z` and a GitHub Release with auto-generated notes.
 - **Role:** The bridge between merging the release PR and triggering PyPI publishing.
@@ -126,9 +126,9 @@ The following workflows were removed during this consolidation:
 
 ## Versioning
 
-- Source of truth: `version="X.Y.Z"` in `@/setup.py`.
+- Source of truth: `version = "X.Y.Z"` in `pyproject.toml`.
 - Bumped automatically (patch only) by `dev-release-pr.yml` once per release cycle.
-- For minor or major bumps, edit `setup.py` manually on `dev` before the first feature PR merges, or amend the bump commit before merging the release PR.
+- For minor or major bumps, edit `pyproject.toml` manually on `dev` before the first feature PR merges, or amend the bump commit before merging the release PR.
 
 ---
 
@@ -138,6 +138,6 @@ The following workflows were removed during this consolidation:
 |---|---|
 | Release PR didn't open | Push to `dev` was the bot's own bump commit (contains `[skip ci]` and `chore: bump version` — intentionally skipped). |
 | Version not bumped | A `dev → master` PR was already open. Bumps happen only when opening a fresh release PR. |
-| PyPI publish skipped | Tag for current `setup.py` version already exists; bump the version before merging to `master` again. |
+| PyPI publish skipped | Tag for current `pyproject.toml` version already exists; bump the version before merging to `master` again. |
 | PR into `master` fails check | Source branch is not `dev`. This is enforced by `guard-master.yml`. |
 | Manual dev publish fails on master | Intentional — `dev-publish.yml` refuses to run on `master`. Switch branch or use the standard release flow. |

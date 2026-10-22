@@ -1,49 +1,25 @@
-"""Unit tests for hive.py module-level functions and the Hive class."""
+"""Unit tests for the Hive class composition."""
 
-# pylint: disable=protected-access,too-few-public-methods
-
+from apyhiveapi.heating import Climate
 from apyhiveapi.hive import Hive
+from apyhiveapi.hotwater import WaterHeater
 
 
 class TestHiveInit:
-    """Tests for Hive.__init__ device module composition."""
+    """Tests for the handlers Hive.__init__ attaches."""
 
     async def test_initializes_heating(self):
-        from apyhiveapi.devices.heating import Climate
-
         async with Hive(username="use@file.com", password="") as hive:
             assert isinstance(hive.heating, Climate)
+            assert hive.heating.session is hive
 
     async def test_initializes_hotwater(self):
-        from apyhiveapi.devices.hotwater import WaterHeater
-
         async with Hive(username="use@file.com", password="") as hive:
             assert isinstance(hive.hotwater, WaterHeater)
+            assert hive.hotwater.session is hive
 
-    async def test_initializes_hub(self):
-        from apyhiveapi.devices.hub import HiveHub
-
-        async with Hive(username="use@file.com", password="") as hive:
-            assert isinstance(hive.hub, HiveHub)
-
-    async def test_initializes_light(self):
-        from apyhiveapi.devices.light import Light
-
-        async with Hive(username="use@file.com", password="") as hive:
-            assert isinstance(hive.light, Light)
-
-    async def test_initializes_switch(self):
-        from apyhiveapi.devices.plug import Switch
-
-        async with Hive(username="use@file.com", password="") as hive:
-            assert isinstance(hive.switch, Switch)
-
-    async def test_initializes_sensor(self):
-        from apyhiveapi.devices.sensor import Sensor
-
-        async with Hive(username="use@file.com", password="") as hive:
-            assert isinstance(hive.sensor, Sensor)
-
-    async def test_session_is_self(self):
-        async with Hive(username="use@file.com", password="") as hive:
-            assert hive.session is hive
+    async def test_blank_credentials_default_to_empty_strings(self):
+        async with Hive() as hive:
+            assert hive.auth.username == ""
+            assert hive.auth.password == ""
+            assert hive.config.username is None

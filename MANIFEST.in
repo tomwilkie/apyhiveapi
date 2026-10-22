@@ -1,5 +1,5 @@
 recursive-include src *.py
-recursive-include src/data *.json
+recursive-include src/apyhiveapi/data *.json
 include LICENSE README.md
 global-exclude .DS_Store
 global-exclude *.py[cod]
