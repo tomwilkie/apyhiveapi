@@ -1,6 +1,6 @@
 # pyhive-integration
 
-![CI](https://github.com/Pyhass/Pyhive/actions/workflows/ci.yml/badge.svg) ![PyPI](https://img.shields.io/pypi/v/pyhive-integration) ![Python](https://img.shields.io/pypi/pyversions/pyhive-integration) ![License](https://img.shields.io/github/license/Pyhass/Pyhive)
+![CI](https://github.com/tomwilkie/pyhive-integration/actions/workflows/ci.yml/badge.svg) ![PyPI](https://img.shields.io/pypi/v/pyhive-integration) ![Python](https://img.shields.io/pypi/pyversions/pyhive-integration) ![License](https://img.shields.io/github/license/tomwilkie/pyhive-integration)
 
 An async Python library (`apyhiveapi`) for the [Hive](https://www.hivehome.com/) smart home platform. It exists to power the Hive integration for [Home Assistant](https://www.home-assistant.io/) and exposes exactly what that integration needs: Hive heating (thermostats and TRVs) and hot water.
 
@@ -154,11 +154,11 @@ pytest tests/
 ## Links
 
 - [PyPI](https://pypi.org/project/pyhive-integration/)
-- [Source](https://github.com/Pyhass/Pyhive)
-- [Issue Tracker](https://github.com/Pyhass/Pyhive/issues)
+- [Source](https://github.com/tomwilkie/pyhive-integration)
+- [Issue Tracker](https://github.com/tomwilkie/pyhive-integration/issues)
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](https://github.com/Pyhass/Pyhive/blob/master/LICENSE) for details.
+MIT License — see [LICENSE](https://github.com/tomwilkie/pyhive-integration/blob/main/LICENSE) for details.
