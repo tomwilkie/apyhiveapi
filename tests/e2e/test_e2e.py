@@ -80,6 +80,8 @@ class TestDeviceListIntegrity:
         assert heating.device_id == _THERMOSTAT_ID
         assert hotwater.device_id == _THERMOSTAT_ID
         assert heating.ha_name == "Heating Zone 1"
+        assert hotwater.ha_name == "Hotwater"
+        assert heating.device_name == hotwater.device_name == "Heating Zone 1"
         assert heating.parent_device == _HUB_ID
         assert heating.device_data["model"] == "SLT3"
 
@@ -210,14 +212,12 @@ class TestRateLimiting:
     async def test_update_data_is_rate_limited_within_the_scan_interval(
         self, file_session
     ):
-        device = _find(file_session, "climate", _HEATING_ID)
-        assert await file_session.update_data(device) is False
+        assert await file_session.update_data() is False
 
     async def test_update_data_polls_once_the_interval_has_passed(self, file_session):
-        device = _find(file_session, "climate", _HEATING_ID)
         file_session.config.last_update -= file_session.config.scan_interval
-        assert await file_session.update_data(device) is True
-        assert await file_session.update_data(device) is False
+        assert await file_session.update_data() is True
+        assert await file_session.update_data() is False
 
     async def test_update_interval_is_never_below_the_minimum(self, file_session):
         file_session.update_interval(1)

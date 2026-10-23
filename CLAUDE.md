@@ -64,8 +64,10 @@ depends on is:
 
 The fork still uses the previous names (`hive.session.*`, camelCase methods
 and `Device` keys, imports from `apyhiveapi.helper.hive_exceptions`), catches
-aiohttp's `HTTPException` (which this library no longer raises) and treats the
-`set_*` methods as returning `bool`. It has to be migrated to this API before
+aiohttp's `HTTPException` (which this library no longer raises), treats the
+`set_*` methods as returning `bool`, awaits `get_device_data()` and
+`update_interval()`, which are now synchronous, and passes a device to
+`update_data()`, which no longer takes one. It has to be migrated to this API before
 its `manifest.json` is bumped to this version. The mapping it needs is:
 `HiveReauthRequired` → `ConfigEntryAuthFailed`, `HiveConnectionError` →
 `ConfigEntryNotReady`, any other `HiveError` at setup → `ConfigEntryError`,
@@ -177,8 +179,9 @@ mypy src/
 bandit --configfile=tests/bandit.yaml src/
 ```
 
-The `no-commit-to-branch` pre-commit hook blocks commits to `master`; day-to-day
-work happens on `main`.
+All work happens on `main` through pull requests. A release is a version bump
+in `pyproject.toml` merged into `main`: `release.yml` tags it and publishes a
+GitHub Release with the wheel attached (see `docs/workflows/README.md`).
 
 A PII check pre-commit hook (`scripts/check_data_pii.py`) runs on any
 `src/apyhiveapi/data/*.json` change — ensure fixture data is anonymised before
@@ -258,7 +261,7 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens`,
   call: refresh first, and on `HiveReauthRequired` (HTTP 401/403) log in once
   and retry. `set_state()` is the handlers' way to change a product, a no-op in
   file mode.
-- **Polling** — `update_data(device)` is rate limited to `config.scan_interval`
+- **Polling** — `update_data()` is rate limited to `config.scan_interval`
   (`update_interval()` sets it, never below `MIN_SCAN_INTERVAL`) and serialised
   through `update_lock`; concurrent callers return `False` instead of waiting.
   `get_devices()` polls now through `_poll()`, which fetches `/nodes/all` (or
@@ -272,7 +275,9 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens`,
   `create_devices()`, which builds `device_list` with the keys `parent`,
   `climate` and `water_heater` from `PRODUCT_ENTITY_TYPES`. Heating and hot
   water products attach to the thermostat in their zone, TRV controls to their
-  first TRV; a malformed product is skipped with a warning.
+  first TRV; a malformed product is skipped with a warning. An entity is named
+  after its product (`hive_name` / `ha_name`), the device after the hardware
+  that carries it (`device_name`); Hive's `Receiver` is shown as `Heating`.
 - **Device bookkeeping** — `device_recovered()`, `report_device_offline()`
   (logs once until the device recovers) and `_device_name()`.
 
@@ -318,7 +323,7 @@ Two flows:
 1. **First login** — `Auth.login()` returns `ChallengeName == "SMS_MFA"` (use
    the `SMS_REQUIRED` constant). Call `auth.sms_2fa(code, result)`, then
    `auth.device_registration()` to make this machine a trusted device, then
-   save the credentials from `await auth.get_device_data()`
+   save the credentials from `auth.get_device_data()`
    (`device_group_key`, `device_key`, `device_password`, `token_created`).
 2. **Subsequent logins** — pass the saved `device_data` in the `start_session`
    config. `login()` is answered with a device challenge, which

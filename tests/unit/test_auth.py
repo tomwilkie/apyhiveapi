@@ -1078,12 +1078,12 @@ class TestGetDeviceData:
     async def test_returns_the_credentials_to_save(self):
         auth = HiveAuth(USERNAME, PASSWORD, **DEVICE_CREDENTIALS)
         auth.token_created = FROZEN_NOW
-        result = await auth.get_device_data()
+        result = auth.get_device_data()
         assert result == ("grp-key", "dev-key", "dev-pass", FROZEN_NOW)
 
     async def test_before_any_login(self):
         auth = HiveAuth(USERNAME, PASSWORD)
-        assert await auth.get_device_data() == (None, None, None, None)
+        assert auth.get_device_data() == (None, None, None, None)
 
     async def test_reflects_the_keys_issued_at_login(self):
         auth = make_auth()
@@ -1094,14 +1094,14 @@ class TestGetDeviceData:
             device_key,
             device_password,
             token_created,
-        ) = await auth.get_device_data()
+        ) = auth.get_device_data()
         assert (group_key, device_key, device_password) == ("new-grp", "new-dev", None)
         assert token_created is auth.token_created
 
     async def test_reflects_the_password_made_at_registration(self):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
         await auth.device_registration("Home Assistant")
-        group_key, device_key, device_password, _created = await auth.get_device_data()
+        group_key, device_key, device_password, _created = auth.get_device_data()
         assert (group_key, device_key) == ("grp-key", "dev-key")
         assert device_password == auth.device_password
         assert device_password != "dev-pass"

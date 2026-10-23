@@ -386,7 +386,7 @@ class HiveAuth:
             DeviceRememberedStatus="remembered",
         )
 
-    async def get_device_data(
+    def get_device_data(
         self,
     ) -> tuple[str | None, str | None, str | None, datetime | None]:
         """Return the credentials to save for device logins.

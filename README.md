@@ -65,7 +65,7 @@ async def main():
                 "username": username,
                 "password": password,
                 "tokens": tokens,
-                "device_data": await auth.get_device_data(),
+                "device_data": auth.get_device_data(),
             }
         )
         for climate in devices["climate"]:
@@ -122,7 +122,7 @@ await hive.hotwater.set_boost_on(device, 60)
 await hive.hotwater.set_boost_off(device)
 
 # Refresh state (rate limited to the configured scan interval)
-await hive.update_data(device)
+await hive.update_data()
 device = await hive.heating.get_climate(device)
 print(device.status, device.device_data["online"])
 ```

@@ -52,6 +52,11 @@ POLL_RETRY_DELAY = timedelta(seconds=30)
 _DEVICE_DATA_FIELDS = 3
 
 
+def _display_name(name: str) -> str:
+    """Return the name to show; Hive calls a heating-only thermostat "Receiver"."""
+    return "Heating" if name == "Receiver" else name
+
+
 class Hive:
     """A Hive account session.
 
@@ -202,13 +207,21 @@ class Hive:
             self.update_tokens(result)
 
     async def _api_call[T](self, call: Callable[[], Awaitable[T]]) -> T:
-        """Call the API with fresh tokens, logging in again if Hive rejects them."""
+        """Call the API with fresh tokens, logging in again if Hive rejects them.
+
+        Callers whose tokens are rejected at the same time log in once: the
+        login is serialised through the refresh lock and skipped when another
+        caller has already replaced the tokens.
+        """
         await self.hive_refresh_tokens()
+        issued = self.tokens.token_created
         try:
             return await call()
         except HiveReauthRequired as err:
-            _LOGGER.debug("Hive rejected the token (%s), logging in again", err)
-            await self.login()
+            async with self._refresh_lock:
+                if self.tokens.token_created == issued:
+                    _LOGGER.debug("Hive rejected the token (%s), logging in again", err)
+                    await self.login()
             return await call()
 
     async def set_state(
@@ -244,14 +257,11 @@ class Hive:
         """Return True once the scan interval has passed since the last poll."""
         return datetime.now(UTC) >= self.config.last_update + self.config.scan_interval
 
-    async def update_data(self, _device: Device) -> bool:
+    async def update_data(self) -> bool:
         """Poll Hive if the scan interval has passed since the last poll.
 
         Home Assistant calls this from every entity's update, so the poll runs
         at most once per interval across all entities and never concurrently.
-
-        Args:
-            _device: The entity requesting the update (unused).
 
         Returns:
             True if a poll ran and stored new data.
@@ -594,15 +604,17 @@ class Hive:
         """
         try:
             device_data = self._device_for_product(data)
-            state_name = device_data["state"]["name"]
-            name = "Heating" if state_name == "Receiver" else state_name
+            # The entity is named after the product (the heating zone, the hot
+            # water); the device after the hardware that carries it.
+            device_name = _display_name(device_data["state"]["name"])
+            name = _display_name((data.get("state") or {}).get("name") or device_name)
             device = Device(
                 hive_id=data.get("id", ""),
                 hive_name=name,
                 hive_type=data.get("type", ""),
                 ha_type=entity_type,
                 device_id=device_data["id"],
-                device_name=name,
+                device_name=device_name,
                 device_data=device_data.get("props", data.get("props", {})),
                 parent_device=self.hub_id,
                 ha_name=name,

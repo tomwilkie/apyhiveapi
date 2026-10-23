@@ -581,6 +581,28 @@ class TestAddDevice:
         hive = self._hive(devices=_DEVICES)
         assert hive._add_device("water_heater", _HOTWATER).temperature_unit is None
 
+    def test_entity_is_named_after_the_product_and_device_after_the_hardware(self):
+        hive = self._hive(devices=_DEVICES)
+        hotwater = {**_HOTWATER, "state": {"name": "Hot Water"}}
+        device = hive._add_device("water_heater", hotwater)
+        assert device.hive_name == "Hot Water"
+        assert device.ha_name == "Hot Water"
+        assert device.device_name == "Hallway"
+        assert device.device_id == "thermo-1"
+
+    @pytest.mark.parametrize("product", [_HEATING, {**_HEATING, "state": {}}])
+    def test_product_without_a_name_takes_the_device_name(self, product):
+        hive = self._hive(devices=_DEVICES)
+        device = hive._add_device("climate", product)
+        assert device.hive_name == device.ha_name == device.device_name == "Hallway"
+
+    def test_receiver_is_shown_as_heating_for_product_and_device(self):
+        receiver = {**_THERMOSTAT, "state": {"name": "Receiver"}}
+        hive = self._hive(devices={**_DEVICES, "thermo-1": receiver})
+        product = {**_HEATING, "state": {"name": "Receiver"}}
+        device = hive._add_device("climate", product)
+        assert device.hive_name == device.ha_name == device.device_name == "Heating"
+
     def test_device_data_falls_back_to_the_product_props(self):
         trv = {"id": "trv-1", "type": "trv", "state": {"name": "Bedroom"}}
         hive = self._hive(devices={"trv-1": trv})

@@ -531,6 +531,36 @@ class TestApiCall:
             await hive._api_call(api_call)
         hive.login.assert_not_awaited()
 
+    async def test_concurrent_rejections_log_in_once(self):
+        hive = _make_hive()
+
+        async def _login():
+            # A real login yields to the loop and then replaces the tokens.
+            await asyncio.sleep(0)
+            hive.update_tokens(AUTH_RESULT)
+
+        hive.login = AsyncMock(side_effect=_login)
+        first = AsyncMock(side_effect=[HiveReauthRequired("HTTP 401"), "a"])
+        second = AsyncMock(side_effect=[HiveReauthRequired("HTTP 401"), "b"])
+        results = await asyncio.gather(hive._api_call(first), hive._api_call(second))
+        assert results == ["a", "b"]
+        hive.login.assert_awaited_once_with()
+        assert first.await_count == second.await_count == 2
+
+    async def test_a_rejection_after_someone_else_logged_in_just_retries(self):
+        hive = _make_hive()
+        hive.login = AsyncMock()
+
+        async def _rejected_then_ok():
+            if hive.tokens.token_data.get("token") != NEW_TOKENS["token"]:
+                # Another caller replaces the tokens while this call is failing.
+                hive.update_tokens(AUTH_RESULT)
+                raise HiveReauthRequired("HTTP 401")
+            return "ok"
+
+        assert await hive._api_call(_rejected_then_ok) == "ok"
+        hive.login.assert_not_awaited()
+
 
 class TestSetState:
     async def test_file_mode_sends_nothing(self):

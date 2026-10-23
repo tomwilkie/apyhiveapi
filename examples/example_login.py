@@ -89,7 +89,7 @@ async def sms_login(username: str, password: str) -> tuple[dict[str, Any], list[
         # Cognito ties the new tokens to this device. Without registering it
         # the refresh token is rejected and every login would need an SMS.
         await auth.device_registration()
-        group_key, key, device_password = (await auth.get_device_data())[:3]
+        group_key, key, device_password = auth.get_device_data()[:3]
         if group_key and key and device_password:
             device_data = [group_key, key, device_password]
     return result, device_data

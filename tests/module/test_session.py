@@ -58,12 +58,15 @@ class TestFileSessionDevices:
         assert trv.device_id == _TRV_ID
         assert trv.device_data["model"] == "TRV001"
 
-    async def test_water_heater_is_named_after_its_zone_thermostat(self, file_session):
+    async def test_water_heater_is_named_after_its_product(self, file_session):
         heater = file_session.device_list["water_heater"][0]
         assert heater.hive_type == "hotwater"
         assert heater.ha_type == "water_heater"
-        assert heater.hive_name == "Heating Zone 1"
+        assert heater.hive_name == "Hotwater"
+        assert heater.ha_name == "Hotwater"
+        # The hardware behind it is the zone's thermostat.
         assert heater.device_id == _THERMOSTAT_ID
+        assert heater.device_name == "Heating Zone 1"
 
     async def test_temperature_unit_is_set_on_climate_devices_only(self, file_session):
         for device in file_session.device_list["climate"]:
@@ -93,23 +96,20 @@ class TestFileSessionPolling:
     """Polling the fixture through update_data."""
 
     async def test_update_data_is_rate_limited_right_after_start(self, file_session):
-        device = file_session.device_list["climate"][0]
-        assert await file_session.update_data(device) is False
+        assert await file_session.update_data() is False
 
     async def test_update_data_polls_once_the_interval_has_passed(self, file_session):
-        device = file_session.device_list["climate"][0]
         file_session.config.last_update = datetime.now(UTC) - timedelta(days=1)
-        assert await file_session.update_data(device) is True
+        assert await file_session.update_data() is True
         assert datetime.now(UTC) - file_session.config.last_update < timedelta(
             seconds=5
         )
-        assert await file_session.update_data(device) is False
+        assert await file_session.update_data() is False
 
     async def test_a_poll_reloads_the_fixture(self, file_session):
-        device = file_session.device_list["climate"][0]
         file_session.data.products[_HEATING_ID]["state"]["target"] = 99
         file_session.config.last_update = datetime.now(UTC) - timedelta(days=1)
-        assert await file_session.update_data(device) is True
+        assert await file_session.update_data() is True
         assert file_session.data.products[_HEATING_ID]["state"]["target"] == 7
         assert len(file_session.data.products) == 17
 

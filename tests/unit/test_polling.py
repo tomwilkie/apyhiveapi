@@ -17,7 +17,6 @@ from apyhiveapi.hive import (
     Hive,
 )
 from apyhiveapi.models import DEFAULT_SCAN_INTERVAL
-from tests.conftest import make_device
 
 _FAR_PAST = timedelta(days=1)
 _LOGGER_NAME = "apyhiveapi.hive"
@@ -104,61 +103,59 @@ class TestUpdateData:
 
     async def test_polls_when_due_and_returns_true(self):
         hive = _make_hive(due=True)
-        assert await hive.update_data(make_device()) is True
+        assert await hive.update_data() is True
         hive.get_devices.assert_awaited_once_with()
 
     async def test_skips_the_poll_when_not_due(self):
         hive = _make_hive(due=False)
-        assert await hive.update_data(make_device()) is False
+        assert await hive.update_data() is False
         hive.get_devices.assert_not_awaited()
 
     async def test_returns_false_while_another_caller_holds_the_lock(self):
         hive = _make_hive(due=True)
         async with hive.update_lock:
-            assert await hive.update_data(make_device()) is False
+            assert await hive.update_data() is False
         hive.get_devices.assert_not_awaited()
 
     async def test_rechecks_whether_the_poll_is_due_after_taking_the_lock(self):
         hive = _make_hive(due=True)
         hive._poll_is_due = MagicMock(side_effect=[True, False])
-        assert await hive.update_data(make_device()) is False
+        assert await hive.update_data() is False
         assert hive._poll_is_due.call_count == 2
         hive.get_devices.assert_not_awaited()
 
     async def test_returns_the_result_of_get_devices(self):
         hive = _make_hive(due=True)
         hive.get_devices = AsyncMock(return_value=False)
-        assert await hive.update_data(make_device()) is False
+        assert await hive.update_data() is False
         hive.get_devices.assert_awaited_once_with()
 
     async def test_the_device_argument_is_not_used(self):
         hive = _make_hive(due=True)
-        assert await hive.update_data(None) is True
+        assert await hive.update_data() is True
 
     async def test_concurrent_callers_poll_once(self):
         hive = _make_hive(due=True)
-        results = await asyncio.gather(
-            hive.update_data(make_device()), hive.update_data(make_device())
-        )
+        results = await asyncio.gather(hive.update_data(), hive.update_data())
         assert sorted(results) == [False, True]
         hive.get_devices.assert_awaited_once_with()
 
     async def test_a_second_call_after_a_poll_is_rate_limited(self):
         hive = _make_hive(due=True)
-        assert await hive.update_data(make_device()) is True
-        assert await hive.update_data(make_device()) is False
+        assert await hive.update_data() is True
+        assert await hive.update_data() is False
         hive.get_devices.assert_awaited_once_with()
 
     async def test_the_lock_is_released_after_a_poll(self):
         hive = _make_hive(due=True)
-        await hive.update_data(make_device())
+        await hive.update_data()
         assert not hive.update_lock.locked()
 
     async def test_the_lock_is_released_when_the_poll_raises(self):
         hive = _make_hive(due=True)
         hive.get_devices = AsyncMock(side_effect=HiveReauthRequired("log in again"))
         with pytest.raises(HiveReauthRequired):
-            await hive.update_data(make_device())
+            await hive.update_data()
         assert not hive.update_lock.locked()
 
 
