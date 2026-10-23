@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from apyhiveapi import SMS_REQUIRED, Auth, Hive, HiveInvalidDeviceAuthentication
+from apyhiveapi import SMS_REQUIRED, Auth, Hive, HiveReauthRequired
 
 DEVICE_FILE = Path("hive_device.json")
 
@@ -69,7 +69,7 @@ async def device_login(
         result = await auth.login()
         if result.get("ChallengeName") == Auth.DEVICE_VERIFIER_CHALLENGE:
             result = await auth.device_login()
-    except HiveInvalidDeviceAuthentication:
+    except HiveReauthRequired:
         return {}
     return result if "AuthenticationResult" in result else {}
 

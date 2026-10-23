@@ -1,68 +1,54 @@
-"""Exceptions raised by apyhiveapi."""
+"""Exceptions raised by apyhiveapi.
 
-
-class FileInUse(Exception):
-    """The session is in file mode, so the API must not be called."""
-
-
-class NoApiToken(Exception):
-    """No API token is available for the request."""
+Each class names what the caller should do about it: retry later
+(:class:`HiveConnectionError`), give up on this request
+(:class:`HiveApiError`, :class:`HiveDeviceOffline`) or have the user log in
+again (:class:`HiveReauthRequired` and its subclasses). Errors from aiohttp
+and botocore never escape the library: they are translated where they occur
+and chained as ``__cause__``.
+"""
 
 
 class HiveError(Exception):
-    """Common base class for all Hive-specific exceptions."""
+    """Base class for every error this library raises."""
 
 
-class HiveApiError(HiveError):
-    """The Hive API returned an error."""
+class HiveConnectionError(HiveError):
+    """Hive or Cognito could not be reached, or answered with a server error.
 
-
-class HiveAuthError(HiveApiError):
-    """Auth error (401/403): the token may be expired or invalid."""
-
-
-class HiveRefreshTokenExpired(HiveApiError):
-    """The refresh token has expired."""
-
-
-class HiveFailedToRefreshTokens(HiveApiError):
-    """The tokens could not be refreshed."""
-
-
-class HiveConnectionError(HiveApiError):
-    """Hive could not be reached (timeout or network error).
-
-    The failure is expected to be transient, so callers can retry.
+    Covers network failures, timeouts, HTTP 5xx responses, Cognito throttling
+    and unreadable bodies. The failure is transient: retry later.
     """
 
 
-class HiveConfigurationError(HiveError):
-    """Base class for configuration-related errors."""
+class HiveApiError(HiveError):
+    """Hive or Cognito refused the request or answered unexpectedly.
+
+    Retrying will not help: the request itself, the account or the response
+    is the problem.
+    """
 
 
-class HiveUnknownConfiguration(HiveConfigurationError):
-    """The session configuration is incomplete or unknown."""
-
-
-class HiveInvalidDeviceAuthentication(HiveConfigurationError):
-    """The saved device credentials were rejected."""
-
-
-class HiveAuthCredentialError(HiveError):
-    """Base class for authentication credential errors."""
-
-
-class HiveInvalidUsername(HiveAuthCredentialError):
-    """The username is not known to Hive."""
-
-
-class HiveInvalidPassword(HiveAuthCredentialError):
-    """The password was rejected."""
-
-
-class HiveInvalid2FACode(HiveAuthCredentialError):
-    """The SMS two-factor code was rejected."""
+class HiveDeviceOffline(HiveError):
+    """The device is offline or no longer on the account, so it cannot be controlled."""
 
 
 class HiveReauthRequired(HiveError):
-    """The user must log in again."""
+    """The user has to log in again.
+
+    Raised when Hive rejects the tokens, the refresh token or the saved device
+    credentials, when there are no tokens to use, or when Cognito wants an
+    SMS code.
+    """
+
+
+class HiveInvalidUsername(HiveReauthRequired):
+    """The username is not known to Hive."""
+
+
+class HiveInvalidPassword(HiveReauthRequired):
+    """The password was rejected."""
+
+
+class HiveInvalid2FACode(HiveReauthRequired):
+    """The SMS two-factor code was rejected or has expired."""

@@ -41,7 +41,7 @@ explicitly: that code is a removal candidate.
   - climate: <https://developers.home-assistant.io/docs/core/entity/climate/>
   - water_heater: <https://developers.home-assistant.io/docs/core/entity/water-heater/>
   - Config flow (login, SMS 2FA, reauth): <https://developers.home-assistant.io/docs/config_entries_config_flow_handler/>
-  - Setup failures (`ConfigEntryNotReady` / `ConfigEntryAuthFailed`): <https://developers.home-assistant.io/docs/integration_setup_failures/>
+  - Setup failures (`ConfigEntryNotReady` / `ConfigEntryAuthFailed` / `ConfigEntryError`): <https://contributors.home-assistant.io/core/integrations/setup-failures/>
   - Blocking calls in the event loop: <https://developers.home-assistant.io/docs/asyncio_blocking_operations/>
 
 The fork breaks when: a method it calls is renamed or removed, a return shape
@@ -59,12 +59,17 @@ depends on is:
 - `device.status` keys and value types, and the `hive.heating` /
   `hive.hotwater` methods (`get_climate`, `get_water_heater`, `get_mode`,
   `set_mode`, `set_target_temperature`, `set_boost_on`, `set_boost_off`)
-- the exceptions exported from `apyhiveapi` and aiohttp's `HTTPException`
+- the exceptions exported from `apyhiveapi` (see "Error handling" below) and
+  `ValueError` for invalid command arguments
 
 The fork still uses the previous names (`hive.session.*`, camelCase methods
-and `Device` keys, imports from `apyhiveapi.helper.hive_exceptions`). It has
-to be migrated to this API before its `manifest.json` is bumped to this
-version.
+and `Device` keys, imports from `apyhiveapi.helper.hive_exceptions`), catches
+aiohttp's `HTTPException` (which this library no longer raises) and treats the
+`set_*` methods as returning `bool`. It has to be migrated to this API before
+its `manifest.json` is bumped to this version. The mapping it needs is:
+`HiveReauthRequired` → `ConfigEntryAuthFailed`, `HiveConnectionError` →
+`ConfigEntryNotReady`, any other `HiveError` at setup → `ConfigEntryError`,
+and `HiveError` from a command → `HomeAssistantError`.
 
 ### Dependency changes
 
@@ -98,6 +103,51 @@ requires Python 3.14; this library supports 3.13 and later.
   Data in `src/apyhiveapi/data/*.json` must be anonymised.
 - New behaviour and bug fixes need tests in `tests/unit`, `tests/module` or
   `tests/e2e`; coverage must stay at 99%.
+
+### Error handling
+
+Exceptions are classified by what the caller should do, not by where they
+happened. Everything raised is a subclass of `HiveError` (`exceptions.py`):
+
+| Exception | Meaning | Caller's reaction |
+|---|---|---|
+| `HiveConnectionError` | Hive or Cognito unreachable, timeout, HTTP 5xx, Cognito throttling, unreadable body | transient: retry later |
+| `HiveApiError` | Hive or Cognito refused the request or answered unexpectedly | give up on this request |
+| `HiveDeviceOffline` | a command was sent to a device that is offline or no longer on the account | tell the user |
+| `HiveReauthRequired` | tokens, refresh token or saved device credentials rejected, no tokens, or an SMS code is needed | the user must log in again |
+| `HiveInvalidUsername` / `HiveInvalidPassword` / `HiveInvalid2FACode` | subclasses of `HiveReauthRequired` raised by the login flow | show a form error |
+
+The rules that keep it consistent:
+
+- **Translate third-party errors once, at the boundary.** Every botocore error
+  is handled in `HiveAuth._cognito()` and every aiohttp error in `api._fetch()`
+  / `HiveApi.request()`. Nothing above those two functions imports or catches
+  aiohttp or botocore exceptions, and no `HiveError` is ever re-wrapped as
+  another `HiveError`. Chain the original with `raise ... from err`.
+- **Handle or raise, never both.** Do not log an exception and re-raise it.
+  The handler that finally deals with it logs once: a WARNING without a
+  traceback for expected failures, `_LOGGER.exception` only for unexpected ones.
+- **Programming errors stay uncaught.** `KeyError`, `TypeError`,
+  `RuntimeError` and friends are never caught or converted; a traceback is the
+  right outcome for a bug. The one exception is device discovery, which skips
+  a malformed product with a warning rather than failing the whole session.
+- **Retry only what is transient.** There is no retry helper. Polls that fail
+  with any `HiveError` other than `HiveReauthRequired` keep the last known
+  state and are retried after `POLL_RETRY_DELAY`; a rejected token leads to one
+  re-login through `Hive._api_call()`. "Reauth required" is raised only when
+  Hive or Cognito actually rejected the credentials or asked for an SMS code,
+  never as a relabelling of some other failure.
+- **Commands raise, readers return None, polls return bool.** `set_*` methods
+  return nothing and raise on failure (`HiveDeviceOffline` included).
+  `ValueError` is for invalid arguments (a boost of zero minutes). `get_*`
+  methods never raise and report unknown values as `None`. `update_data()` and
+  `get_devices()` return whether new data was stored and raise only
+  `HiveReauthRequired`. `start_session()` lets every error propagate so the
+  fork can map it to the right `ConfigEntry*` exception.
+- **Read JSON through one accessor.** Handlers read product state with
+  `_get_product_state()`; a missing key is data, not an error, and is not
+  logged (the poll-level `_keep_missing_state()` already warns once per poll
+  about incomplete state).
 
 ## Commands
 
@@ -156,8 +206,9 @@ Tests are split into three subdirectories under `tests/`:
 | `tests/e2e/` | End-to-end tests over the whole library in file mode |
 
 `tests/conftest.py` provides the `file_session` fixture (a started file-mode
-`Hive`), `make_session()` (a `MagicMock` session with the attributes the
-device handlers use) and `make_device()`.
+`Hive`), `make_session()` (a `MagicMock` session with `data`, `config`,
+`device_recovered`, `report_device_offline`, `set_state` and `get_devices`,
+which is all the device handlers use) and `make_device()`.
 
 `pyproject.toml` sets `asyncio_mode = "auto"`, so async test functions do
 **not** need `@pytest.mark.asyncio`.
@@ -173,21 +224,21 @@ verify with the full `pytest tests/` run.
 ```text
 src/apyhiveapi/
 ├── __init__.py         ← public exports: Hive, Auth, Device, SMS_REQUIRED, the exceptions
-├── hive.py             ← Hive — the session: login and token refresh, polling and the
-│                         entity cache, start_session / create_devices, device bookkeeping
+├── hive.py             ← Hive — the session: login and token refresh, polling,
+│                         start_session / create_devices, device bookkeeping
 ├── auth.py             ← HiveAuth (exported as Auth) — Cognito SRP login, SMS 2FA,
-│                         token refresh, trusted-device registration
-├── api.py              ← HiveApi — HTTP calls to beekeeper.hivehome.com and the
-│                         SSO login-page scrape (get_login_info)
+│                         token refresh, trusted devices; _cognito() translates botocore errors
+├── api.py              ← HiveApi — HTTP calls to beekeeper.hivehome.com, and get_login_info()
+│                         for the SSO login page; _fetch() translates aiohttp errors
 ├── srp.py              ← pure SRP/HKDF crypto functions and constants
-├── device_handler.py   ← DeviceHandler — shared get_* / set_state plumbing, boost status
+├── device_handler.py   ← DeviceHandler — shared read / refresh / _set_state plumbing
 ├── heating.py          ← Climate (hive.heating): thermostats and TRV controls
 ├── hotwater.py         ← WaterHeater (hive.hotwater)
 ├── models.py           ← Device, SessionData, SessionTokens, SessionConfig dataclasses
-├── const.py            ← SMS_REQUIRED, HTTP codes, PRODUCT_ENTITY_TYPES, THERMOSTAT_DEVICE_TYPES
-├── exceptions.py       ← all custom exceptions
+├── const.py            ← SMS_REQUIRED, PRODUCT_ENTITY_TYPES, THERMOSTAT_DEVICE_TYPES
+├── exceptions.py       ← the HiveError hierarchy
 ├── helpers.py          ← sanitize_payload for logging
-└── data/data.json      ← anonymised fixture for file mode
+└── data/data.json      ← anonymised all-nodes response for file mode
 ```
 
 ### `Hive` (`hive.py`)
@@ -198,27 +249,30 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens`,
 `user`, dicts keyed by Hive ID), `hive.device_list`, `hive.heating` and
 `hive.hotwater`.
 
-- **Login and tokens** — `login()`, `update_tokens()`, `hive_refresh_tokens()`
-  (proactive refresh at 90% of the token lifetime, `REFRESH_THRESHOLD`) and
-  `_retry_login()` (three attempts, `_RETRY_DELAYS`). On
-  `HiveRefreshTokenExpired` or `HiveFailedToRefreshTokens` the session falls
-  back to a fresh login; `HiveReauthRequired` propagates when the user has to
-  act (SMS 2FA). That is the only exception the fork has to handle itself.
+- **Login and tokens** — `login()` logs in with the stored credentials,
+  completes the device challenge with `auth.device_login()` and raises
+  `HiveReauthRequired` if Hive wants an SMS code. `update_tokens()` stores a
+  Cognito response or a saved config entry. `hive_refresh_tokens()` refreshes
+  at 90% of the token lifetime (`REFRESH_THRESHOLD`) and falls back to
+  `login()` when the refresh token is rejected. `_api_call()` wraps every API
+  call: refresh first, and on `HiveReauthRequired` (HTTP 401/403) log in once
+  and retry. `set_state()` is the handlers' way to change a product, a no-op in
+  file mode.
 - **Polling** — `update_data(device)` is rate limited to `config.scan_interval`
   (`update_interval()` sets it, never below `MIN_SCAN_INTERVAL`) and serialised
-  through `update_lock`. `get_devices()` fetches `/nodes/all` and stores
-  products, devices and user. Products that come back without their
-  `REQUIRED_STATE_KEYS` keep the previous state for up to
-  `MAX_STALE_STATE_POLLS` polls. `should_use_cached_data()`,
-  `get_cached_device()` and `set_cached_device()` keep entities stable during
-  slow or concurrent polls.
+  through `update_lock`; concurrent callers return `False` instead of waiting.
+  `get_devices()` polls now through `_poll()`, which fetches `/nodes/all` (or
+  the fixture) and stores products, devices and user. Products that come back
+  without their `REQUIRED_STATE_KEYS` keep the previous state for up to
+  `MAX_STALE_STATE_POLLS` polls. There is no entity cache: `_store_nodes()` is
+  synchronous, so readers never see a half-updated poll.
 - **Discovery** — `start_session(config)` applies the config (username and
   password, `tokens`, `device_data`, `options.scan_interval`; the username
   `use@file.com` switches to file mode), polls once and calls
   `create_devices()`, which builds `device_list` with the keys `parent`,
   `climate` and `water_heater` from `PRODUCT_ENTITY_TYPES`. Heating and hot
   water products attach to the thermostat in their zone, TRV controls to their
-  first TRV.
+  first TRV; a malformed product is skipped with a warning.
 - **Device bookkeeping** — `device_recovered()`, `report_device_offline()`
   (logs once until the device recovers) and `_device_name()`.
 
@@ -230,22 +284,24 @@ session; the owned-session path exists for the tests and the dev scripts.
 
 `DeviceHandler(session)` (`device_handler.py`) holds what `Climate` and
 `WaterHeater` share: `_get_product_state()` (safe nested read from
-`session.data.products`), `_is_available()`, `_cached_if_busy()`,
-`_update_online_status()`, `_apply_device_props()`, `_report_offline()`,
-`get_boost_status()` and `_execute_state_change(device, **state)`, which
-refreshes the tokens, calls `api.set_state()` and re-polls. It returns `True`
-on HTTP 200 and `False` when the device is offline or the call fails.
+`session.data.products`), `_as_float()`, `_is_online()`, `_refresh_device()`
+(copies the device's props into `device.device_data` with an `online` flag and
+reports offline devices through the session), `_boost_status()` and
+`_set_state(device, **state)`, which raises `HiveDeviceOffline` for an
+offline or unknown device and otherwise calls `session.set_state()` and
+re-polls.
 
 | `hive.*` | Class | Hive types | `device.status` after `get_*` |
 |---|---|---|---|
-| `hive.heating` | `Climate` | `heating`, `trvcontrol` | `current_temperature` (float), `target_temperature` (float), `action` (bool, calling for heat), `mode` (`SCHEDULE` / `MANUAL` / `OFF`), `boost` (`ON` / `OFF`); each `None` when unknown |
+| `hive.heating` | `Climate` | `heating`, `trvcontrol` | `current_temperature` (float), `target_temperature` (float), `action` (bool, calling for heat), `mode` (`SCHEDULE` / `MANUAL` / `OFF`), `boost` (`ON` / `OFF`); each `None` when unknown or offline |
 | `hive.hotwater` | `WaterHeater` | `hotwater` | `current_operation` (`SCHEDULE` / `ON` / `OFF` / `None`) |
 
 `get_climate()` also sets `device.min_temp` / `device.max_temp`
 (`MIN_TARGET_TEMPERATURE` 5.0, `MAX_TARGET_TEMPERATURE` 32.0). Both handlers
 offer `get_mode`, `set_mode`, `set_boost_on` and `set_boost_off`; `Climate`
 adds `set_target_temperature`. While a boost is active Hive reports `BOOST`,
-so `get_mode` reports the mode the boost will return to.
+so `get_mode` reports the mode the boost will return to, and `set_boost_off`
+restores it (a no-op when nothing is boosting).
 
 ### `Device` (`models.py`)
 
@@ -260,20 +316,23 @@ attribute-style and dict-style access (`device["hive_id"]`, `device.get(...)`,
 Two flows:
 
 1. **First login** — `Auth.login()` returns `ChallengeName == "SMS_MFA"` (use
-   the `SMS_REQUIRED` constant). Call `auth.sms_2fa(code, result)`, then save
-   the device credentials from `await auth.get_device_data()`
-   (`device_group_key`, `device_key`, `device_password`). Device registration
-   happens automatically inside `sms_2fa()`.
+   the `SMS_REQUIRED` constant). Call `auth.sms_2fa(code, result)`, then
+   `auth.device_registration()` to make this machine a trusted device, then
+   save the credentials from `await auth.get_device_data()`
+   (`device_group_key`, `device_key`, `device_password`, `token_created`).
 2. **Subsequent logins** — pass the saved `device_data` in the `start_session`
    config. `login()` is answered with a device challenge, which
    `device_login()` completes without an SMS.
 
-Only the Hive account owner is supported. Guest accounts cannot authenticate.
+Every Cognito call goes through `HiveAuth._cognito(method, code_map, **kwargs)`,
+which runs the boto3 call in the executor and maps Cognito's error codes to
+the library's exceptions. Only the Hive account owner is supported. Guest
+accounts cannot authenticate.
 
 Token layers are distinct:
 
 - `HiveAuth.access_token` — Cognito AccessToken stored on the auth object by
-  `login()` / `sms_2fa()`; used by the trusted-device methods
+  every successful login, 2FA or refresh; used by the trusted-device methods
 - `Hive.tokens.token_data` — session-layer token store (`"token"`,
   `"accessToken"`, `"refreshToken"`); used by `HiveApi` for API requests
 
@@ -282,5 +341,6 @@ All timestamps are timezone-aware UTC `datetime`s.
 ### File-based testing
 
 Set `username="use@file.com"` to make the session load
-`src/apyhiveapi/data/data.json` instead of calling the API. Used for
-development without live credentials.
+`src/apyhiveapi/data/data.json`, an anonymised all-nodes response (`user`,
+`products`, `devices`), instead of calling the API. Used for development
+without live credentials. Commands send nothing in file mode.

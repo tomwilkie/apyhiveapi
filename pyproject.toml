@@ -87,8 +87,10 @@ ignore = [
     "Q002",
     "Q003",
     "W191",
-    # Exception messages are plain strings at the raise site; EM101/EM102
-    # already keep them out of the raise expression.
+    # Exception messages are written inline at the raise site: the library's
+    # exceptions carry a plain message and nothing else.
+    "EM101",
+    "EM102",
     "TRY003",
     # Positional-argument counts are policed by pylint's too-many-positional-arguments.
     "PLR0917",
@@ -118,8 +120,7 @@ ban-relative-imports = "all"
     "PLC0415",  # conditional/lazy imports are a valid test-isolation pattern
     "ARG",      # fixtures and stubs take arguments they do not use
     "FBT",      # boolean positional arguments mirror the API under test
-    "EM",       # tests raise throwaway exceptions with literal messages
-    "TRY002",   # and plain Exception stands in for "anything unexpected"
+    "TRY002",   # plain Exception stands in for "anything unexpected"
 ]
 "scripts/**" = [
     "T201",     # command-line tools print
@@ -127,7 +128,6 @@ ban-relative-imports = "all"
     "S607",
     "ASYNC",    # blocking calls are fine in a developer tool
     "INP001",   # scripts are not a package
-    "EM",       # usage errors are one-off messages at the raise site
 ]
 "examples/**" = [
     "T201",     # examples print

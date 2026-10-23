@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from apyhiveapi import SMS_REQUIRED, Auth, Hive, HiveInvalidDeviceAuthentication
+from apyhiveapi import SMS_REQUIRED, Auth, Hive, HiveError, HiveReauthRequired
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -163,7 +163,7 @@ async def _stored_login(
         result = await auth.login()
         if result.get("ChallengeName") == Auth.DEVICE_VERIFIER_CHALLENGE:
             result = await auth.device_login()
-    except HiveInvalidDeviceAuthentication:
+    except HiveReauthRequired:
         return {}
     return result if "AuthenticationResult" in result else {}
 
@@ -217,7 +217,7 @@ def install_drop(hive: Hive, settings: Settings) -> None:
 
     def _strip(response: dict[str, Any]) -> dict[str, Any]:
         if settings.drop_on and isinstance(response, dict):
-            for product in (response.get("parsed") or {}).get("products", []):
+            for product in response.get("products", []):
                 state = product.get("state")
                 if isinstance(state, dict):
                     for key in settings.drop_keys:
@@ -384,31 +384,38 @@ class Admin:
         self.settings.interval = value
         return {"interval": value, "applies": "after the current wait"}
 
-    async def set_mode(self, ref: str, new_mode: str) -> bool:
-        """Set a heating or hot water mode."""
+    async def set_mode(self, ref: str, new_mode: str) -> dict[str, Any]:
+        """Set a heating or hot water mode and return the new state."""
         device = self._find(ref, MODE_TYPES)
-        return await self._module(device).set_mode(device, new_mode.upper())
+        await self._module(device).set_mode(device, new_mode.upper())
+        return await self.state(ref)
 
-    async def set_temp(self, ref: str, temp: str) -> bool:
-        """Set a heating target temperature."""
+    async def set_temp(self, ref: str, temp: str) -> dict[str, Any]:
+        """Set a heating target temperature and return the new state."""
         device = self._find(ref, ("climate",))
-        return await self.hive.heating.set_target_temperature(device, float(temp))
+        await self.hive.heating.set_target_temperature(device, float(temp))
+        return await self.state(ref)
 
-    async def boost(self, ref: str, mins: str, temp: str | None = None) -> bool | None:
-        """Start a heating (needs TEMP) or hot water boost."""
+    async def boost(
+        self, ref: str, mins: str, temp: str | None = None
+    ) -> dict[str, Any]:
+        """Start a heating (needs TEMP) or hot water boost and return the new state."""
         device = self._find(ref, MODE_TYPES)
         if device.ha_type == "water_heater":
-            return await self.hive.hotwater.set_boost_on(device, int(mins))
-        if temp is None:
+            await self.hive.hotwater.set_boost_on(device, int(mins))
+        elif temp is None:
             raise ValueError(
                 "a heating boost needs a temperature: boost DEVICE MINS TEMP"
             )
-        return await self.hive.heating.set_boost_on(device, mins, float(temp))
+        else:
+            await self.hive.heating.set_boost_on(device, int(mins), float(temp))
+        return await self.state(ref)
 
-    async def boost_off(self, ref: str) -> bool:
-        """Cancel a boost."""
+    async def boost_off(self, ref: str) -> dict[str, Any]:
+        """Cancel a boost and return the new state."""
         device = self._find(ref, MODE_TYPES)
-        return await self._module(device).set_boost_off(device)
+        await self._module(device).set_boost_off(device)
+        return await self.state(ref)
 
     async def serve(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -420,7 +427,7 @@ class Admin:
             LOG.info("admin: %s %s", name, " ".join(args))
             try:
                 reply = {"ok": True, "result": await self.run(name, args)}
-            except (ValueError, PermissionError) as error:
+            except (ValueError, PermissionError, HiveError) as error:
                 reply = {"ok": False, "error": str(error)}
             except Exception as error:  # pylint: disable=broad-exception-caught
                 LOG.exception("admin: %s failed", name)
@@ -440,7 +447,7 @@ async def poll_now(hive: Hive) -> bool:
     if hive.update_lock.locked():
         return False
     async with hive.update_lock:
-        return await hive._poll_devices()  # noqa: SLF001  # pylint: disable=protected-access
+        return await hive.get_devices()
 
 
 async def run(args: argparse.Namespace, config: dict[str, Any]) -> None:

@@ -35,21 +35,21 @@ for filepath in sys.argv[1:]:
 
     text = path.read_text(encoding="utf-8")
 
-    # Structure check: file-mode fixture must have {"original": ..., "parsed": {...}}
+    # Structure check: the fixture is the raw all-nodes response, an object
+    # with "products" and "devices" lists.
     try:
         doc = json.loads(text)
     except json.JSONDecodeError as exc:
         errors.append(f"{filepath}: invalid JSON — {exc}")
         continue
 
-    if "original" not in doc or "parsed" not in doc:
+    if not isinstance(doc, dict) or not all(
+        isinstance(doc.get(key), list) for key in ("products", "devices")
+    ):
+        found = list(doc) if isinstance(doc, dict) else type(doc).__name__
         errors.append(
-            f"{filepath}: missing wrapper — file must have top-level "
-            f'"original" and "parsed" keys (got: {list(doc.keys())})'
-        )
-    elif not isinstance(doc["parsed"], dict):
-        errors.append(
-            f'{filepath}: "parsed" must be a dict, got {type(doc["parsed"]).__name__}'
+            f"{filepath}: file must be an object with "
+            f'"products" and "devices" lists (got: {found})'
         )
 
     # PII pattern checks (run on raw text for speed)

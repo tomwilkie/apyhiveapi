@@ -25,13 +25,8 @@ def make_session(products=None, devices=None, user=None):
     session.config = SessionConfig()
     session.device_recovered = MagicMock()
     session.report_device_offline = MagicMock()
-    session.api = MagicMock()
-    session.api.set_state = AsyncMock(return_value={"original": 200, "parsed": {}})
-    session.hive_refresh_tokens = AsyncMock()
+    session.set_state = AsyncMock()
     session.get_devices = AsyncMock(return_value=True)
-    session.should_use_cached_data = MagicMock(return_value=False)
-    session.get_cached_device = MagicMock(return_value=None)
-    session.set_cached_device = MagicMock(side_effect=lambda d: d)
     return session
 
 

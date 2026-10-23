@@ -6,18 +6,12 @@ import logging
 from typing import TYPE_CHECKING
 
 from apyhiveapi.device_handler import DeviceHandler
+from apyhiveapi.exceptions import HiveApiError
 
 if TYPE_CHECKING:
     from apyhiveapi.models import Device
 
 _LOGGER = logging.getLogger(__name__)
-
-# Hive hot water modes mapped to the operation Home Assistant shows.
-_HIVE_TO_HA_MODE: dict[str | bool | None, str] = {
-    "MANUAL": "ON",
-    None: "OFF",
-    False: "OFF",
-}
 
 
 class WaterHeater(DeviceHandler):
@@ -26,95 +20,58 @@ class WaterHeater(DeviceHandler):
     async def get_mode(self, device: Device) -> str | None:
         """Return the hot water operation: SCHEDULE, ON or OFF.
 
-        While a boost is active Hive reports BOOST, so the mode the boost will
-        return to is reported instead.
+        Hive's MANUAL mode is reported as ON. While a boost is active Hive
+        reports BOOST, so the mode the boost will return to is reported instead.
         """
         mode = self._get_product_state(device, "state", "mode")
-        if mode is None:
-            _LOGGER.debug("get_mode - No mode in state for %s.", device.ha_name)
-            return None
         if mode == "BOOST":
-            mode = self._get_product_state(device, "props", "previous", "mode")
-        return _HIVE_TO_HA_MODE.get(mode, mode)
+            mode = self._previous_mode(device)
+        elif mode is False:
+            mode = "OFF"
+        return "ON" if mode == "MANUAL" else mode
 
-    async def set_mode(self, device: Device, new_mode: str) -> bool:
-        """Set the hot water mode: SCHEDULE, MANUAL or OFF.
+    async def set_mode(self, device: Device, new_mode: str) -> None:
+        """Set the hot water mode: SCHEDULE, MANUAL or OFF."""
+        await self._set_state(device, mode=new_mode)
 
-        Returns:
-            bool: True if Hive accepted the change.
-        """
-        _LOGGER.debug(
-            "set_mode - Setting hot water mode to %s for %s.", new_mode, device.ha_name
-        )
-        return await self._execute_state_change(device, mode=new_mode)
-
-    async def set_boost_on(self, device: Device, mins: float | str) -> bool:
+    async def set_boost_on(self, device: Device, mins: float) -> None:
         """Boost the hot water for *mins* minutes.
 
-        Returns:
-            bool: True if Hive accepted the change.
+        Raises:
+            ValueError: *mins* is not positive.
         """
-        if int(mins) <= 0:
-            return False
-        _LOGGER.debug(
-            "set_boost_on - Setting hot water boost ON for %s: %s mins.",
-            device.ha_name,
-            mins,
-        )
-        return await self._execute_state_change(device, mode="BOOST", boost=mins)
+        minutes = int(mins)
+        if minutes <= 0:
+            raise ValueError(f"Boost minutes must be positive, not {mins}")
+        await self._set_state(device, mode="BOOST", boost=minutes)
 
-    async def set_boost_off(self, device: Device) -> bool:
+    async def set_boost_off(self, device: Device) -> None:
         """End an active boost and restore the previous mode.
 
-        Returns:
-            bool: True if Hive accepted the change.
+        Does nothing when the hot water is not boosting.
+
+        Raises:
+            HiveApiError: Hive did not report the mode to restore.
         """
-        if (
-            not self._is_available(device)
-            or await self.get_boost_status(device) != "ON"
-        ):
-            return False
-        _LOGGER.debug(
-            "set_boost_off - Setting hot water boost OFF for %s.", device.ha_name
-        )
-        prev_mode = self._get_product_state(device, "props", "previous", "mode")
-        if prev_mode is None:
-            _LOGGER.warning(
-                "set_boost_off - Cannot determine previous mode for %s, skipping.",
-                device.ha_name,
+        if self._boost_status(device) != "ON":
+            _LOGGER.debug("%s is not boosting", device.ha_name)
+            return
+        previous_mode = self._previous_mode(device)
+        if previous_mode is None:
+            raise HiveApiError(
+                f"Hive did not report the mode to restore for {device.ha_name}"
             )
-            return False
-        return await self._execute_state_change(device, mode=prev_mode)
+        await self._set_state(device, mode=previous_mode)
 
     async def get_water_heater(self, device: Device) -> Device:
         """Refresh the device's status from the latest poll.
 
         Returns:
-            Device: The updated device, or the cached one during a slow or
-            busy poll.
+            The updated device. An offline device gets a status of ``None``
+            values and ``device_data["online"]`` set to False.
         """
-        cached = self._cached_if_busy(device)
-        if cached is not None:
-            _LOGGER.debug(
-                "get_water_heater - Returning cached state for"
-                " water heater %s (slow/busy poll).",
-                device.ha_name,
-            )
-            return cached
-        online = self._update_online_status(device)
-        if not online:
-            return self._report_offline(device, {"current_operation": None})
-
-        self.session.device_recovered(device.device_id)
-        _LOGGER.debug(
-            "get_water_heater - Updating hot water data for %s.", device.ha_name
-        )
-        data = self.session.data.devices[device.device_id]
+        if not self._refresh_device(device):
+            device.status = {"current_operation": None}
+            return device
         device.status = {"current_operation": await self.get_mode(device)}
-        self._apply_device_props(device, data, online=online)
-        _LOGGER.debug(
-            "get_water_heater - Water heater device data for %s: %s",
-            device.ha_name,
-            device.status,
-        )
-        return self.session.set_cached_device(device)
+        return device

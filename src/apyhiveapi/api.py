@@ -1,4 +1,9 @@
-"""HTTP client for the Hive API."""
+"""HTTP client for the Hive API and the SSO login page.
+
+Every aiohttp error is translated here into one of the library's exceptions,
+so the rest of the package only ever sees :class:`~apyhiveapi.exceptions.HiveError`
+subclasses.
+"""
 
 from __future__ import annotations
 
@@ -6,31 +11,27 @@ import json
 import logging
 import re
 import time
-from typing import TYPE_CHECKING, Any, NoReturn
+from http import HTTPStatus
+from typing import TYPE_CHECKING, Any
 
-from aiohttp import (
-    ClientError,
-    ClientResponse,
-    ClientSession,
-    ClientTimeout,
-    web_exceptions,
-)
+from aiohttp import ClientError, ClientSession, ClientTimeout
 
-from apyhiveapi.const import HTTP_FORBIDDEN, HTTP_UNAUTHORIZED
-from apyhiveapi.exceptions import (
-    FileInUse,
-    HiveApiError,
-    HiveAuthError,
-    HiveConnectionError,
-    NoApiToken,
-)
+from apyhiveapi.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
 
 if TYPE_CHECKING:
     from apyhiveapi.hive import Hive
 
 _LOGGER = logging.getLogger(__name__)
 
-_REQUEST_ERRORS = (ClientError, OSError, RuntimeError, json.JSONDecodeError)
+_TIMEOUT = ClientTimeout(total=5)
+_SSO_URL = "https://sso.hivehome.com/"
+_BASE_URL = "https://beekeeper.hivehome.com/1.0"
+_ALL_NODES_URL = f"{_BASE_URL}/nodes/all?products=true&devices=true"
+_HEADERS = {
+    "content-type": "application/json",
+    "Accept": "*/*",
+    "User-Agent": "Hive/12.04.0 iOS/18.3.1 Apple",
+}
 
 # The SSO bootstrap page embeds its Cognito config in its first <script>
 # block as `window.<key> = <value>` assignments. The value quoting changed
@@ -38,33 +39,111 @@ _REQUEST_ERRORS = (ClientError, OSError, RuntimeError, json.JSONDecodeError)
 # the closing quote to match).
 _FIRST_SCRIPT = re.compile(r"<script[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
 _SSO_ASSIGNMENT = re.compile(r"""window\.(\w+)\s*=\s*(["'])(.*?)\2""")
+_SSO_KEYS = {
+    "UPID": "HiveSSOPoolId",
+    "CLIID": "HiveSSOPublicCognitoClientId",
+    "REGION": "HiveSSOPoolId",
+}
 
 type JsonValue = str | int | float | bool | None
 
 
-class HiveApi:
-    """Calls to the Hive REST API and the SSO login page."""
+async def _fetch(
+    websession: ClientSession,
+    method: str,
+    url: str,
+    *,
+    token: str | None = None,
+    data: str | None = None,
+) -> str:
+    """Make one HTTP request and return the body of a 2xx response.
 
-    def __init__(
-        self,
-        session: Hive | None = None,
-        websession: ClientSession | None = None,
-    ) -> None:
+    Args:
+        websession: The aiohttp session to use.
+        method: HTTP method.
+        url: URL to call.
+        token: API token to send. When one is sent, an HTTP 401 or 403 means
+            Hive rejected it.
+        data: Request body.
+
+    Raises:
+        HiveReauthRequired: Hive rejected the token (HTTP 401 or 403 on a
+            request that sent one).
+        HiveConnectionError: Network error, timeout or HTTP 5xx.
+        HiveApiError: Any other non-2xx status.
+    """
+    headers = {**_HEADERS, "Authorization": token} if token else None
+    start = time.monotonic()
+    try:
+        async with websession.request(
+            method, url, headers=headers, data=data, timeout=_TIMEOUT
+        ) as resp:
+            body = await resp.text()
+            status = resp.status
+    except TimeoutError as err:
+        raise HiveConnectionError(f"Timed out calling {url}") from err
+    except (ClientError, OSError) as err:
+        raise HiveConnectionError(f"Could not reach {url}: {err}") from err
+    _LOGGER.debug(
+        "%s %s answered HTTP %s in %.2fs",
+        method.upper(),
+        url,
+        status,
+        time.monotonic() - start,
+    )
+    if HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
+        return body
+    detail = f"HTTP {status} calling {url}: {body[:200]}"
+    if token and status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+        raise HiveReauthRequired(f"Hive rejected the token: {detail}")
+    if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        raise HiveConnectionError(f"Hive server error: {detail}")
+    raise HiveApiError(f"Hive refused the request: {detail}")
+
+
+async def get_login_info(websession: ClientSession | None = None) -> dict[str, str]:
+    """Fetch the Cognito pool details embedded in the Hive SSO login page.
+
+    Args:
+        websession: aiohttp session to use. A short-lived one is created when
+            none is given.
+
+    Returns:
+        ``UPID``, ``CLIID`` and ``REGION``.
+
+    Raises:
+        HiveConnectionError: The page could not be fetched.
+        HiveApiError: The page does not contain the Cognito details.
+    """
+    if websession is None:
+        async with ClientSession() as own_session:
+            page = await _fetch(own_session, "get", _SSO_URL)
+    else:
+        page = await _fetch(websession, "get", _SSO_URL)
+    script = _FIRST_SCRIPT.search(page)
+    values = {
+        key: value
+        for key, _quote, value in _SSO_ASSIGNMENT.findall(
+            script.group(1) if script else ""
+        )
+    }
+    try:
+        return {name: values[source] for name, source in _SSO_KEYS.items()}
+    except KeyError as err:
+        raise HiveApiError(f"The Hive login page did not include {err}") from err
+
+
+class HiveApi:
+    """Authenticated calls to the Hive REST API."""
+
+    def __init__(self, session: Hive, websession: ClientSession | None = None) -> None:
         """Set up the client.
 
         Args:
-            session: The Hive session whose tokens authenticate API calls. The
-                auth flow uses a client without one, for the login page only.
+            session: The Hive session whose tokens authenticate the calls.
             websession: The aiohttp session to use. One is created on first
                 use when none is given.
         """
-        self.base_url = "https://beekeeper.hivehome.com/1.0"
-        self.urls = {
-            "properties": "https://sso.hivehome.com/",
-            "all": f"{self.base_url}/nodes/all?products=true&devices=true",
-            "nodes": f"{self.base_url}/nodes/{{0}}/{{1}}",
-        }
-        self.timeout = 5
         self.session = session
         self.websession = websession
 
@@ -78,164 +157,47 @@ class HiveApi:
             self.websession = ClientSession()
         return self.websession
 
-    async def get_login_info(self) -> dict[str, str] | None:
-        """Fetch the Cognito pool details embedded in the Hive SSO login page.
-
-        Returns:
-            dict | None: ``UPID``, ``CLIID`` and ``REGION``, or None when the
-            page does not contain them.
-
-        Raises:
-            HiveConnectionError: The page could not be fetched.
-        """
-        url = self.urls["properties"]
-        _LOGGER.debug("get_login_info - Fetching login info from: %s", url)
-        try:
-            if self.websession is not None:
-                page = await self._fetch_page(self.websession, url)
-            else:
-                # Auth objects have no shared session, so use a short-lived one.
-                async with ClientSession() as websession:
-                    page = await self._fetch_page(websession, url)
-        except (ClientError, OSError) as err:
-            _LOGGER.warning("Failed to get login info: %s", err)
-            message = "Could not reach the Hive login page"
-            raise HiveConnectionError(message) from err
-
-        script = _FIRST_SCRIPT.search(page)
-        script_text = script.group(1) if script else ""
-        sso_values = {
-            key: value for key, _quote, value in _SSO_ASSIGNMENT.findall(script_text)
-        }
-        try:
-            login_data = {
-                "UPID": sso_values["HiveSSOPoolId"],
-                "CLIID": sso_values["HiveSSOPublicCognitoClientId"],
-                "REGION": sso_values["HiveSSOPoolId"],
-            }
-        except KeyError as err:
-            _LOGGER.warning("Failed to get login info: missing %s", err)
-            return None
-        _LOGGER.debug("get_login_info - Login info extracted successfully")
-        return login_data
-
-    async def _fetch_page(self, websession: ClientSession, url: str) -> str:
-        """Return the body of *url* as text."""
-        timeout = ClientTimeout(total=self.timeout)
-        async with websession.get(url, timeout=timeout) as resp:
-            _LOGGER.debug(
-                "get_login_info - Login info response status: %s", resp.status
-            )
-            return await resp.text()
-
     async def request(
         self, method: str, url: str, data: str | None = None
-    ) -> ClientResponse:
-        """Make an authenticated request and return the 2xx response.
+    ) -> dict[str, Any]:
+        """Make an authenticated request and return its JSON body.
+
+        Returns:
+            The decoded body, or ``{}`` when the response has none.
 
         Raises:
-            NoApiToken: The session has no token to send.
-            HiveAuthError: Hive rejected the token (401/403).
-            HiveApiError: Hive answered with any other non-2xx status.
+            HiveReauthRequired: The session has no token, or Hive rejected it.
+            HiveConnectionError: Hive could not be reached, failed, or sent an
+                unreadable body.
+            HiveApiError: Hive refused the request, or the body is not a JSON
+                object.
         """
-        _LOGGER.debug("API %s request to %s", method.upper(), url)
-        if self.session is None:
-            raise NoApiToken
-        headers = {
-            "content-type": "application/json",
-            "Accept": "*/*",
-            "User-Agent": "Hive/12.04.0 iOS/18.3.1 Apple",
-        }
+        token = self.session.tokens.token_data.get("token")
+        if not token:
+            raise HiveReauthRequired("The session has no API token")
+        body = await _fetch(self._get_websession(), method, url, token=token, data=data)
+        if not body.strip():
+            return {}
         try:
-            headers["Authorization"] = self.session.tokens.token_data["token"]
-        except KeyError as exc:
-            raise NoApiToken from exc
-
-        auth_token = headers["Authorization"]
-        _LOGGER.debug(
-            "Using token (len=%d, tail=...%s)", len(auth_token), auth_token[-4:]
-        )
-
-        timeout = ClientTimeout(total=self.timeout)
-        req_start = time.monotonic()
-        async with self._get_websession().request(
-            method, url, headers=headers, data=data, timeout=timeout
-        ) as resp:
-            resp_body = await resp.text()
-            req_duration = time.monotonic() - req_start
-            _LOGGER.debug(
-                "API %s %s completed in %.2fs - HTTP %s",
-                method.upper(),
-                url,
-                req_duration,
-                resp.status,
+            parsed = json.loads(body)
+        except json.JSONDecodeError as err:
+            raise HiveConnectionError(
+                f"Hive returned an unreadable body calling {url}"
+            ) from err
+        if not isinstance(parsed, dict):
+            raise HiveApiError(
+                f"Hive returned a JSON {type(parsed).__name__} calling {url}"
             )
-            if str(resp.status).startswith("20"):
-                return resp
-
-        if resp.status in (HTTP_UNAUTHORIZED, HTTP_FORBIDDEN):
-            _LOGGER.error(
-                "Hive token rejected calling %s - HTTP %s - response: %s",
-                url,
-                resp.status,
-                resp_body[:200],
-            )
-            message = f"Token expired or forbidden calling {url} - HTTP {resp.status}"
-            raise HiveAuthError(message)
-        _LOGGER.error(
-            "Something has gone wrong calling %s - HTTP status is - %s - response: %s",
-            url,
-            resp.status,
-            resp_body[:200],
-        )
-        raise HiveApiError
-
-    async def _call_endpoint(
-        self, method: str, url: str, data: str | None = None
-    ) -> dict[str, Any]:
-        """Call an endpoint and return {"original": status, "parsed": json}."""
-        json_return: dict[str, Any] = {}
-        try:
-            resp = await self.request(method, url, data=data)
-            json_return["original"] = resp.status
-            json_return["parsed"] = await resp.json(content_type=None)
-        except TimeoutError:
-            _LOGGER.warning("Hive API request timed out calling %s", url)
-            raise
-        except _REQUEST_ERRORS:
-            await self.error()
-
-        return json_return
-
-    async def _call_unless_file_mode(
-        self, method: str, url: str, data: str | None = None
-    ) -> dict[str, Any]:
-        """Call a state-changing endpoint, or return a stub response in file mode."""
-        try:
-            await self.is_file_being_used()
-        except FileInUse:
-            return {"original": "file"}
-        return await self._call_endpoint(method, url, data=data)
+        return parsed
 
     async def get_all(self) -> dict[str, Any]:
         """Fetch every product and device on the account."""
-        return await self._call_endpoint("get", self.urls["all"])
+        return await self.request("get", _ALL_NODES_URL)
 
     async def set_state(
-        self, n_type: str, n_id: str, **kwargs: JsonValue
-    ) -> dict[str, Any]:
-        """Set the state of a product."""
-        _LOGGER.debug("set_state - Setting state for %s/%s: %s", n_type, n_id, kwargs)
-        jsc = json.dumps(kwargs)
-        url = self.urls["nodes"].format(n_type, n_id)
-        return await self._call_unless_file_mode("post", url, data=jsc)
-
-    async def error(self) -> NoReturn:
-        """Report a failed request and raise an HTTP error for the caller."""
-        _LOGGER.error("HTTP error occurred during Hive API interaction.")
-        raise web_exceptions.HTTPError
-
-    async def is_file_being_used(self) -> None:
-        """Raise FileInUse when the session runs in file mode."""
-        if self.session is not None and self.session.config.file:
-            raise FileInUse
+        self, product_type: str, product_id: str, **state: JsonValue
+    ) -> None:
+        """Change a product's state."""
+        _LOGGER.debug("Setting %s %s: %s", product_type, product_id, state)
+        url = f"{_BASE_URL}/nodes/{product_type}/{product_id}"
+        await self.request("post", url, data=json.dumps(state))

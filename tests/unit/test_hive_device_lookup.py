@@ -1,4 +1,4 @@
-"""Unit tests for the device bookkeeping on Hive."""
+"""Unit tests for the device lookup and offline bookkeeping on Hive."""
 
 # pylint: disable=protected-access
 
@@ -7,6 +7,27 @@ import logging
 import pytest
 
 from apyhiveapi.hive import Hive
+
+_LOGGER_NAME = "apyhiveapi.hive"
+_HUB = {"id": "hub-1", "type": "hub", "state": {"name": "Hub"}}
+_THERMOSTAT = {
+    "id": "thermo-1",
+    "type": "thermostatui",
+    "state": {"name": "Thermostat"},
+    "props": {"zone": "zone-A"},
+}
+_TRV = {
+    "id": "trv-1",
+    "type": "trv",
+    "state": {"name": "TRV"},
+    "props": {"zone": "zone-B"},
+}
+_BOILER = {
+    "id": "boiler-1",
+    "type": "boilermodule",
+    "state": {"name": "Boiler"},
+    "props": {"zone": "zone-A"},
+}
 
 
 def _make_hive(products=None, devices=None):
@@ -17,146 +38,209 @@ def _make_hive(products=None, devices=None):
     return hive
 
 
-class TestDeviceRecovered:
-    """Tests for Hive.device_recovered."""
+class TestDeviceForProduct:
+    """Tests for Hive._device_for_product."""
 
-    def test_removes_from_error_list(self):
-        hive = _make_hive()
-        hive.config.error_list["dev-1"] = "2026-01-01"
-        hive.device_recovered("dev-1")
-        assert "dev-1" not in hive.config.error_list
+    @pytest.mark.parametrize("product_type", ["heating", "hotwater"])
+    def test_zone_products_use_the_thermostat_in_their_zone(self, product_type):
+        hive = _make_hive(devices={"hub-1": _HUB, "thermo-1": _THERMOSTAT})
+        product = {"id": "p-1", "type": product_type, "props": {"zone": "zone-A"}}
+        assert hive._device_for_product(product) is _THERMOSTAT
 
-    def test_no_op_when_not_in_error_list(self):
-        hive = _make_hive()
-        hive.device_recovered("not-there")  # must not raise
-        assert not hive.config.error_list
+    def test_a_trv_in_the_zone_also_qualifies(self):
+        hive = _make_hive(devices={"hub-1": _HUB, "trv-1": _TRV})
+        product = {"id": "p-1", "type": "heating", "props": {"zone": "zone-B"}}
+        assert hive._device_for_product(product) is _TRV
 
-    def test_only_target_removed(self):
+    def test_other_device_types_in_the_zone_are_ignored(self):
+        hive = _make_hive(devices={"boiler-1": _BOILER, "thermo-1": _THERMOSTAT})
+        product = {"id": "p-1", "type": "heating", "props": {"zone": "zone-A"}}
+        assert hive._device_for_product(product) is _THERMOSTAT
+
+    def test_first_matching_device_wins(self):
+        second = {**_THERMOSTAT, "id": "thermo-2"}
+        hive = _make_hive(devices={"thermo-1": _THERMOSTAT, "thermo-2": second})
+        product = {"id": "p-1", "type": "hotwater", "props": {"zone": "zone-A"}}
+        assert hive._device_for_product(product) is _THERMOSTAT
+
+    def test_zone_mismatch_keeps_the_product_as_its_own_device(self):
+        hive = _make_hive(devices={"thermo-1": _THERMOSTAT})
+        product = {"id": "p-1", "type": "heating", "props": {"zone": "zone-Z"}}
+        assert hive._device_for_product(product) is product
+
+    @pytest.mark.parametrize("props", [{}, {"zone": None}, {"zone": ""}])
+    def test_product_without_a_zone_is_its_own_device(self, props):
+        unzoned = {**_THERMOSTAT, "props": {}}
+        hive = _make_hive(devices={"thermo-1": unzoned})
+        product = {"id": "p-1", "type": "hotwater", "props": props}
+        assert hive._device_for_product(product) is product
+
+    def test_product_without_props_is_its_own_device(self):
+        hive = _make_hive(devices={"thermo-1": _THERMOSTAT})
+        product = {"id": "p-1", "type": "heating"}
+        assert hive._device_for_product(product) is product
+
+    def test_devices_without_props_are_skipped(self):
+        hive = _make_hive(devices={"trv-1": {"id": "trv-1", "type": "trv"}})
+        product = {"id": "p-1", "type": "heating", "props": {"zone": "zone-A"}}
+        assert hive._device_for_product(product) is product
+
+    def test_trv_control_uses_its_first_trv(self):
+        second = {**_TRV, "id": "trv-2"}
+        hive = _make_hive(devices={"trv-2": second, "trv-1": _TRV})
+        product = {
+            "id": "trvc-1",
+            "type": "trvcontrol",
+            "props": {"trvs": ["trv-1", "trv-2"]},
+        }
+        assert hive._device_for_product(product) is _TRV
+
+    def test_trv_control_without_trvs_raises_index_error(self):
+        hive = _make_hive(devices={"trv-1": _TRV})
+        product = {"id": "trvc-1", "type": "trvcontrol", "props": {"trvs": []}}
+        with pytest.raises(IndexError):
+            hive._device_for_product(product)
+
+    def test_trv_control_with_an_unknown_trv_raises_key_error(self):
+        hive = _make_hive(devices={"trv-1": _TRV})
+        product = {"id": "trvc-1", "type": "trvcontrol", "props": {"trvs": ["missing"]}}
+        with pytest.raises(KeyError, match="missing"):
+            hive._device_for_product(product)
+
+    def test_hub_is_its_own_device(self):
+        hive = _make_hive(devices={"hub-1": _HUB})
+        assert hive._device_for_product({"id": "hub-1", "type": "hub"}) is _HUB
+
+    def test_other_products_use_the_device_with_their_id(self):
+        plug = {"id": "plug-1", "type": "activeplug", "state": {"name": "Plug"}}
+        hive = _make_hive(devices={"plug-1": plug})
+        assert hive._device_for_product({"id": "plug-1", "type": "activeplug"}) is plug
+
+    def test_missing_device_raises_key_error(self):
         hive = _make_hive()
-        hive.config.error_list["dev-1"] = "2026-01-01"
-        hive.config.error_list["dev-2"] = "2026-01-01"
-        hive.device_recovered("dev-1")
-        assert "dev-1" not in hive.config.error_list
-        assert "dev-2" in hive.config.error_list
+        with pytest.raises(KeyError, match="hub-1"):
+            hive._device_for_product({"id": "hub-1", "type": "hub"})
+
+    def test_product_without_a_type_raises_key_error(self):
+        hive = _make_hive(devices={"hub-1": _HUB})
+        with pytest.raises(KeyError, match="type"):
+            hive._device_for_product({"id": "hub-1"})
+
+    @pytest.mark.parametrize("props", [None, "zone-A", ["zone-A"]])
+    def test_malformed_product_props_raise_attribute_error(self, props):
+        hive = _make_hive(devices={"thermo-1": _THERMOSTAT})
+        with pytest.raises(AttributeError):
+            hive._device_for_product({"id": "p-1", "type": "heating", "props": props})
+
+    def test_malformed_device_props_raise_attribute_error(self):
+        hive = _make_hive(devices={"thermo-1": {**_THERMOSTAT, "props": None}})
+        product = {"id": "p-1", "type": "heating", "props": {"zone": "zone-A"}}
+        with pytest.raises(AttributeError):
+            hive._device_for_product(product)
 
 
 class TestDeviceName:
     """Tests for Hive._device_name."""
 
-    def test_found_in_products(self):
+    def test_product_name_is_used(self):
         hive = _make_hive(products={"p1": {"state": {"name": "Hallway"}}})
         assert hive._device_name("p1") == "Hallway"
 
-    def test_found_in_devices(self):
+    def test_device_name_is_used_when_there_is_no_product(self):
         hive = _make_hive(devices={"d1": {"state": {"name": "Thermostat"}}})
         assert hive._device_name("d1") == "Thermostat"
 
-    def test_product_takes_priority_over_device(self):
+    def test_product_name_takes_priority(self):
         hive = _make_hive(
             products={"x1": {"state": {"name": "ProductName"}}},
             devices={"x1": {"state": {"name": "DeviceName"}}},
         )
         assert hive._device_name("x1") == "ProductName"
 
-    def test_not_found_returns_id_and_warns(self, caplog):
-        hive = _make_hive()
-        with caplog.at_level(logging.WARNING, logger="apyhiveapi.hive"):
-            assert hive._device_name("unknown-id") == "unknown-id"
-        assert "unknown-id" in caplog.text
+    def test_empty_product_name_falls_through_to_the_device(self):
+        hive = _make_hive(
+            products={"x1": {"state": {"name": ""}}},
+            devices={"x1": {"state": {"name": "DeviceName"}}},
+        )
+        assert hive._device_name("x1") == "DeviceName"
+
+    def test_non_string_name_is_converted(self):
+        hive = _make_hive(products={"p1": {"state": {"name": 42}}})
+        assert hive._device_name("p1") == "42"
+
+    @pytest.mark.parametrize(
+        "products",
+        [{}, {"p1": {}}, {"p1": {"state": {}}}, {"p1": None}, {"p1": {"state": None}}],
+    )
+    def test_unknown_or_nameless_id_is_returned_as_is(self, products):
+        hive = _make_hive(products=products)
+        assert hive._device_name("p1") == "p1"
+
+    def test_null_product_state_falls_through_to_the_device(self):
+        hive = _make_hive(
+            products={"x1": {"state": None}},
+            devices={"x1": {"state": {"name": "DeviceName"}}},
+        )
+        assert hive._device_name("x1") == "DeviceName"
 
 
 class TestReportDeviceOffline:
-    """Tests for Hive.report_device_offline."""
+    """Tests for Hive.report_device_offline and Hive.device_recovered."""
 
-    def test_first_report_logs_and_records(self, caplog):
-        hive = _make_hive(products={"d1": {"state": {"name": "Device"}}})
-        with caplog.at_level(logging.WARNING, logger="apyhiveapi.hive"):
+    def test_first_report_logs_a_warning_with_the_product_name(self, caplog):
+        hive = _make_hive(products={"d1": {"state": {"name": "Hallway"}}})
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
             hive.report_device_offline("d1")
-        assert "d1" in hive.config.error_list
-        assert "Device offline could not update entity - Device" in caplog.text
+        assert caplog.messages == ["Hallway is offline"]
 
-    def test_repeat_report_is_silent(self, caplog):
-        hive = _make_hive(products={"d1": {"state": {"name": "Device"}}})
-        hive.report_device_offline("d1")
-        first = hive.config.error_list["d1"]
-        caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="apyhiveapi.hive"):
+    def test_falls_back_to_the_device_name(self, caplog):
+        hive = _make_hive(devices={"d1": {"state": {"name": "Thermostat"}}})
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
             hive.report_device_offline("d1")
-        assert hive.config.error_list["d1"] is first
-        assert not caplog.records
+        assert caplog.messages == ["Thermostat is offline"]
 
-
-class TestDeviceForProduct:
-    """Tests for Hive._device_for_product."""
-
-    def test_trvcontrol_no_trvs_raises_key_error(self):
+    def test_falls_back_to_the_id(self, caplog):
         hive = _make_hive()
-        product = {"id": "trv-1", "type": "trvcontrol", "props": {"trvs": []}}
-        with pytest.raises(KeyError):
-            hive._device_for_product(product)
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive.report_device_offline("d1")
+        assert caplog.messages == ["d1 is offline"]
 
-    def test_trvcontrol_with_trv_returns_device(self):
-        devices = {
-            "trv-device-1": {
-                "id": "trv-device-1",
-                "type": "trv",
-                "state": {"name": "TRV"},
-            },
-        }
-        hive = _make_hive(devices=devices)
-        product = {
-            "id": "trv-1",
-            "type": "trvcontrol",
-            "props": {"trvs": ["trv-device-1"]},
-        }
-        assert hive._device_for_product(product)["id"] == "trv-device-1"
+    def test_repeat_reports_are_silent(self, caplog):
+        hive = _make_hive(products={"d1": {"state": {"name": "Hallway"}}})
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive.report_device_offline("d1")
+            hive.report_device_offline("d1")
+            hive.report_device_offline("d1")
+        assert caplog.messages == ["Hallway is offline"]
 
-    def test_heating_matches_by_zone(self):
-        devices = {
-            "thermo-1": {
-                "id": "thermo-1",
-                "type": "thermostatui",
-                "state": {"name": "Thermostat"},
-                "props": {"zone": "zone-A"},
-            },
-        }
-        hive = _make_hive(devices=devices)
-        product = {"id": "heating-1", "type": "heating", "props": {"zone": "zone-A"}}
-        assert hive._device_for_product(product)["id"] == "thermo-1"
+    def test_logs_again_after_the_device_recovered(self, caplog):
+        hive = _make_hive(products={"d1": {"state": {"name": "Hallway"}}})
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive.report_device_offline("d1")
+            hive.device_recovered("d1")
+            hive.report_device_offline("d1")
+        assert caplog.messages == ["Hallway is offline", "Hallway is offline"]
 
-    def test_hotwater_matches_by_zone(self):
-        devices = {
-            "thermo-1": {
-                "id": "thermo-1",
-                "type": "thermostatui",
-                "state": {"name": "Thermostat"},
-                "props": {"zone": "zone-A"},
-            },
-        }
-        hive = _make_hive(devices=devices)
-        product = {"id": "hw-1", "type": "hotwater", "props": {"zone": "zone-A"}}
-        assert hive._device_for_product(product)["id"] == "thermo-1"
-
-    def test_zone_mismatch_keeps_product_as_device(self):
+    def test_devices_are_tracked_independently(self, caplog):
         hive = _make_hive(
-            devices={"thermo-1": {"type": "thermostatui", "props": {"zone": "zone-B"}}}
+            products={
+                "d1": {"state": {"name": "Hallway"}},
+                "d2": {"state": {"name": "Kitchen"}},
+            }
         )
-        product = {"type": "heating", "id": "prod-1", "props": {"zone": "zone-A"}}
-        assert hive._device_for_product(product) is product
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive.report_device_offline("d1")
+            hive.report_device_offline("d2")
+            hive.device_recovered("d1")
+            hive.report_device_offline("d2")
+            hive.report_device_offline("d1")
+        assert caplog.messages == [
+            "Hallway is offline",
+            "Kitchen is offline",
+            "Hallway is offline",
+        ]
 
-    def test_trv_without_zone_does_not_log_warning(self, caplog):
-        hive = _make_hive(devices={"trv-1": {"type": "trv", "props": {"online": True}}})
-        product = {"type": "heating", "id": "prod-1", "props": {"zone": "zone-A"}}
-        with caplog.at_level(logging.WARNING, logger="apyhiveapi.hive"):
-            assert hive._device_for_product(product) is product
-        assert not caplog.records
-
-    def test_hub_is_its_own_device(self):
-        devices = {"hub-1": {"id": "hub-1", "type": "hub", "state": {"name": "Hub"}}}
-        hive = _make_hive(devices=devices)
-        assert hive._device_for_product({"id": "hub-1", "type": "hub"})["id"] == "hub-1"
-
-    def test_missing_device_raises_key_error(self):
+    def test_recovering_a_device_never_reported_is_a_no_op(self):
         hive = _make_hive()
-        with pytest.raises(KeyError):
-            hive._device_for_product({"id": "hub-1", "type": "hub"})
+        hive.device_recovered("never-reported")
+        assert not hive._offline_devices

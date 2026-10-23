@@ -56,6 +56,7 @@ async def main():
     tokens = await auth.login()
     if tokens.get("ChallengeName") == SMS_REQUIRED:
         tokens = await auth.sms_2fa(input("SMS code: "), tokens)
+        await auth.device_registration()
 
     async with ClientSession() as websession:
         hive = Hive(websession)
@@ -81,9 +82,9 @@ asyncio.run(main())
 
 Authentication uses the AWS Cognito SRP flow. On the first login `login()` returns a
 `ChallengeName` of `SMS_MFA` (the `SMS_REQUIRED` constant) when the account has SMS
-two-factor authentication enabled; pass the code to `sms_2fa(code, tokens)`. That call
-also registers the machine as a trusted device, and `get_device_data()` then returns
-the credentials to save so later sessions can log in without an SMS.
+two-factor authentication enabled; pass the code to `sms_2fa(code, tokens)`. Then call
+`device_registration()` to register the machine as a trusted device and save the
+credentials `get_device_data()` returns, so later sessions can log in without an SMS.
 
 > **Note:** Only the Hive account owner is supported. Guest accounts cannot be used.
 
@@ -104,7 +105,9 @@ python examples/example_login.py
 
 ## Controlling Devices
 
-After `start_session`, device modules are available directly on the `Hive` instance:
+After `start_session`, device modules are available directly on the `Hive` instance.
+Commands return nothing and raise a `HiveError` when the change could not be made;
+readers never raise and report unknown values as `None`.
 
 ```python
 # Heating
@@ -121,7 +124,27 @@ await hive.hotwater.set_boost_off(device)
 # Refresh state (rate limited to the configured scan interval)
 await hive.update_data(device)
 device = await hive.heating.get_climate(device)
+print(device.status, device.device_data["online"])
 ```
+
+---
+
+## Errors
+
+Every exception the library raises is a subclass of `HiveError`, grouped by what the
+caller should do about it. aiohttp and botocore exceptions never escape the library.
+
+| Exception | Meaning | What to do |
+|---|---|---|
+| `HiveConnectionError` | Hive or Cognito could not be reached, timed out, failed with a 5xx or sent an unreadable response | Retry later |
+| `HiveApiError` | Hive or Cognito refused the request or answered unexpectedly | Report it; retrying will not help |
+| `HiveDeviceOffline` | A command was sent to a device that is offline or no longer on the account | Report it |
+| `HiveReauthRequired` | The tokens, refresh token or saved device credentials were rejected, there are no tokens, or Hive wants an SMS code | Log in again |
+| `HiveInvalidUsername`, `HiveInvalidPassword`, `HiveInvalid2FACode` | Subclasses of `HiveReauthRequired` raised by the login flow | Show the user a form error |
+
+Invalid arguments, such as a boost of zero minutes, raise `ValueError`. Polling through
+`update_data` logs transient failures, keeps the last known state and retries after
+30 seconds; only `HiveReauthRequired` propagates from it.
 
 ---
 

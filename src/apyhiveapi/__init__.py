@@ -4,19 +4,13 @@ from apyhiveapi.auth import HiveAuth as Auth
 from apyhiveapi.const import SMS_REQUIRED
 from apyhiveapi.exceptions import (
     HiveApiError,
-    HiveAuthCredentialError,
-    HiveAuthError,
-    HiveConfigurationError,
     HiveConnectionError,
+    HiveDeviceOffline,
     HiveError,
-    HiveFailedToRefreshTokens,
     HiveInvalid2FACode,
-    HiveInvalidDeviceAuthentication,
     HiveInvalidPassword,
     HiveInvalidUsername,
     HiveReauthRequired,
-    HiveRefreshTokenExpired,
-    HiveUnknownConfiguration,
 )
 from apyhiveapi.hive import Hive
 from apyhiveapi.models import Device
@@ -27,17 +21,11 @@ __all__ = [
     "Device",
     "Hive",
     "HiveApiError",
-    "HiveAuthCredentialError",
-    "HiveAuthError",
-    "HiveConfigurationError",
     "HiveConnectionError",
+    "HiveDeviceOffline",
     "HiveError",
-    "HiveFailedToRefreshTokens",
     "HiveInvalid2FACode",
-    "HiveInvalidDeviceAuthentication",
     "HiveInvalidPassword",
     "HiveInvalidUsername",
     "HiveReauthRequired",
-    "HiveRefreshTokenExpired",
-    "HiveUnknownConfiguration",
 ]

@@ -1,224 +1,411 @@
-"""Unit tests for the Hive entity cache, rate limiting and update_data."""
+"""Unit tests for polling: the scan interval, update_data and storing nodes."""
 
 # pylint: disable=protected-access
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from apyhiveapi.hive import MIN_SCAN_INTERVAL, Hive
+import pytest
+
+from apyhiveapi.exceptions import HiveReauthRequired
+from apyhiveapi.hive import (
+    MAX_STALE_STATE_POLLS,
+    MIN_SCAN_INTERVAL,
+    POLL_RETRY_DELAY,
+    Hive,
+)
+from apyhiveapi.models import DEFAULT_SCAN_INTERVAL
 from tests.conftest import make_device
 
-_FAR_PAST = timedelta(seconds=9999)
+_FAR_PAST = timedelta(days=1)
+_LOGGER_NAME = "apyhiveapi.hive"
 
 
-def _make_hive(*, stale=True):
-    """Return a Hive whose last poll is controllably old or fresh."""
+def _make_hive(*, due=True):
+    """Return a Hive whose next poll is due or not, with get_devices mocked."""
     hive = Hive(username="use@file.com", password="")
     now = datetime.now(UTC)
-    hive.config.last_update = now - _FAR_PAST if stale else now
-    hive._poll_devices = AsyncMock(return_value=True)
+    hive.config.last_update = now - _FAR_PAST if due else now
+
+    async def _poll_done():
+        # Yield once, as a real network call would, then mark the poll done.
+        await asyncio.sleep(0)
+        hive.config.last_update = datetime.now(UTC)
+        return True
+
+    hive.get_devices = AsyncMock(side_effect=_poll_done)
     return hive
 
 
-class TestEntityCacheKey:
-    """Tests for Hive._entity_cache_key."""
-
-    def test_key_format(self):
-        d = make_device(ha_type="climate", hive_id="h1", hive_type="heating")
-        assert Hive._entity_cache_key(d) == "climate|h1|heating"
-
-    def test_different_devices_produce_different_keys(self):
-        d1 = make_device(hive_id="h1")
-        d2 = make_device(hive_id="h2")
-        assert Hive._entity_cache_key(d1) != Hive._entity_cache_key(d2)
-
-    def test_ha_type_included_in_key(self):
-        d1 = make_device(ha_type="climate", hive_id="h1")
-        d2 = make_device(ha_type="water_heater", hive_id="h1")
-        assert Hive._entity_cache_key(d1) != Hive._entity_cache_key(d2)
-
-
-class TestCacheRoundTrip:
-    """Tests for Hive.set_cached_device / get_cached_device."""
-
-    def test_set_then_get_returns_device(self):
-        hive = _make_hive()
-        d = make_device()
-        assert hive.set_cached_device(d) is d
-        assert hive.get_cached_device(d) is d
-
-    def test_get_unknown_returns_none(self):
-        hive = _make_hive()
-        assert hive.get_cached_device(make_device()) is None
-
-    def test_overwrite_replaces_entry(self):
-        hive = _make_hive()
-        d1 = make_device(hive_id="h1")
-        d2 = make_device(hive_id="h1")
-        hive.set_cached_device(d1)
-        hive.set_cached_device(d2)
-        assert hive.get_cached_device(d1) is d2
-
-    def test_different_devices_cached_independently(self):
-        hive = _make_hive()
-        d1 = make_device(hive_id="h1")
-        d2 = make_device(hive_id="h2")
-        hive.set_cached_device(d1)
-        hive.set_cached_device(d2)
-        assert hive.get_cached_device(d1) is d1
-        assert hive.get_cached_device(d2) is d2
-
-
-class TestShouldUseCachedData:
-    """Tests for Hive.should_use_cached_data."""
-
-    def test_last_poll_slow_returns_true(self):
-        hive = _make_hive()
-        hive._last_poll_slow = True
-        assert hive.should_use_cached_data() is True
-
-    def test_not_locked_not_slow_returns_false(self):
-        hive = _make_hive()
-        assert hive.should_use_cached_data() is False
-
-    async def test_lock_held_without_update_task_returns_true(self):
-        hive = _make_hive()
-        async with hive.update_lock:
-            hive._update_task = None
-            assert hive.should_use_cached_data() is True
-
-    async def test_lock_held_by_update_task_itself_returns_false(self):
-        hive = _make_hive()
-        async with hive.update_lock:
-            hive._update_task = asyncio.current_task()
-            assert hive.should_use_cached_data() is False
-
-    async def test_lock_held_by_another_task_returns_true(self):
-        hive = _make_hive()
-        async with hive.update_lock:
-            hive._update_task = asyncio.create_task(asyncio.sleep(0))
-            assert hive.should_use_cached_data() is True
-            await hive._update_task
-
-
-class TestPollDevices:
-    """Tests for Hive._poll_devices."""
-
-    async def test_poll_devices_delegates_to_get_devices(self):
-        hive = Hive(username="use@file.com", password="")
-        hive.get_devices = AsyncMock(return_value=True)
-        assert await hive._poll_devices() is True
-        hive.get_devices.assert_awaited_once_with()
-
-
-class TestUpdateData:
-    """Tests for Hive.update_data."""
-
-    async def test_stale_last_update_triggers_poll_returns_true(self):
-        hive = _make_hive(stale=True)
-        assert await hive.update_data(make_device()) is True
-        hive._poll_devices.assert_called_once()
-
-    async def test_fresh_last_update_skips_poll_returns_false(self):
-        hive = _make_hive(stale=False)
-        assert await hive.update_data(make_device()) is False
-        hive._poll_devices.assert_not_called()
-
-    async def test_lock_held_by_other_returns_false_without_polling(self):
-        hive = _make_hive(stale=True)
-        async with hive.update_lock:
-            hive._update_task = None
-            assert await hive.update_data(make_device()) is False
-        hive._poll_devices.assert_not_called()
-
-    async def test_update_task_cleared_after_successful_poll(self):
-        hive = _make_hive(stale=True)
-        await hive.update_data(make_device())
-        assert hive._update_task is None
-
-    async def test_failed_poll_returns_false(self):
-        hive = _make_hive(stale=True)
-        hive._poll_devices = AsyncMock(return_value=False)
-        assert await hive.update_data(make_device()) is False
-
-    async def test_fresh_after_acquiring_lock_skips_poll(self):
-        """Another task polled while we waited for the lock: skip the poll."""
-        hive = _make_hive(stale=True)
-        await hive.update_lock.acquire()
-
-        async def _refresh_and_release():
-            await asyncio.sleep(0)
-            hive.config.last_update = datetime.now(UTC)
-            hive.update_lock.release()
-
-        release_task = asyncio.create_task(_refresh_and_release())
-        result = await hive.update_data(make_device())
-        await release_task
-
-        hive._poll_devices.assert_not_called()
-        assert result is False
-
-    async def test_update_task_set_to_current_during_poll(self):
-        hive = _make_hive(stale=True)
-        captured = []
-
-        async def _capture_task():
-            captured.append(hive._update_task)
-            return True
-
-        hive._poll_devices = _capture_task
-        await hive.update_data(make_device())
-        assert hive._update_task is None
-        assert captured == [asyncio.current_task()]
-
-    async def test_inner_recheck_returns_early_via_mocked_clock(self):
-        """The outer check passes but the re-check inside the lock does not."""
-        hive = _make_hive(stale=True)
-        hive.config.last_update = datetime(2020, 1, 1, 12, 0, 0, tzinfo=UTC)
-        hive.config.scan_interval = timedelta(seconds=60)
-        clock = iter(
-            [
-                datetime(2020, 1, 1, 12, 2, 0, tzinfo=UTC),
-                datetime(2020, 1, 1, 12, 0, 30, tzinfo=UTC),
-            ]
-        )
-
-        with patch("apyhiveapi.hive.datetime") as mock_dt:
-            mock_dt.now = lambda _tz=None: next(clock)
-            result = await hive.update_data(make_device())
-
-        hive._poll_devices.assert_not_called()
-        assert result is False
-
-    async def test_update_task_changed_during_poll_skips_reset_in_finally(self):
-        """When another coroutine takes over _update_task, finally leaves it alone."""
-        hive = _make_hive(stale=True)
-        sentinel = object()
-
-        async def poll_that_replaces_task():
-            hive._update_task = sentinel
-            return True
-
-        hive._poll_devices = poll_that_replaces_task
-        assert await hive.update_data(make_device()) is True
-        assert hive._update_task is sentinel
+def _product(product_id, state, product_type="heating"):
+    """Return a fresh product dict as the all-nodes response carries it."""
+    return {"id": product_id, "type": product_type, "state": state}
 
 
 class TestUpdateInterval:
     """Tests for Hive.update_interval, which the options flow calls."""
 
-    async def test_seconds_are_stored_as_a_timedelta(self):
+    def test_seconds_are_stored_as_a_timedelta(self):
         hive = _make_hive()
-        assert await hive.update_interval(120) is True
-        assert hive.config.scan_interval == timedelta(seconds=120)
+        assert hive.update_interval(300) is None
+        assert hive.config.scan_interval == timedelta(seconds=300)
 
-    async def test_timedelta_is_stored_as_given(self):
+    def test_fractional_seconds_are_accepted(self):
         hive = _make_hive()
-        await hive.update_interval(timedelta(minutes=3))
+        hive.update_interval(90.5)
+        assert hive.config.scan_interval == timedelta(seconds=90.5)
+
+    def test_timedelta_is_stored_as_given(self):
+        hive = _make_hive()
+        hive.update_interval(timedelta(minutes=3))
         assert hive.config.scan_interval == timedelta(minutes=3)
 
-    async def test_values_below_the_minimum_are_raised_to_it(self):
+    @pytest.mark.parametrize("value", [-5, 0, 5, 14.9, timedelta(seconds=1)])
+    def test_values_below_the_minimum_are_raised_to_it(self, value):
         hive = _make_hive()
-        await hive.update_interval(5)
+        hive.update_interval(value)
         assert hive.config.scan_interval == MIN_SCAN_INTERVAL
+
+    def test_the_minimum_itself_is_kept(self):
+        hive = _make_hive()
+        hive.update_interval(MIN_SCAN_INTERVAL.total_seconds())
+        assert hive.config.scan_interval == MIN_SCAN_INTERVAL
+
+    def test_default_interval_before_any_change(self):
+        assert _make_hive().config.scan_interval == DEFAULT_SCAN_INTERVAL
+
+
+class TestPollIsDue:
+    """Tests for Hive._poll_is_due."""
+
+    def test_due_once_the_interval_has_passed(self):
+        assert _make_hive(due=True)._poll_is_due() is True
+
+    def test_not_due_right_after_a_poll(self):
+        assert _make_hive(due=False)._poll_is_due() is False
+
+    def test_due_exactly_at_the_end_of_the_interval(self):
+        hive = _make_hive()
+        hive.config.last_update = datetime.now(UTC) - hive.config.scan_interval
+        assert hive._poll_is_due() is True
+
+    def test_shortening_the_interval_makes_a_poll_due(self):
+        hive = _make_hive(due=False)
+        hive.config.last_update = datetime.now(UTC) - timedelta(seconds=20)
+        assert hive._poll_is_due() is False
+        hive.update_interval(15)
+        assert hive._poll_is_due() is True
+
+
+class TestUpdateData:
+    """Tests for Hive.update_data."""
+
+    async def test_polls_when_due_and_returns_true(self):
+        hive = _make_hive(due=True)
+        assert await hive.update_data(make_device()) is True
+        hive.get_devices.assert_awaited_once_with()
+
+    async def test_skips_the_poll_when_not_due(self):
+        hive = _make_hive(due=False)
+        assert await hive.update_data(make_device()) is False
+        hive.get_devices.assert_not_awaited()
+
+    async def test_returns_false_while_another_caller_holds_the_lock(self):
+        hive = _make_hive(due=True)
+        async with hive.update_lock:
+            assert await hive.update_data(make_device()) is False
+        hive.get_devices.assert_not_awaited()
+
+    async def test_rechecks_whether_the_poll_is_due_after_taking_the_lock(self):
+        hive = _make_hive(due=True)
+        hive._poll_is_due = MagicMock(side_effect=[True, False])
+        assert await hive.update_data(make_device()) is False
+        assert hive._poll_is_due.call_count == 2
+        hive.get_devices.assert_not_awaited()
+
+    async def test_returns_the_result_of_get_devices(self):
+        hive = _make_hive(due=True)
+        hive.get_devices = AsyncMock(return_value=False)
+        assert await hive.update_data(make_device()) is False
+        hive.get_devices.assert_awaited_once_with()
+
+    async def test_the_device_argument_is_not_used(self):
+        hive = _make_hive(due=True)
+        assert await hive.update_data(None) is True
+
+    async def test_concurrent_callers_poll_once(self):
+        hive = _make_hive(due=True)
+        results = await asyncio.gather(
+            hive.update_data(make_device()), hive.update_data(make_device())
+        )
+        assert sorted(results) == [False, True]
+        hive.get_devices.assert_awaited_once_with()
+
+    async def test_a_second_call_after_a_poll_is_rate_limited(self):
+        hive = _make_hive(due=True)
+        assert await hive.update_data(make_device()) is True
+        assert await hive.update_data(make_device()) is False
+        hive.get_devices.assert_awaited_once_with()
+
+    async def test_the_lock_is_released_after_a_poll(self):
+        hive = _make_hive(due=True)
+        await hive.update_data(make_device())
+        assert not hive.update_lock.locked()
+
+    async def test_the_lock_is_released_when_the_poll_raises(self):
+        hive = _make_hive(due=True)
+        hive.get_devices = AsyncMock(side_effect=HiveReauthRequired("log in again"))
+        with pytest.raises(HiveReauthRequired):
+            await hive.update_data(make_device())
+        assert not hive.update_lock.locked()
+
+
+class TestSchedulePollRetry:
+    """Tests for Hive._schedule_poll_retry."""
+
+    def test_next_poll_is_allowed_after_the_retry_delay(self):
+        hive = _make_hive(due=True)
+        hive._schedule_poll_retry()
+        expected = datetime.now(UTC) - hive.config.scan_interval + POLL_RETRY_DELAY
+        assert abs(hive.config.last_update - expected) < timedelta(seconds=1)
+
+    def test_poll_is_not_due_until_the_delay_has_passed(self):
+        hive = _make_hive(due=True)
+        hive._schedule_poll_retry()
+        assert hive._poll_is_due() is False
+        hive.config.last_update -= POLL_RETRY_DELAY
+        assert hive._poll_is_due() is True
+
+    def test_retry_comes_sooner_than_a_full_interval(self):
+        hive = _make_hive(due=False)
+        before = hive.config.last_update
+        hive._schedule_poll_retry()
+        assert hive.config.last_update < before
+
+
+class TestStoreNodes:
+    """Tests for Hive._store_nodes."""
+
+    def test_user_is_stored_when_present(self):
+        hive = _make_hive()
+        hive._store_nodes({"user": {"id": "u1", "temperatureUnit": "C"}})
+        assert hive.data.user == {"id": "u1", "temperatureUnit": "C"}
+
+    def test_user_is_kept_when_absent(self):
+        hive = _make_hive()
+        hive.data.user = {"id": "u1"}
+        hive._store_nodes({"products": [_product("heat-1", {"mode": "OFF"})]})
+        assert hive.data.user == {"id": "u1"}
+
+    def test_products_and_devices_are_keyed_by_id(self):
+        hive = _make_hive()
+        heating = _product("heat-1", {"mode": "OFF"})
+        hub = {"id": "hub-1", "type": "hub"}
+        hive._store_nodes({"products": [heating], "devices": [hub]})
+        assert hive.data.products == {"heat-1": heating}
+        assert hive.data.devices == {"hub-1": hub}
+
+    def test_nodes_without_an_id_are_dropped(self):
+        hive = _make_hive()
+        heating = _product("heat-1", {"mode": "OFF"})
+        hive._store_nodes(
+            {"products": [heating, {"type": "heating"}], "devices": [None, "junk"]}
+        )
+        assert hive.data.products == {"heat-1": heating}
+        assert hive.data.devices == {}
+
+    @pytest.mark.parametrize("nodes", [{}, {"products": [], "devices": []}])
+    def test_empty_or_missing_lists_keep_the_previous_data(self, nodes):
+        hive = _make_hive()
+        hive.data.products = {"heat-1": _product("heat-1", {"mode": "OFF"})}
+        hive.data.devices = {"hub-1": {"id": "hub-1", "type": "hub"}}
+        hive._store_nodes(nodes)
+        assert set(hive.data.products) == {"heat-1"}
+        assert set(hive.data.devices) == {"hub-1"}
+
+    def test_new_products_replace_the_old_ones(self):
+        hive = _make_hive()
+        hive.data.products = {"heat-1": _product("heat-1", {"mode": "OFF"})}
+        hive._store_nodes({"products": [_product("heat-2", {"mode": "OFF"})]})
+        assert set(hive.data.products) == {"heat-2"}
+
+    def test_missing_required_state_is_carried_over(self):
+        hive = _make_hive()
+        hive.data.products = {
+            "heat-1": _product("heat-1", {"mode": "OFF", "target": 7})
+        }
+        hive._store_nodes({"products": [_product("heat-1", {"target": 20})]})
+        assert hive.data.products["heat-1"]["state"] == {"mode": "OFF", "target": 20}
+
+    def test_counts_are_logged_at_debug(self, caplog):
+        hive = _make_hive()
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+            hive._store_nodes({"products": [_product("heat-1", {})], "devices": []})
+        assert "Hive returned 1 products and 0 devices" in caplog.text
+
+
+class TestKeepMissingState:
+    """Required state keys dropped by a poll are carried over for a while."""
+
+    def _hive(self, state):
+        hive = _make_hive()
+        hive.data.products = {"heat-1": _product("heat-1", dict(state))}
+        return hive
+
+    def test_missing_required_key_keeps_the_previous_value(self, caplog):
+        hive = self._hive({"name": "Hallway", "mode": "OFF", "target": 7})
+        new = {"heat-1": _product("heat-1", {"name": "Hallway", "target": 20})}
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive._keep_missing_state(new)
+        assert new["heat-1"]["state"] == {
+            "name": "Hallway",
+            "mode": "OFF",
+            "target": 20,
+        }
+        expected = (
+            "Hive API returned incomplete state - keeping the last known values: "
+            "Hallway (heating heat-1) missing mode"
+        )
+        assert caplog.messages == [expected]
+        assert hive._stale_state_polls == {"heat-1": 1}
+
+    def test_warning_lists_every_product_and_missing_key(self, caplog):
+        hive = self._hive({"mode": "OFF", "target": 7, "boost": None})
+        hive.data.products["hw-1"] = _product("hw-1", {"mode": "OFF"}, "hotwater")
+        new = {
+            "heat-1": _product("heat-1", {"boost": None}),
+            "hw-1": {"id": "hw-1", "type": "hotwater"},
+        }
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive._keep_missing_state(new)
+        assert len(caplog.records) == 1
+        assert caplog.messages[0].endswith(
+            "heat-1 (heating heat-1) missing mode, target; "
+            "hw-1 (hotwater hw-1) missing mode"
+        )
+
+    def test_missing_state_block_gets_the_previous_required_keys(self):
+        hive = self._hive({"mode": "OFF", "target": 7, "boost": 30})
+        new = {"heat-1": {"id": "heat-1", "type": "heating"}}
+        hive._keep_missing_state(new)
+        assert new["heat-1"]["state"] == {"mode": "OFF", "target": 7}
+
+    def test_null_value_is_not_treated_as_missing(self, caplog):
+        hive = self._hive({"mode": "OFF", "boost": 30})
+        new = {"heat-1": _product("heat-1", {"mode": "OFF", "boost": None})}
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive._keep_missing_state(new)
+        assert new["heat-1"]["state"] == {"mode": "OFF", "boost": None}
+        assert not caplog.records
+
+    def test_new_product_is_accepted_as_is(self, caplog):
+        hive = self._hive({"mode": "OFF"})
+        new = {
+            "heat-1": _product("heat-1", {"mode": "OFF"}),
+            "heat-2": _product("heat-2", {"target": 7}),
+        }
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive._keep_missing_state(new)
+        assert new["heat-2"]["state"] == {"target": 7}
+        assert not caplog.records
+        assert not hive._stale_state_polls
+
+    def test_optional_keys_are_never_carried_over(self, caplog):
+        hive = self._hive({"mode": "MANUAL", "target": 20, "boost": 30, "hue": 10})
+        new = {"heat-1": _product("heat-1", {"mode": "MANUAL", "target": 20})}
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive._keep_missing_state(new)
+        assert new["heat-1"]["state"] == {"mode": "MANUAL", "target": 20}
+        assert not caplog.records
+        assert not hive._stale_state_polls
+
+    def test_only_required_keys_are_carried_over(self):
+        hive = self._hive(
+            {
+                "name": "Hall",
+                "mode": "MANUAL",
+                "target": 20,
+                "status": "ON",
+                "boost": 30,
+            }
+        )
+        new = {"heat-1": _product("heat-1", {})}
+        hive._keep_missing_state(new)
+        assert new["heat-1"]["state"] == {
+            "name": "Hall",
+            "mode": "MANUAL",
+            "target": 20,
+            "status": "ON",
+        }
+
+    def test_gives_up_after_max_consecutive_incomplete_polls(self, caplog):
+        hive = self._hive({"name": "Hallway", "mode": "OFF", "target": 7})
+        incomplete = {"name": "Hallway", "target": 7}
+        for _ in range(MAX_STALE_STATE_POLLS):
+            hive._store_nodes({"products": [_product("heat-1", dict(incomplete))]})
+            assert hive.data.products["heat-1"]["state"]["mode"] == "OFF"
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive._store_nodes({"products": [_product("heat-1", dict(incomplete))]})
+        assert hive.data.products["heat-1"]["state"] == incomplete
+        expected = (
+            "Hive API state for Hallway (heating heat-1) is still missing mode "
+            f"after {MAX_STALE_STATE_POLLS} polls - no longer keeping the last "
+            "known values."
+        )
+        assert caplog.messages == [expected]
+
+    def test_after_giving_up_the_shorter_state_is_the_baseline(self, caplog):
+        hive = self._hive({"mode": "OFF", "target": 7})
+        for _ in range(MAX_STALE_STATE_POLLS + 1):
+            hive._store_nodes({"products": [_product("heat-1", {"target": 7})]})
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive._store_nodes({"products": [_product("heat-1", {"target": 7})]})
+        assert not caplog.records
+        assert not hive._stale_state_polls
+        assert hive.data.products["heat-1"]["state"] == {"target": 7}
+
+    def test_complete_response_resets_the_count(self):
+        hive = self._hive({"mode": "OFF"})
+        hive._store_nodes({"products": [_product("heat-1", {})]})
+        assert hive._stale_state_polls == {"heat-1": 1}
+        hive._store_nodes({"products": [_product("heat-1", {"mode": "MANUAL"})]})
+        assert not hive._stale_state_polls
+        hive._store_nodes({"products": [_product("heat-1", {})]})
+        assert hive._stale_state_polls == {"heat-1": 1}
+        assert hive.data.products["heat-1"]["state"] == {"mode": "MANUAL"}
+
+    def test_count_is_dropped_for_products_no_longer_returned(self):
+        hive = self._hive({"mode": "OFF"})
+        hive._store_nodes({"products": [_product("heat-1", {})]})
+        assert hive._stale_state_polls == {"heat-1": 1}
+        hive._store_nodes({"products": [_product("heat-2", {"mode": "OFF"})]})
+        assert not hive._stale_state_polls
+
+    def test_previous_state_not_a_dict_is_ignored(self, caplog):
+        hive = _make_hive()
+        hive.data.products = {"heat-1": _product("heat-1", "broken")}
+        new = {"heat-1": _product("heat-1", {"mode": "OFF"})}
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive._keep_missing_state(new)
+        assert new["heat-1"]["state"] == {"mode": "OFF"}
+        assert not caplog.records
+
+    def test_new_state_not_a_dict_gets_the_previous_required_keys(self):
+        hive = self._hive({"mode": "OFF", "boost": 30})
+        new = {"heat-1": _product("heat-1", "broken")}
+        hive._keep_missing_state(new)
+        assert new["heat-1"]["state"] == {"mode": "OFF"}
+
+    def test_debug_logs_the_state_keys_that_arrived(self, caplog):
+        hive = self._hive({"mode": "OFF", "target": 7})
+        new = {"heat-1": _product("heat-1", {"target": 20, "boost": 5})}
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+            hive._keep_missing_state(new)
+        assert (
+            "Hive API state for heating heat-1 arrived with keys: boost, target"
+            in caplog.text
+        )

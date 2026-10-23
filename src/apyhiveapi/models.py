@@ -88,10 +88,7 @@ class SessionTokens:
 class SessionConfig:
     """Session configuration state."""
 
-    error_list: dict[str, datetime] = field(default_factory=dict)
     file: bool = False
-    home_id: str | None = None
     last_update: datetime = field(default_factory=_utcnow)
     scan_interval: timedelta = DEFAULT_SCAN_INTERVAL
-    user_id: str | None = None
     username: str | None = None

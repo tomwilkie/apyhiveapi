@@ -26,11 +26,12 @@ custom_tests/*
 # Environment files
 .env
 
-# Virtual environments
+# Virtual environments (the repo pins nothing; uv's lockfile is a local artifact)
 .venv/
 venv/
 env/
 ENV/
+uv.lock
 
 # IDE
 .vscode/

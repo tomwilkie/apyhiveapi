@@ -113,15 +113,17 @@ env:
        Hunt for:
        - wrong or missing `await`; blocking calls (`requests`,
          `time.sleep`, sync file I/O) inside async code; race conditions
-         on shared session state or the polling cache
+         on shared session state or the update lock
        - `None` / missing-key cases (`KeyError`, `AttributeError`),
          especially on Hive API payloads where fields may be absent or
          devices offline
        - off-by-one, inverted conditions, wrong comparison, wrong
-         units (Celsius, mireds vs kelvin, 0-255 vs 0-100 brightness)
-       - exceptions swallowed or raised with the wrong type (the app
-         relies on `HiveReauthRequired` propagating)
-       - token refresh, `_retry_login` and 2FA paths that loop, give up
+         units (Celsius)
+       - exceptions swallowed, logged and re-raised, re-wrapped, or
+         raised with the wrong class for the caller's reaction (see
+         "Error handling" in `CLAUDE.md`); aiohttp or botocore errors
+         escaping `api._fetch()` / `HiveAuth._cognito()`
+       - token refresh, re-login and 2FA paths that loop, give up
          early or leave the session half-updated
        - state that doesn't match what Home Assistant expects in
          `device.status` or `device_list`
