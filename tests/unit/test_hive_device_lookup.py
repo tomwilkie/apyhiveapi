@@ -68,7 +68,14 @@ class TestDeviceForProduct:
         product = {"id": "p-1", "type": "heating", "props": {"zone": "zone-Z"}}
         assert hive._device_for_product(product) is product
 
-    @pytest.mark.parametrize("props", [{}, {"zone": None}, {"zone": ""}])
+    @pytest.mark.parametrize(
+        "props",
+        [
+            pytest.param({}, id="no-zone"),
+            pytest.param({"zone": None}, id="zone-none"),
+            pytest.param({"zone": ""}, id="zone-empty"),
+        ],
+    )
     def test_product_without_a_zone_is_its_own_device(self, props):
         unzoned = {**_THERMOSTAT, "props": {}}
         hive = _make_hive(devices={"thermo-1": unzoned})
@@ -126,7 +133,14 @@ class TestDeviceForProduct:
         with pytest.raises(KeyError, match="type"):
             hive._device_for_product({"id": "hub-1"})
 
-    @pytest.mark.parametrize("props", [None, "zone-A", ["zone-A"]])
+    @pytest.mark.parametrize(
+        "props",
+        [
+            pytest.param(None, id="none"),
+            pytest.param("zone-A", id="string"),
+            pytest.param(["zone-A"], id="list"),
+        ],
+    )
     def test_malformed_product_props_raise_attribute_error(self, props):
         hive = _make_hive(devices={"thermo-1": _THERMOSTAT})
         with pytest.raises(AttributeError):
@@ -170,7 +184,13 @@ class TestDeviceName:
 
     @pytest.mark.parametrize(
         "products",
-        [{}, {"p1": {}}, {"p1": {"state": {}}}, {"p1": None}, {"p1": {"state": None}}],
+        [
+            pytest.param({}, id="unknown-id"),
+            pytest.param({"p1": {}}, id="no-state"),
+            pytest.param({"p1": {"state": {}}}, id="state-without-name"),
+            pytest.param({"p1": None}, id="product-none"),
+            pytest.param({"p1": {"state": None}}, id="state-none"),
+        ],
     )
     def test_unknown_or_nameless_id_is_returned_as_is(self, products):
         hive = _make_hive(products=products)

@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from apyhiveapi import Hive
 from apyhiveapi.models import Device
 
@@ -9,6 +11,16 @@ _HUB_ID = "hub-0000-0000-0000-000000000001"
 _HEATING_ID = "heating-0000-0000-0000-000000000001"
 _THERMOSTAT_ID = "thermostatui-0000-0000-0000-000000000001"
 _TRV_ID = "trv-0000-0000-0000-000000000001"
+
+_EVERY_DEVICE = pytest.mark.parametrize(
+    ("entity_type", "index"),
+    [
+        pytest.param("parent", 0, id="hub"),
+        pytest.param("climate", 0, id="heating"),
+        pytest.param("climate", 1, id="trv-control"),
+        pytest.param("water_heater", 0, id="hot-water"),
+    ],
+)
 
 
 class TestFileSessionDevices:
@@ -45,7 +57,7 @@ class TestFileSessionDevices:
         assert parent.hive_name == "Hub"
         assert parent.device_data["model"] == "SENSE"
 
-    async def test_climate_devices(self, file_session):
+    async def test_heating_and_trv_control_become_climate_devices(self, file_session):
         by_type = {d.hive_type: d for d in file_session.device_list["climate"]}
         assert set(by_type) == {"heating", "trvcontrol"}
         heating = by_type["heating"]
@@ -69,19 +81,21 @@ class TestFileSessionDevices:
         assert heater.device_name == "Heating Zone 1"
 
     async def test_temperature_unit_is_set_on_climate_devices_only(self, file_session):
-        for device in file_session.device_list["climate"]:
-            assert device.temperature_unit == "C"
+        units = [
+            device.temperature_unit for device in file_session.device_list["climate"]
+        ]
+        assert units == ["C", "C"]
         assert file_session.device_list["water_heater"][0].temperature_unit is None
         assert file_session.device_list["parent"][0].temperature_unit is None
 
-    async def test_every_device_is_complete(self, file_session):
-        for devices in file_session.device_list.values():
-            for device in devices:
-                assert isinstance(device, Device)
-                assert device.hive_id
-                assert device.ha_name
-                assert device.parent_device == _HUB_ID
-                assert device.status is None
+    @_EVERY_DEVICE
+    async def test_every_device_is_complete(self, file_session, entity_type, index):
+        device = file_session.device_list[entity_type][index]
+        assert isinstance(device, Device)
+        assert device.hive_id
+        assert device.ha_name
+        assert device.parent_device == _HUB_ID
+        assert device.status is None
 
     async def test_get_climate_returns_status(self, file_session):
         device = file_session.device_list["climate"][0]

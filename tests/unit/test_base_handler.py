@@ -63,7 +63,15 @@ class TestGetProductState:
         handler = _make_handler({})
         assert handler._get_product_state(make_device(), "state", default="x") == "x"
 
-    @pytest.mark.parametrize("node", ["SCHEDULE", None, 7, ["SCHEDULE"]])
+    @pytest.mark.parametrize(
+        "node",
+        [
+            pytest.param("SCHEDULE", id="string"),
+            pytest.param(None, id="none"),
+            pytest.param(7, id="int"),
+            pytest.param(["SCHEDULE"], id="list"),
+        ],
+    )
     def test_node_without_string_keys_returns_the_default(self, node):
         handler = _make_handler({"prod-1": {"state": node}})
         result = handler._get_product_state(make_device(), "state", "mode", default="x")
@@ -79,7 +87,17 @@ class TestAsFloat:
         assert result == expected
         assert isinstance(result, float)
 
-    @pytest.mark.parametrize("value", [None, "abc", "", {}, [], object()])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(None, id="none"),
+            pytest.param("abc", id="text"),
+            pytest.param("", id="empty-string"),
+            pytest.param({}, id="dict"),
+            pytest.param([], id="list"),
+            pytest.param(object(), id="object"),
+        ],
+    )
     def test_non_numeric_values_are_none(self, value):
         assert DeviceHandler._as_float(value) is None
 
@@ -104,13 +122,13 @@ class TestIsOnline:
     @pytest.mark.parametrize(
         "data",
         [
-            None,
-            {},
-            {"props": None},
-            {"props": {}},
-            {"props": {"online": False}},
-            {"props": {"online": None}},
-            {"props": {"online": 0}},
+            pytest.param(None, id="no-device-data"),
+            pytest.param({}, id="no-props"),
+            pytest.param({"props": None}, id="props-none"),
+            pytest.param({"props": {}}, id="no-online-flag"),
+            pytest.param({"props": {"online": False}}, id="online-false"),
+            pytest.param({"props": {"online": None}}, id="online-none"),
+            pytest.param({"props": {"online": 0}}, id="online-zero"),
         ],
     )
     def test_false_without_a_truthy_online_flag(self, data):

@@ -126,7 +126,7 @@ class TestInit:
 
 
 class TestUpdateTokens:
-    def test_returns_none(self):
+    def test_cognito_result_is_stored_without_a_return_value(self):
         hive = _make_hive()
         assert hive.update_tokens(AUTH_RESULT) is None
 
@@ -202,8 +202,9 @@ class TestUpdateTokens:
         with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
             hive.update_tokens(AUTH_RESULT)
         assert "update_tokens" in caplog.text
-        for token in NEW_TOKENS.values():
-            assert token not in caplog.text
+        assert "id-token-0001" not in caplog.text
+        assert "access-token-0001" not in caplog.text
+        assert "refresh-token-0001" not in caplog.text
 
 
 class TestLogin:
@@ -258,11 +259,15 @@ class TestLogin:
     @pytest.mark.parametrize(
         "error",
         [
-            HiveInvalidUsername("unknown user"),
-            HiveInvalidPassword("wrong password"),
-            HiveReauthRequired("device no longer trusted"),
-            HiveConnectionError("Cognito timed out"),
-            HiveApiError("Cognito refused"),
+            pytest.param(HiveInvalidUsername("unknown user"), id="invalid-username"),
+            pytest.param(HiveInvalidPassword("wrong password"), id="invalid-password"),
+            pytest.param(
+                HiveReauthRequired("device no longer trusted"), id="reauth-required"
+            ),
+            pytest.param(
+                HiveConnectionError("Cognito timed out"), id="connection-error"
+            ),
+            pytest.param(HiveApiError("Cognito refused"), id="api-error"),
         ],
     )
     async def test_login_errors_propagate_unchanged(self, error):
@@ -385,7 +390,12 @@ class TestHiveRefreshTokens:
 
     @pytest.mark.parametrize(
         "error",
-        [HiveConnectionError("Cognito timed out"), HiveApiError("Cognito refused")],
+        [
+            pytest.param(
+                HiveConnectionError("Cognito timed out"), id="connection-error"
+            ),
+            pytest.param(HiveApiError("Cognito refused"), id="api-error"),
+        ],
     )
     async def test_connection_and_api_errors_propagate(self, error):
         hive = _make_hive()
@@ -494,7 +504,12 @@ class TestApiCall:
 
     @pytest.mark.parametrize(
         "error",
-        [HiveConnectionError("Cognito timed out"), HiveReauthRequired("expired")],
+        [
+            pytest.param(
+                HiveConnectionError("Cognito timed out"), id="connection-error"
+            ),
+            pytest.param(HiveReauthRequired("expired"), id="reauth-required"),
+        ],
     )
     async def test_refresh_errors_propagate_before_the_call(self, error):
         hive = _make_hive()
@@ -508,9 +523,9 @@ class TestApiCall:
     @pytest.mark.parametrize(
         "error",
         [
-            HiveConnectionError("Hive timed out"),
-            HiveApiError("Hive refused"),
-            HiveDeviceOffline("offline"),
+            pytest.param(HiveConnectionError("Hive timed out"), id="connection-error"),
+            pytest.param(HiveApiError("Hive refused"), id="api-error"),
+            pytest.param(HiveDeviceOffline("offline"), id="device-offline"),
         ],
     )
     async def test_other_hive_errors_propagate_without_a_login(self, error):
@@ -609,7 +624,11 @@ class TestSetState:
         hive.api.set_state.assert_awaited_once()
 
     @pytest.mark.parametrize(
-        "error", [HiveConnectionError("Hive timed out"), HiveApiError("Hive refused")]
+        "error",
+        [
+            pytest.param(HiveConnectionError("Hive timed out"), id="connection-error"),
+            pytest.param(HiveApiError("Hive refused"), id="api-error"),
+        ],
     )
     async def test_api_errors_propagate(self, error):
         hive = _make_hive()
@@ -689,9 +708,8 @@ class TestPoll:
 class TestGetDevices:
     async def test_returns_true_after_a_successful_poll(self, caplog):
         hive = _make_hive()
-        hive._poll = AsyncMock()
         assert await hive.get_devices() is True
-        hive._poll.assert_awaited_once_with()
+        hive.api.get_all.assert_awaited_once_with()
         assert _warnings(caplog) == []
 
     async def test_polls_the_api_and_stores_the_nodes(self):
@@ -705,10 +723,12 @@ class TestGetDevices:
     @pytest.mark.parametrize(
         "error",
         [
-            HiveConnectionError("Cannot connect to Hive"),
-            HiveApiError("Hive refused the request"),
-            HiveDeviceOffline("offline"),
-            HiveError("something else"),
+            pytest.param(
+                HiveConnectionError("Cannot connect to Hive"), id="connection-error"
+            ),
+            pytest.param(HiveApiError("Hive refused the request"), id="api-error"),
+            pytest.param(HiveDeviceOffline("offline"), id="device-offline"),
+            pytest.param(HiveError("something else"), id="other-hive-error"),
         ],
     )
     async def test_hive_errors_keep_the_last_state_and_schedule_a_retry(
@@ -717,7 +737,7 @@ class TestGetDevices:
         hive = _make_hive()
         hive.data.user = {"id": "previous"}
         hive.config.last_update = _LAST_POLL
-        hive._poll = AsyncMock(side_effect=error)
+        hive.api.get_all.side_effect = error
         assert await hive.get_devices() is False
         assert hive.data.user == {"id": "previous"}
         assert _warnings(caplog) == [
@@ -728,7 +748,7 @@ class TestGetDevices:
 
     async def test_retry_is_sooner_than_a_full_scan_interval(self):
         hive = _make_hive()
-        hive._poll = AsyncMock(side_effect=HiveConnectionError("Cannot connect"))
+        hive.api.get_all.side_effect = HiveConnectionError("Cannot connect")
         await hive.get_devices()
         next_poll = hive.config.last_update + hive.config.scan_interval
         assert hive.config.scan_interval > POLL_RETRY_DELAY
@@ -745,17 +765,21 @@ class TestGetDevices:
     @pytest.mark.parametrize(
         "error",
         [
-            HiveReauthRequired("token rejected"),
-            HiveInvalidUsername("unknown user"),
-            HiveInvalidPassword("wrong password"),
-            HiveInvalid2FACode("bad code"),
+            pytest.param(
+                HiveReauthRequired("device not trusted"), id="reauth-required"
+            ),
+            pytest.param(HiveInvalidUsername("unknown user"), id="invalid-username"),
+            pytest.param(HiveInvalidPassword("wrong password"), id="invalid-password"),
+            pytest.param(HiveInvalid2FACode("bad code"), id="invalid-2fa-code"),
         ],
     )
     async def test_reauth_required_sets_last_update_and_propagates(self, caplog, error):
         hive = _make_hive()
         hive.data.user = {"id": "previous"}
         hive.config.last_update = _LAST_POLL
-        hive._poll = AsyncMock(side_effect=error)
+        # Hive rejects the token and the login that follows fails.
+        hive.api.get_all.side_effect = HiveReauthRequired("HTTP 401")
+        hive.auth.login.side_effect = error
         with pytest.raises(HiveReauthRequired) as excinfo:
             await hive.get_devices()
         assert excinfo.value is error
@@ -766,7 +790,7 @@ class TestGetDevices:
     async def test_unexpected_errors_propagate_untouched(self, caplog):
         hive = _make_hive()
         hive.config.last_update = _LAST_POLL
-        hive._poll = AsyncMock(side_effect=KeyError("id"))
+        hive.api.get_all.side_effect = KeyError("id")
         with pytest.raises(KeyError):
             await hive.get_devices()
         assert hive.config.last_update == _LAST_POLL

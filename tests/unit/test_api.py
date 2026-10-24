@@ -73,7 +73,7 @@ class TestConstants:
         # unreachable Hive fails at the connect limit.
         assert aiohttp.ClientTimeout(total=20, connect=10) == _TIMEOUT
 
-    def test_urls(self):
+    def test_urls_point_at_hive_sso_and_beekeeper(self):
         assert _SSO_URL == "https://sso.hivehome.com/"
         assert _BASE_URL == "https://beekeeper.hivehome.com/1.0"
         assert _ALL_NODES_URL == (

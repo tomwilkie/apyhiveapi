@@ -159,7 +159,7 @@ def cognito_server_key(auth, identity, secret, salt, server_secret):
 
 
 class TestInit:
-    def test_defaults(self):
+    def test_new_auth_starts_without_device_keys_tokens_or_client(self):
         websession = object()
         auth = HiveAuth(USERNAME, PASSWORD, websession=websession)
         assert auth.username == USERNAME
@@ -318,14 +318,37 @@ class TestEnsureClient:
     @pytest.mark.parametrize(
         ("method", "args", "cognito_method"),
         [
-            ("login", (), "initiate_auth"),
-            ("device_login", (), "respond_to_auth_challenge"),
-            ("sms_2fa", ("123456", SMS_CHALLENGE), "respond_to_auth_challenge"),
-            ("refresh_token", ("refresh-token",), "initiate_auth"),
-            ("confirm_device", ("my-device",), "confirm_device"),
-            ("update_device_status", (), "update_device_status"),
-            ("is_device_registered", (), "get_device"),
-            ("forget_device", ("access-token", "dev-key"), "forget_device"),
+            pytest.param("login", (), "initiate_auth", id="login"),
+            pytest.param(
+                "device_login", (), "respond_to_auth_challenge", id="device-login"
+            ),
+            pytest.param(
+                "sms_2fa",
+                ("123456", SMS_CHALLENGE),
+                "respond_to_auth_challenge",
+                id="sms-2fa",
+            ),
+            pytest.param(
+                "refresh_token", ("refresh-token",), "initiate_auth", id="refresh-token"
+            ),
+            pytest.param(
+                "confirm_device", ("my-device",), "confirm_device", id="confirm-device"
+            ),
+            pytest.param(
+                "update_device_status",
+                (),
+                "update_device_status",
+                id="update-device-status",
+            ),
+            pytest.param(
+                "is_device_registered", (), "get_device", id="is-device-registered"
+            ),
+            pytest.param(
+                "forget_device",
+                ("access-token", "dev-key"),
+                "forget_device",
+                id="forget-device",
+            ),
         ],
     )
     async def test_every_cognito_call_creates_the_client_first(
@@ -411,7 +434,14 @@ class TestCognito:
         )
 
     @pytest.mark.parametrize(
-        "code_map", [None, {}, {"CodeMismatchException": HiveInvalid2FACode}]
+        "code_map",
+        [
+            pytest.param(None, id="no-code-map"),
+            pytest.param({}, id="empty-code-map"),
+            pytest.param(
+                {"CodeMismatchException": HiveInvalid2FACode}, id="other-code-mapped"
+            ),
+        ],
     )
     async def test_an_unmapped_code_becomes_an_api_error(self, code_map):
         auth = make_auth()
@@ -428,7 +458,15 @@ class TestCognito:
             "Attempt limit exceeded"
         )
 
-    @pytest.mark.parametrize("response", [None, {}, {"Error": None}, {"Error": {}}])
+    @pytest.mark.parametrize(
+        "response",
+        [
+            pytest.param(None, id="no-response"),
+            pytest.param({}, id="empty-response"),
+            pytest.param({"Error": None}, id="null-error"),
+            pytest.param({"Error": {}}, id="empty-error"),
+        ],
+    )
     async def test_a_client_error_without_details_is_still_translated(self, response):
         auth = make_auth()
         err = botocore.exceptions.ClientError({}, "GetDevice")
@@ -442,11 +480,31 @@ class TestCognito:
     @pytest.mark.parametrize(
         ("error_type", "kwargs"),
         [
-            (botocore.exceptions.EndpointConnectionError, {"endpoint_url": "x"}),
-            (botocore.exceptions.ConnectTimeoutError, {"endpoint_url": "x"}),
-            (botocore.exceptions.ReadTimeoutError, {"endpoint_url": "x"}),
-            (botocore.exceptions.ConnectionError, {"error": "boom"}),
-            (botocore.exceptions.HTTPClientError, {"error": "boom"}),
+            pytest.param(
+                botocore.exceptions.EndpointConnectionError,
+                {"endpoint_url": "x"},
+                id="endpoint-connection-error",
+            ),
+            pytest.param(
+                botocore.exceptions.ConnectTimeoutError,
+                {"endpoint_url": "x"},
+                id="connect-timeout",
+            ),
+            pytest.param(
+                botocore.exceptions.ReadTimeoutError,
+                {"endpoint_url": "x"},
+                id="read-timeout",
+            ),
+            pytest.param(
+                botocore.exceptions.ConnectionError,
+                {"error": "boom"},
+                id="connection-error",
+            ),
+            pytest.param(
+                botocore.exceptions.HTTPClientError,
+                {"error": "boom"},
+                id="http-client-error",
+            ),
         ],
     )
     async def test_network_errors_become_connection_errors(self, error_type, kwargs):
@@ -580,12 +638,17 @@ class TestLogin:
     @pytest.mark.parametrize(
         ("response", "name"),
         [
-            (
+            pytest.param(
                 {"ChallengeName": "NEW_PASSWORD_REQUIRED", "ChallengeParameters": {}},
                 "NEW_PASSWORD_REQUIRED",
+                id="new-password-required",
             ),
-            ({"ChallengeName": "CUSTOM_CHALLENGE"}, "CUSTOM_CHALLENGE"),
-            ({}, "None"),
+            pytest.param(
+                {"ChallengeName": "CUSTOM_CHALLENGE"},
+                "CUSTOM_CHALLENGE",
+                id="custom-challenge",
+            ),
+            pytest.param({}, "None", id="no-challenge"),
         ],
     )
     async def test_other_challenges_are_refused(self, response, name):
@@ -820,7 +883,12 @@ class TestSms2fa:
         assert auth.token_created is None
 
     @pytest.mark.parametrize(
-        "challenge", [{}, {"ChallengeName": "SMS_MFA"}, {"Session": ""}]
+        "challenge",
+        [
+            pytest.param({}, id="empty-challenge"),
+            pytest.param({"ChallengeName": "SMS_MFA"}, id="no-session"),
+            pytest.param({"Session": ""}, id="empty-session"),
+        ],
     )
     async def test_a_challenge_without_a_session_is_rejected(self, challenge):
         auth = make_auth()
@@ -912,7 +980,7 @@ class TestRefreshToken:
             ("TooManyRequestsException", HiveConnectionError),
         ],
     )
-    async def test_refusals(self, code, exc_type):
+    async def test_refused_refresh_codes_map_to_hive_errors(self, code, exc_type):
         auth = make_auth()
         err = client_error(code, "Invalid Refresh Token")
         auth.client.initiate_auth.side_effect = err
@@ -1021,7 +1089,11 @@ class TestConfirmDevice:
         assert auth.device_password == "dev-pass"
 
     @pytest.mark.parametrize(
-        "missing", [{"device_group_key": None}, {"device_key": ""}]
+        "missing",
+        [
+            pytest.param({"device_group_key": None}, id="no-device-group-key"),
+            pytest.param({"device_key": ""}, id="empty-device-key"),
+        ],
     )
     async def test_without_device_keys_raises_before_any_call(self, missing):
         auth = make_auth(**{**DEVICE_CREDENTIALS, **missing}, access_token="tok")
@@ -1142,21 +1214,34 @@ class TestIsDeviceRegistered:
     @pytest.mark.parametrize(
         "result",
         [
-            {
-                "Device": {
-                    "DeviceAttributes": [
-                        {
-                            "Name": "dev:device_remembered_status",
-                            "Value": "not_remembered",
-                        }
-                    ]
-                }
-            },
-            {"Device": {"DeviceAttributes": [{"Name": "device_name", "Value": "x"}]}},
-            {"Device": {"DeviceAttributes": [{"Value": "remembered"}]}},
-            {"Device": {"DeviceAttributes": []}},
-            {"Device": {}},
-            {},
+            pytest.param(
+                {
+                    "Device": {
+                        "DeviceAttributes": [
+                            {
+                                "Name": "dev:device_remembered_status",
+                                "Value": "not_remembered",
+                            }
+                        ]
+                    }
+                },
+                id="not-remembered",
+            ),
+            pytest.param(
+                {
+                    "Device": {
+                        "DeviceAttributes": [{"Name": "device_name", "Value": "x"}]
+                    }
+                },
+                id="no-remembered-status-attribute",
+            ),
+            pytest.param(
+                {"Device": {"DeviceAttributes": [{"Value": "remembered"}]}},
+                id="attribute-without-a-name",
+            ),
+            pytest.param({"Device": {"DeviceAttributes": []}}, id="no-attributes"),
+            pytest.param({"Device": {}}, id="no-attribute-list"),
+            pytest.param({}, id="no-device"),
         ],
     )
     async def test_false_unless_the_device_is_remembered(self, result):
@@ -1189,8 +1274,14 @@ class TestIsDeviceRegistered:
     @pytest.mark.parametrize(
         "err",
         [
-            botocore.exceptions.EndpointConnectionError(endpoint_url="x"),
-            client_error("TooManyRequestsException", operation="GetDevice"),
+            pytest.param(
+                botocore.exceptions.EndpointConnectionError(endpoint_url="x"),
+                id="unreachable",
+            ),
+            pytest.param(
+                client_error("TooManyRequestsException", operation="GetDevice"),
+                id="throttled",
+            ),
         ],
     )
     async def test_connection_errors_propagate(self, err):
@@ -1268,14 +1359,16 @@ class TestCognitoTimestamp:
     @pytest.mark.parametrize(
         ("now", "expected"),
         [
-            (FROZEN_NOW, FROZEN_TIMESTAMP),
-            (
+            pytest.param(FROZEN_NOW, FROZEN_TIMESTAMP, id="single-digit-day"),
+            pytest.param(
                 datetime(2024, 1, 15, 3, 4, 5, tzinfo=UTC),
                 "Mon Jan 15 03:04:05 UTC 2024",
+                id="two-digit-day",
             ),
-            (
+            pytest.param(
                 datetime(2026, 12, 31, 23, 59, 0, tzinfo=UTC),
                 "Thu Dec 31 23:59:00 UTC 2026",
+                id="end-of-year",
             ),
         ],
     )

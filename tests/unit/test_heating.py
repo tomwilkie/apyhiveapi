@@ -49,7 +49,15 @@ class TestGetCurrentTemperature:
         assert result == expected
         assert isinstance(result, float)
 
-    @pytest.mark.parametrize("raw", ["abc", "", None, {}])
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param("abc", id="text"),
+            pytest.param("", id="empty-string"),
+            pytest.param(None, id="none"),
+            pytest.param({}, id="dict"),
+        ],
+    )
     async def test_non_numeric_values_are_none(self, raw):
         climate = _make_climate(_heating(props={"temperature": raw}))
         assert await climate.get_current_temperature(_device()) is None
@@ -78,7 +86,13 @@ class TestGetTargetTemperature:
         climate = _make_climate(_heating(state={"target": 21, "heat": 18.5}))
         assert await climate.get_target_temperature(_device()) == 21.0
 
-    @pytest.mark.parametrize("state", [{"heat": 18.5}, {"target": None, "heat": 18.5}])
+    @pytest.mark.parametrize(
+        "state",
+        [
+            pytest.param({"heat": 18.5}, id="no-target"),
+            pytest.param({"target": None, "heat": 18.5}, id="target-none"),
+        ],
+    )
     async def test_falls_back_to_heat(self, state):
         climate = _make_climate(_heating(state=state))
         assert await climate.get_target_temperature(_device()) == 18.5
@@ -124,7 +138,12 @@ class TestGetMode:
         assert await climate.get_mode(_device()) == "OFF"
 
     @pytest.mark.parametrize(
-        "props", [{}, {"previous": {}}, {"previous": {"mode": None}}]
+        "props",
+        [
+            pytest.param({}, id="no-previous"),
+            pytest.param({"previous": {}}, id="previous-without-mode"),
+            pytest.param({"previous": {"mode": None}}, id="previous-mode-none"),
+        ],
     )
     async def test_boost_without_a_previous_mode_is_none(self, props):
         climate = _make_climate(_heating(state={"mode": "BOOST"}, props=props))
@@ -257,7 +276,14 @@ class TestSetBoostOn:
             await climate.set_boost_on(_device(), 30, "hot")
         climate.session.set_state.assert_not_awaited()
 
-    @pytest.mark.parametrize(("mins", "temp"), [(None, 20), (30, None), ([], 20)])
+    @pytest.mark.parametrize(
+        ("mins", "temp"),
+        [
+            pytest.param(None, 20, id="minutes-none"),
+            pytest.param(30, None, id="temperature-none"),
+            pytest.param([], 20, id="minutes-list"),
+        ],
+    )
     async def test_non_numeric_types_raise_type_error(self, mins, temp):
         climate = _make_climate(_heating())
         with pytest.raises(TypeError):
@@ -326,7 +352,11 @@ class TestSetBoostOff:
         )
 
     @pytest.mark.parametrize(
-        "previous", [{"mode": "OFF"}, {"mode": "MANUAL", "target": None}]
+        "previous",
+        [
+            pytest.param({"mode": "OFF"}, id="off-without-target"),
+            pytest.param({"mode": "MANUAL", "target": None}, id="manual-target-none"),
+        ],
     )
     async def test_previous_without_a_target_falls_back_to_seven(self, previous):
         climate = _make_climate(_heating(state=_BOOSTING, props={"previous": previous}))
@@ -348,7 +378,14 @@ class TestSetBoostOff:
         )
 
     @pytest.mark.parametrize(
-        "props", [{}, {"previous": {}}, {"previous": {"mode": None, "target": 20}}]
+        "props",
+        [
+            pytest.param({}, id="no-previous"),
+            pytest.param({"previous": {}}, id="previous-without-mode"),
+            pytest.param(
+                {"previous": {"mode": None, "target": 20}}, id="previous-mode-none"
+            ),
+        ],
     )
     async def test_missing_previous_mode_raises_api_error(self, props):
         climate = _make_climate(_heating(state=_BOOSTING, props=props))

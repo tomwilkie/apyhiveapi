@@ -127,7 +127,18 @@ class TestParseTokenCreated:
             assert Hive._parse_token_created("not a date") is None
         assert "Ignoring the invalid token_created value in device_data" in caplog.text
 
-    @pytest.mark.parametrize("value", [None, "", 0, 1.5, [], {}, b"2026"])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(None, id="none"),
+            pytest.param("", id="empty-string"),
+            pytest.param(0, id="int"),
+            pytest.param(1.5, id="float"),
+            pytest.param([], id="list"),
+            pytest.param({}, id="dict"),
+            pytest.param(b"2026", id="bytes"),
+        ],
+    )
     def test_other_values_return_none_without_a_warning(self, value, caplog):
         with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
             assert Hive._parse_token_created(value) is None
@@ -137,7 +148,14 @@ class TestParseTokenCreated:
 class TestApplyDeviceData:
     """Tests for Hive._apply_device_data."""
 
-    @pytest.mark.parametrize("device_data", [[], ["group"], ["group", "key"]])
+    @pytest.mark.parametrize(
+        "device_data",
+        [
+            pytest.param([], id="empty"),
+            pytest.param(["group"], id="group-only"),
+            pytest.param(["group", "key"], id="no-password"),
+        ],
+    )
     def test_fewer_than_three_values_raises_without_applying(self, device_data):
         hive = _make_hive()
         with pytest.raises(HiveReauthRequired):
@@ -292,7 +310,14 @@ class TestStartSession:
         await hive.start_session({"tokens": _TOKENS, "options": {"scan_interval": 1}})
         assert hive.config.scan_interval == MIN_SCAN_INTERVAL
 
-    @pytest.mark.parametrize("options", [None, {}, {"other": 1}])
+    @pytest.mark.parametrize(
+        "options",
+        [
+            pytest.param(None, id="none"),
+            pytest.param({}, id="empty"),
+            pytest.param({"other": 1}, id="other-options-only"),
+        ],
+    )
     async def test_options_without_a_scan_interval_keep_the_default(self, options):
         hive = _make_hive()
         await hive.start_session({"tokens": _TOKENS, "options": options})
@@ -306,7 +331,9 @@ class TestStartSession:
         assert hive.data.products == {}
         assert hive.device_list == {}
 
-    @pytest.mark.parametrize("config", [None, {}])
+    @pytest.mark.parametrize(
+        "config", [pytest.param(None, id="none"), pytest.param({}, id="empty")]
+    )
     async def test_live_mode_without_a_config_raises_before_polling(self, config):
         hive = _make_hive()
         with pytest.raises(HiveReauthRequired, match="no tokens"):
@@ -359,7 +386,7 @@ class TestStartSession:
 
     async def test_reauth_required_from_the_poll_propagates(self):
         hive = _make_hive()
-        hive._poll = AsyncMock(side_effect=HiveReauthRequired("SMS code needed"))
+        hive.hive_refresh_tokens.side_effect = HiveReauthRequired("SMS code needed")
         with pytest.raises(HiveReauthRequired, match="SMS code needed"):
             await hive.start_session({"tokens": _TOKENS})
         assert hive.device_list == {}
@@ -367,10 +394,10 @@ class TestStartSession:
     @pytest.mark.parametrize(
         "nodes",
         [
-            {},
-            {"user": {"temperatureUnit": "C"}},
-            {"products": [_HEATING], "devices": []},
-            {"products": [], "devices": [_HUB]},
+            pytest.param({}, id="empty"),
+            pytest.param({"user": {"temperatureUnit": "C"}}, id="user-only"),
+            pytest.param({"products": [_HEATING], "devices": []}, id="no-devices"),
+            pytest.param({"products": [], "devices": [_HUB]}, id="no-products"),
         ],
     )
     async def test_a_poll_without_products_or_devices_raises_api_error(self, nodes):
@@ -405,8 +432,9 @@ class TestCreateDevices:
         result = hive.create_devices()
         assert list(result) == ["parent", "climate", "water_heater"]
         assert result is hive.device_list
-        for devices in result.values():
-            assert all(isinstance(device, Device) for device in devices)
+        assert [type(device) for device in result["parent"]] == [Device]
+        assert [type(device) for device in result["climate"]] == [Device]
+        assert [type(device) for device in result["water_heater"]] == [Device]
 
     def test_hub_becomes_the_parent_device(self):
         hive = _make_hive(devices=_DEVICES)
@@ -590,7 +618,13 @@ class TestAddDevice:
         assert device.device_name == "Hallway"
         assert device.device_id == "thermo-1"
 
-    @pytest.mark.parametrize("product", [_HEATING, {**_HEATING, "state": {}}])
+    @pytest.mark.parametrize(
+        "product",
+        [
+            pytest.param(_HEATING, id="no-state"),
+            pytest.param({**_HEATING, "state": {}}, id="state-without-name"),
+        ],
+    )
     def test_product_without_a_name_takes_the_device_name(self, product):
         hive = self._hive(devices=_DEVICES)
         device = hive._add_device("climate", product)

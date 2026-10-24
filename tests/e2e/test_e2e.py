@@ -14,6 +14,15 @@ _TRV_ID = "trv-0000-0000-0000-000000000001"
 _HEATING_ID = "heating-0000-0000-0000-000000000001"
 _HOTWATER_ID = "hotwater-0000-0000-0000-000000000001"
 _TRV_CONTROL_ID = "trvcontrol-0000-0000-0000-000000000001"
+_EVERY_DEVICE = pytest.mark.parametrize(
+    ("entity_type", "index"),
+    [
+        pytest.param("parent", 0, id="hub"),
+        pytest.param("climate", 0, id="heating"),
+        pytest.param("climate", 1, id="trv-control"),
+        pytest.param("water_heater", 0, id="hot-water"),
+    ],
+)
 _OFFLINE_CLIMATE_STATUS = {
     "current_temperature": None,
     "target_temperature": None,
@@ -59,20 +68,16 @@ class TestDeviceListIntegrity:
         ]
         assert unsupported == []
 
-    async def test_all_devices_have_ha_name(self, file_session):
-        for entity_type, devices in file_session.device_list.items():
-            for device in devices:
-                assert device.ha_name, (
-                    f"{entity_type} device {device.hive_id} missing ha_name"
-                )
+    @_EVERY_DEVICE
+    async def test_all_devices_have_ha_name(self, file_session, entity_type, index):
+        assert file_session.device_list[entity_type][index].ha_name
 
     async def test_hub_is_the_parent_device(self, file_session):
         parents = file_session.device_list["parent"]
         assert len(parents) == 1
         assert parents[0].hive_type == "hub"
         assert parents[0].device_id == file_session.hub_id == _HUB_ID
-        for key in ("model", "manufacturer", "version"):
-            assert key in parents[0].device_data
+        assert {"model", "manufacturer", "version"} <= set(parents[0].device_data)
 
     async def test_heating_and_hot_water_attach_to_the_thermostat(self, file_session):
         heating = _find(file_session, "climate", _HEATING_ID)
@@ -94,10 +99,10 @@ class TestDeviceListIntegrity:
     async def test_climate_devices_carry_the_account_temperature_unit(
         self, file_session
     ):
-        for device in file_session.device_list["climate"]:
-            assert device.temperature_unit == "C"
-        for device in file_session.device_list["water_heater"]:
-            assert device.temperature_unit is None
+        climate = file_session.device_list["climate"]
+        water_heater = file_session.device_list["water_heater"]
+        assert [device.temperature_unit for device in climate] == ["C", "C"]
+        assert [device.temperature_unit for device in water_heater] == [None]
 
 
 class TestGetDeviceStatus:

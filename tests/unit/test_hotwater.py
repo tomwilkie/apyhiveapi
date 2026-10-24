@@ -74,7 +74,12 @@ class TestGetMode:
         assert await heater.get_mode(_device()) == expected
 
     @pytest.mark.parametrize(
-        "props", [{}, {"previous": {}}, {"previous": {"mode": None}}]
+        "props",
+        [
+            pytest.param({}, id="no-previous"),
+            pytest.param({"previous": {}}, id="previous-without-mode"),
+            pytest.param({"previous": {"mode": None}}, id="previous-mode-none"),
+        ],
     )
     async def test_boost_without_a_previous_mode_is_unknown(self, props):
         heater = _make_hotwater(_hotwater(state=_BOOSTING, props=props))
@@ -197,7 +202,12 @@ class TestSetBoostOff:
         heater.session.get_devices.assert_awaited_once_with()
 
     @pytest.mark.parametrize(
-        "props", [{}, {"previous": {}}, {"previous": {"mode": None}}]
+        "props",
+        [
+            pytest.param({}, id="no-previous"),
+            pytest.param({"previous": {}}, id="previous-without-mode"),
+            pytest.param({"previous": {"mode": None}}, id="previous-mode-none"),
+        ],
     )
     async def test_missing_previous_mode_raises_api_error(self, props):
         heater = _make_hotwater(_hotwater(state=_BOOSTING, props=props))

@@ -1,5 +1,7 @@
 """Unit tests for pure SRP/HKDF crypto helpers — no mocking needed."""
 
+import pytest
+
 from apyhiveapi.srp import (
     calculate_u,
     compute_hkdf,
@@ -112,10 +114,10 @@ def test_compute_hkdf_different_inputs_produce_different_outputs():
     assert result1 != result2
 
 
-def test_long_to_hex_and_back_is_identity():
+@pytest.mark.parametrize("value", [1, 255, 256, 65535, 2**32])
+def test_long_to_hex_and_back_is_identity(value):
     """hex_to_long(long_to_hex(n)) == n for positive integers."""
-    for value in [1, 255, 256, 65535, 2**32]:
-        assert hex_to_long(long_to_hex(value)) == value
+    assert hex_to_long(long_to_hex(value)) == value
 
 
 def test_pad_hex_high_nibble_string_input():

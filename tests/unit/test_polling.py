@@ -61,7 +61,16 @@ class TestUpdateInterval:
         hive.update_interval(timedelta(minutes=3))
         assert hive.config.scan_interval == timedelta(minutes=3)
 
-    @pytest.mark.parametrize("value", [-5, 0, 5, 14.9, timedelta(seconds=1)])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(-5, id="negative"),
+            pytest.param(0, id="zero"),
+            pytest.param(5, id="five-seconds"),
+            pytest.param(14.9, id="just-below"),
+            pytest.param(timedelta(seconds=1), id="timedelta"),
+        ],
+    )
     def test_values_below_the_minimum_are_raised_to_it(self, value):
         hive = _make_hive()
         hive.update_interval(value)
@@ -129,10 +138,6 @@ class TestUpdateData:
         hive.get_devices = AsyncMock(return_value=False)
         assert await hive.update_data() is False
         hive.get_devices.assert_awaited_once_with()
-
-    async def test_the_device_argument_is_not_used(self):
-        hive = _make_hive(due=True)
-        assert await hive.update_data() is True
 
     async def test_concurrent_callers_poll_once(self):
         hive = _make_hive(due=True)
@@ -213,7 +218,13 @@ class TestStoreNodes:
         assert hive.data.products == {"heat-1": heating}
         assert hive.data.devices == {}
 
-    @pytest.mark.parametrize("nodes", [{}, {"products": [], "devices": []}])
+    @pytest.mark.parametrize(
+        "nodes",
+        [
+            pytest.param({}, id="missing-lists"),
+            pytest.param({"products": [], "devices": []}, id="empty-lists"),
+        ],
+    )
     def test_empty_or_missing_lists_keep_the_previous_data(self, nodes):
         hive = _make_hive()
         hive.data.products = {"heat-1": _product("heat-1", {"mode": "OFF"})}
