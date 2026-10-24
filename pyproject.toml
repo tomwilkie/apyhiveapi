@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyhive-integration"
-version = "2.0.0b4"
+version = "0.0.1"
 description = "An async Python library to interface with the Hive API"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "KJonline24", email = "53_galleys_snark@icloud.com" }]
+authors = [{ name = "Tom Wilkie" }]
 keywords = ["hive", "home", "api", "library", "smart-home", "home-automation", "IoT", "async", "integration"]
 requires-python = ">=3.13"
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3 :: Only",

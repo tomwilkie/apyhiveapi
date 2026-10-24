@@ -1,10 +1,10 @@
 # pyhive-integration
 
-![CI](https://github.com/tomwilkie/pyhive-integration/actions/workflows/ci.yml/badge.svg) ![PyPI](https://img.shields.io/pypi/v/pyhive-integration) ![Python](https://img.shields.io/pypi/pyversions/pyhive-integration) ![License](https://img.shields.io/github/license/tomwilkie/pyhive-integration)
+![CI](https://github.com/tomwilkie/pyhive-integration/actions/workflows/ci.yml/badge.svg) ![Release](https://img.shields.io/github/v/release/tomwilkie/pyhive-integration) ![License](https://img.shields.io/github/license/tomwilkie/pyhive-integration)
 
 An async Python library (`apyhiveapi`) for the [Hive](https://www.hivehome.com/) smart home platform. It exists to power the Hive integration for [Home Assistant](https://www.home-assistant.io/) and exposes exactly what that integration needs: Hive heating (thermostats and TRVs) and hot water.
 
-> **Package rename notice:** This package replaces the legacy `pyhiveapi` package on PyPI. The import name is `apyhiveapi`.
+> This library is a hard fork of [Pyhass/Pyhive](https://github.com/Pyhass/Pyhive), cut down to what the Home Assistant integration needs and restarted at version 0.0.1. It is not published on PyPI: install it from a GitHub release (see below). The import name is `apyhiveapi`.
 
 ---
 
@@ -30,8 +30,11 @@ Lights, smart plugs, sensors and the hub are not supported: the Home Assistant i
 
 ## Installation
 
+This library is not on PyPI. Install a release wheel from GitHub, or the current `main`:
+
 ```bash
-pip install pyhive-integration
+pip install "pyhive-integration @ https://github.com/tomwilkie/pyhive-integration/releases/download/v0.0.1/pyhive_integration-0.0.1-py3-none-any.whl"
+pip install "pyhive-integration @ git+https://github.com/tomwilkie/pyhive-integration"
 ```
 
 Requires Python 3.13+.
@@ -97,7 +100,7 @@ machine as a trusted device and saves the device credentials to
 list every discovered device.
 
 ```bash
-pip install pyhive-integration
+pip install "pyhive-integration @ git+https://github.com/tomwilkie/pyhive-integration"
 python examples/example_login.py
 ```
 
@@ -176,7 +179,7 @@ pytest tests/
 
 ## Links
 
-- [PyPI](https://pypi.org/project/pyhive-integration/)
+- [Releases](https://github.com/tomwilkie/pyhive-integration/releases)
 - [Source](https://github.com/tomwilkie/pyhive-integration)
 - [Issue Tracker](https://github.com/tomwilkie/pyhive-integration/issues)
 
@@ -184,4 +187,4 @@ pytest tests/
 
 ## License
 
-MIT License — see [LICENSE](https://github.com/tomwilkie/pyhive-integration/blob/main/LICENSE) for details.
+MIT License — see [LICENSE](https://github.com/tomwilkie/pyhive-integration/blob/main/LICENSE) for details. The original work is copyright Pyhive; the changes in this fork are copyright Tom Wilkie.

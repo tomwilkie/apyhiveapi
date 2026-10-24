@@ -2,10 +2,10 @@
 
 ## Supported Versions
 
-| Version | Supported |
-| ------- | --------- |
-| 2.x     | ✅        |
-| < 2.0   | ❌        |
+| Version        | Supported |
+| -------------- | --------- |
+| latest release | ✅        |
+| anything older | ❌        |
 
 ## Reporting a Vulnerability
 

@@ -6,8 +6,9 @@ automatic PR review and `@claude` mentions) load this file, so project
 knowledge and rules belong here, not in the workflow prompt.
 
 This is pyhive-integration, the async Python library (`apyhiveapi`) behind
-the Hive integration for Home Assistant. It covers Hive heating (thermostats
-and TRVs) and hot water only. The source is one flat package in
+the Hive integration for Home Assistant. It is a hard fork of Pyhass/Pyhive,
+restarted at version 0.0.1 and installed from its GitHub releases rather than
+PyPI. It covers Hive heating (thermostats and TRVs) and hot water only. The source is one flat package in
 `src/apyhiveapi/`: no sync package, no mixins, no deprecation shims and no
 camelCase compatibility aliases. The public API is snake_case only.
 

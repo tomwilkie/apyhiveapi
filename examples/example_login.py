@@ -6,7 +6,8 @@ the device credentials to ``hive_device.json`` in the working directory.
 Run it again: it logs in with the saved device credentials, no SMS needed,
 and lists the same devices.
 
-    pip install pyhive-integration
+    pip install \
+      "pyhive-integration @ git+https://github.com/tomwilkie/pyhive-integration"
     python examples/example_login.py
 
 The password is never stored. The saved file holds a device password that

@@ -35,8 +35,8 @@ dependencies and GitHub Actions. Pre-commit hook revisions are updated with
 
 ## Releasing
 
-1. Set `version` in `pyproject.toml` to a PEP 440 version such as `2.0.0` or
-   `2.1.0b1`, in a pull request.
+1. Set `version` in `pyproject.toml` to a PEP 440 version such as `0.0.2` or
+   `0.1.0b1`, in a pull request.
 2. Merge it. `release.yml` finds no tag for that version, tags the merge
    commit, builds and verifies the distributions, and publishes a GitHub
    Release with generated notes and the sdist and wheel attached.
@@ -45,7 +45,7 @@ dependencies and GitHub Actions. Pre-commit hook revisions are updated with
 
    ```json
    "requirements": [
-     "pyhive-integration @ https://github.com/tomwilkie/pyhive-integration/releases/download/v2.0.0/pyhive_integration-2.0.0-py3-none-any.whl"
+     "pyhive-integration @ https://github.com/tomwilkie/pyhive-integration/releases/download/v0.0.1/pyhive_integration-0.0.1-py3-none-any.whl"
    ]
    ```
 
@@ -79,4 +79,4 @@ change touches no Python, so the checks never block a docs-only pull request.
 | No release after a merge | `pyproject.toml` did not change, or the version's tag already exists. Bump the version. |
 | Release fails at "Verify the wheel" | The wheel is missing a module or data file: check `[tool.setuptools]` in `pyproject.toml` and `MANIFEST.in`. |
 | Release fails creating the tag | The `GITHUB_TOKEN` needs `contents: write`, which the workflow requests; check the repository's Actions permissions allow it. |
-| Home Assistant cannot install the requirement | The wheel filename in the manifest must match the release asset exactly, including the normalised version (`2.0.0b4`, not `2.0.0.B4`). |
+| Home Assistant cannot install the requirement | The wheel filename in the manifest must match the release asset exactly, including the normalised version (`0.1.0b1`, not `0.1.0.B1`). |
