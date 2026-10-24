@@ -62,6 +62,8 @@ packages = [
 "" = "src"
 
 [tool.setuptools.package-data]
+# py.typed lets the Home Assistant fork type-check against this package.
+"apyhiveapi" = ["py.typed"]
 "apyhiveapi.data" = ["*.json"]
 
 [tool.ruff]

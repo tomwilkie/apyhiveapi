@@ -23,8 +23,9 @@ from pathlib import Path
 # Packages shipped by this distribution.
 FLAVOURS = ("apyhiveapi",)
 
-# Package data that must ship alongside the code.
-REQUIRED_DATA = {"apyhiveapi": ["data/data.json"]}
+# Package data that must ship alongside the code: the fixture, and the
+# py.typed marker the Home Assistant fork's type checking relies on.
+REQUIRED_DATA = {"apyhiveapi": ["data/data.json", "py.typed"]}
 
 # Entry points the Home Assistant integration depends on. A build that
 # imports but has lost these is still a broken release.
