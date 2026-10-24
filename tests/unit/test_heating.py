@@ -8,12 +8,7 @@ from apyhiveapi.exceptions import HiveApiError, HiveDeviceOffline
 from apyhiveapi.heating import MAX_TARGET_TEMPERATURE, MIN_TARGET_TEMPERATURE, Climate
 from tests.conftest import make_device, make_session
 
-_ONLINE_DEVICES = {
-    "dev-1": {"props": {"online": True, "model": "SLT"}, "parent": "hub"}
-}
-_OFFLINE_DEVICES = {
-    "dev-1": {"props": {"online": False, "model": "SLT"}, "parent": "hub"}
-}
+_THERMOSTAT = {"dev-1": {"props": {"online": True, "model": "SLT"}}}
 _OFFLINE_STATUS = {
     "current_temperature": None,
     "target_temperature": None,
@@ -24,15 +19,15 @@ _OFFLINE_STATUS = {
 _BOOSTING = {"mode": "BOOST", "target": 22, "boost": 30}
 
 
-def _make_climate(products=None, devices=None):
-    """Return a Climate bound to a mock session; the device is online by default."""
-    devices = _ONLINE_DEVICES if devices is None else devices
-    return Climate(make_session(products=products, devices=devices))
+def _make_climate(products=None):
+    """Return a Climate bound to a mock session with the zone's thermostat."""
+    return Climate(make_session(products=products, devices=_THERMOSTAT))
 
 
-def _heating(**product):
+def _heating(online=True, **product):
     """Return the products dict for one heating product with the given fields."""
-    return {"heat-1": {"type": "heating", **product}}
+    props = {"online": online, **product.pop("props", {})}
+    return {"heat-1": {"type": "heating", **product, "props": props}}
 
 
 def _device(**kwargs):
@@ -179,7 +174,7 @@ class TestSetTargetTemperature:
         climate.session.get_devices.assert_awaited_once_with()
 
     async def test_offline_device_raises(self):
-        climate = _make_climate(_heating(), _OFFLINE_DEVICES)
+        climate = _make_climate(_heating(online=False))
         with pytest.raises(HiveDeviceOffline, match="Hallway is offline"):
             await climate.set_target_temperature(_device(), 21.0)
         climate.session.set_state.assert_not_awaited()
@@ -203,7 +198,7 @@ class TestSetMode:
         climate.session.get_devices.assert_awaited_once_with()
 
     async def test_offline_device_raises(self):
-        climate = _make_climate(_heating(), _OFFLINE_DEVICES)
+        climate = _make_climate(_heating(online=False))
         with pytest.raises(HiveDeviceOffline):
             await climate.set_mode(_device(), "MANUAL")
         climate.session.set_state.assert_not_awaited()
@@ -291,13 +286,13 @@ class TestSetBoostOn:
         climate.session.set_state.assert_not_awaited()
 
     async def test_offline_device_raises(self):
-        climate = _make_climate(_heating(), _OFFLINE_DEVICES)
+        climate = _make_climate(_heating(online=False))
         with pytest.raises(HiveDeviceOffline):
             await climate.set_boost_on(_device(), 30, 20)
         climate.session.set_state.assert_not_awaited()
 
     async def test_input_is_validated_before_the_device_is_checked(self):
-        climate = _make_climate(_heating(), _OFFLINE_DEVICES)
+        climate = _make_climate(_heating(online=False))
         with pytest.raises(ValueError, match="Boost minutes must be positive"):
             await climate.set_boost_on(_device(), 0, 20)
 
@@ -396,8 +391,9 @@ class TestSetBoostOff:
 
     async def test_offline_device_raises(self):
         climate = _make_climate(
-            _heating(state=_BOOSTING, props={"previous": {"mode": "SCHEDULE"}}),
-            _OFFLINE_DEVICES,
+            _heating(
+                state=_BOOSTING, props={"previous": {"mode": "SCHEDULE"}}, online=False
+            )
         )
         with pytest.raises(HiveDeviceOffline):
             await climate.set_boost_off(_device())
@@ -412,7 +408,7 @@ class TestGetClimate:
                 props={"temperature": 20.25, "working": True},
             )
         )
-        device = _device(parent_device="old-hub")
+        device = _device()
         result = await climate.get_climate(device)
         assert result is device
         assert device.status == {
@@ -425,8 +421,7 @@ class TestGetClimate:
         assert device.min_temp == MIN_TARGET_TEMPERATURE
         assert device.max_temp == MAX_TARGET_TEMPERATURE
         assert device.device_data == {"online": True, "model": "SLT"}
-        assert device.parent_device == "hub"
-        climate.session.device_recovered.assert_called_once_with("dev-1")
+        climate.session.device_recovered.assert_called_once_with("heat-1")
         climate.session.report_device_offline.assert_not_called()
 
     async def test_boosting_device_reports_boost_and_the_previous_mode(self):
@@ -456,26 +451,28 @@ class TestGetClimate:
         assert device.device_data["online"] is True
         assert device.min_temp == MIN_TARGET_TEMPERATURE
         assert device.max_temp == MAX_TARGET_TEMPERATURE
-        climate.session.device_recovered.assert_called_once_with("dev-1")
+        climate.session.device_recovered.assert_called_once_with("heat-1")
 
     async def test_offline_device_gets_the_offline_status(self):
         climate = _make_climate(
-            _heating(state={"mode": "MANUAL", "target": 21}, props={"temperature": 20}),
-            _OFFLINE_DEVICES,
+            _heating(
+                state={"mode": "MANUAL", "target": 21},
+                props={"temperature": 20},
+                online=False,
+            )
         )
         device = _device(status={"mode": "MANUAL", "boost": "OFF"})
         result = await climate.get_climate(device)
         assert result is device
         assert device.status == _OFFLINE_STATUS
         assert device.device_data == {"online": False, "model": "SLT"}
-        assert device.parent_device == "hub"
         assert device.min_temp is None
         assert device.max_temp is None
-        climate.session.report_device_offline.assert_called_once_with("dev-1")
+        climate.session.report_device_offline.assert_called_once_with("heat-1")
         climate.session.device_recovered.assert_not_called()
 
     async def test_offline_statuses_are_independent_dicts(self):
-        climate = _make_climate(_heating(), _OFFLINE_DEVICES)
+        climate = _make_climate(_heating(online=False))
         first = await climate.get_climate(_device())
         second = await climate.get_climate(_device())
         assert first.status is not second.status
@@ -489,7 +486,7 @@ class TestGetClimate:
         device = await climate.get_climate(_device())
         assert device.status == _OFFLINE_STATUS
         assert device.device_data["online"] is False
-        climate.session.report_device_offline.assert_called_once_with("dev-1")
+        climate.session.report_device_offline.assert_called_once_with("heat-1")
 
     async def test_device_data_none_is_replaced(self):
         climate = _make_climate(_heating(state={"mode": "OFF"}))
@@ -498,18 +495,17 @@ class TestGetClimate:
         assert device.status["mode"] == "OFF"
 
     async def test_status_is_restored_when_the_device_recovers(self):
-        devices = {"dev-1": {"props": {"online": False}}}
-        climate = _make_climate(
-            _heating(state={"mode": "OFF", "target": 7}, props={"temperature": 18}),
-            devices,
+        products = _heating(
+            state={"mode": "OFF", "target": 7}, props={"temperature": 18}, online=False
         )
+        climate = _make_climate(products)
         device = _device()
         await climate.get_climate(device)
         assert device.status == _OFFLINE_STATUS
-        devices["dev-1"]["props"]["online"] = True
+        products["heat-1"]["props"]["online"] = True
         await climate.get_climate(device)
         assert device.status["mode"] == "OFF"
         assert device.status["current_temperature"] == 18.0
         assert device.device_data["online"] is True
-        climate.session.report_device_offline.assert_called_once_with("dev-1")
-        climate.session.device_recovered.assert_called_once_with("dev-1")
+        climate.session.report_device_offline.assert_called_once_with("heat-1")
+        climate.session.device_recovered.assert_called_once_with("heat-1")

@@ -55,26 +55,33 @@ class DeviceHandler:
             return None
 
     def _is_online(self, device: Device) -> bool:
-        """Return True if the product is known and its device reports itself online."""
-        if device.hive_id not in self.session.data.products:
+        """Return True if the product is known and reports itself online.
+
+        Heating and hot water products report the receiver that runs them, so
+        they stay online while a battery thermostat in the zone is not. A TRV
+        control has no hardware of its own and is online only while its TRV is.
+        """
+        product = self.session.data.products.get(device.hive_id) or {}
+        if not (product.get("props") or {}).get("online"):
             return False
+        if product.get("type") != "trvcontrol":
+            return True
         data = self.session.data.devices.get(device.device_id) or {}
         return bool((data.get("props") or {}).get("online"))
 
     def _refresh_device(self, device: Device) -> bool:
         """Update the device's hardware details and return whether it is online.
 
-        Offline devices are reported through the session, which logs each one
+        Offline products are reported through the session, which logs each one
         once until it recovers.
         """
         data = self.session.data.devices.get(device.device_id) or {}
         online = self._is_online(device)
         device.device_data = {**(data.get("props") or {}), "online": online}
-        device.parent_device = data.get("parent", device.parent_device)
         if online:
-            self.session.device_recovered(device.device_id)
+            self.session.device_recovered(device.hive_id)
         else:
-            self.session.report_device_offline(device.device_id)
+            self.session.report_device_offline(device.hive_id)
         return online
 
     def _previous_mode(self, device: Device) -> str | None:
@@ -103,9 +110,8 @@ class DeviceHandler:
             HiveConnectionError: Hive could not be reached.
             HiveApiError: Hive refused the change.
         """
-        product = self.session.data.products.get(device.hive_id)
-        if product is None or not self._is_online(device):
+        if not self._is_online(device):
             raise HiveDeviceOffline(f"{device.ha_name} is offline")
         _LOGGER.debug("Setting %s: %s", device.ha_name, state)
-        await self.session.set_state(product["type"], device.hive_id, **state)
+        await self.session.set_state(device.hive_type, device.hive_id, **state)
         await self.session.get_devices()

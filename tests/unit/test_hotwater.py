@@ -8,24 +8,19 @@ from apyhiveapi.exceptions import HiveApiError, HiveDeviceOffline
 from apyhiveapi.hotwater import WaterHeater
 from tests.conftest import make_device, make_session
 
-_ONLINE_DEVICES = {
-    "dev-1": {"props": {"online": True, "model": "SLT"}, "parent": "hub"}
-}
-_OFFLINE_DEVICES = {
-    "dev-1": {"props": {"online": False, "model": "SLT"}, "parent": "hub"}
-}
+_THERMOSTAT = {"dev-1": {"props": {"online": True, "model": "SLT"}}}
 _BOOSTING = {"mode": "BOOST", "boost": 60}
 
 
-def _make_hotwater(products=None, devices=None):
-    """Return a WaterHeater bound to a mock session; the device is online by default."""
-    devices = _ONLINE_DEVICES if devices is None else devices
-    return WaterHeater(make_session(products=products, devices=devices))
+def _make_hotwater(products=None):
+    """Return a WaterHeater bound to a mock session with the zone's thermostat."""
+    return WaterHeater(make_session(products=products, devices=_THERMOSTAT))
 
 
-def _hotwater(**product):
+def _hotwater(online=True, **product):
     """Return the products dict for one hot water product with the given fields."""
-    return {"hw-1": {"type": "hotwater", **product}}
+    props = {"online": online, **product.pop("props", {})}
+    return {"hw-1": {"type": "hotwater", **product, "props": props}}
 
 
 def _device(**kwargs):
@@ -95,7 +90,7 @@ class TestSetMode:
         heater.session.get_devices.assert_awaited_once_with()
 
     async def test_offline_device_raises(self):
-        heater = _make_hotwater(_hotwater(), _OFFLINE_DEVICES)
+        heater = _make_hotwater(_hotwater(online=False))
         with pytest.raises(HiveDeviceOffline, match="Hot Water is offline"):
             await heater.set_mode(_device(), "MANUAL")
         heater.session.set_state.assert_not_awaited()
@@ -153,7 +148,7 @@ class TestSetBoostOn:
         heater.session.set_state.assert_not_awaited()
 
     async def test_offline_device_raises(self):
-        heater = _make_hotwater(_hotwater(), _OFFLINE_DEVICES)
+        heater = _make_hotwater(_hotwater(online=False))
         with pytest.raises(HiveDeviceOffline):
             await heater.set_boost_on(_device(), 60)
         heater.session.set_state.assert_not_awaited()
@@ -218,8 +213,9 @@ class TestSetBoostOff:
 
     async def test_offline_device_raises(self):
         heater = _make_hotwater(
-            _hotwater(state=_BOOSTING, props={"previous": {"mode": "SCHEDULE"}}),
-            _OFFLINE_DEVICES,
+            _hotwater(
+                state=_BOOSTING, props={"previous": {"mode": "SCHEDULE"}}, online=False
+            )
         )
         with pytest.raises(HiveDeviceOffline):
             await heater.set_boost_off(_device())
@@ -229,13 +225,12 @@ class TestSetBoostOff:
 class TestGetWaterHeater:
     async def test_online_device_gets_its_status(self):
         heater = _make_hotwater(_hotwater(state={"mode": "SCHEDULE"}))
-        device = _device(parent_device="old-hub")
+        device = _device()
         result = await heater.get_water_heater(device)
         assert result is device
         assert device.status == {"current_operation": "SCHEDULE"}
         assert device.device_data == {"online": True, "model": "SLT"}
-        assert device.parent_device == "hub"
-        heater.session.device_recovered.assert_called_once_with("dev-1")
+        heater.session.device_recovered.assert_called_once_with("hw-1")
         heater.session.report_device_offline.assert_not_called()
 
     async def test_manual_reports_on(self):
@@ -257,14 +252,13 @@ class TestGetWaterHeater:
         assert device.device_data["online"] is True
 
     async def test_offline_device_gets_the_offline_status(self):
-        heater = _make_hotwater(_hotwater(state={"mode": "SCHEDULE"}), _OFFLINE_DEVICES)
+        heater = _make_hotwater(_hotwater(state={"mode": "SCHEDULE"}, online=False))
         device = _device(status={"current_operation": "SCHEDULE"})
         result = await heater.get_water_heater(device)
         assert result is device
         assert device.status == {"current_operation": None}
         assert device.device_data == {"online": False, "model": "SLT"}
-        assert device.parent_device == "hub"
-        heater.session.report_device_offline.assert_called_once_with("dev-1")
+        heater.session.report_device_offline.assert_called_once_with("hw-1")
         heater.session.device_recovered.assert_not_called()
 
     async def test_unknown_product_is_offline(self):
@@ -272,7 +266,7 @@ class TestGetWaterHeater:
         device = await heater.get_water_heater(_device())
         assert device.status == {"current_operation": None}
         assert device.device_data["online"] is False
-        heater.session.report_device_offline.assert_called_once_with("dev-1")
+        heater.session.report_device_offline.assert_called_once_with("hw-1")
 
     async def test_device_data_none_is_replaced(self):
         heater = _make_hotwater(_hotwater(state={"mode": "OFF"}))
@@ -281,14 +275,14 @@ class TestGetWaterHeater:
         assert device.status == {"current_operation": "OFF"}
 
     async def test_status_is_restored_when_the_device_recovers(self):
-        devices = {"dev-1": {"props": {"online": False}}}
-        heater = _make_hotwater(_hotwater(state={"mode": "SCHEDULE"}), devices)
+        products = _hotwater(state={"mode": "SCHEDULE"}, online=False)
+        heater = _make_hotwater(products)
         device = _device()
         await heater.get_water_heater(device)
         assert device.status == {"current_operation": None}
-        devices["dev-1"]["props"]["online"] = True
+        products["hw-1"]["props"]["online"] = True
         await heater.get_water_heater(device)
         assert device.status == {"current_operation": "SCHEDULE"}
         assert device.device_data["online"] is True
-        heater.session.report_device_offline.assert_called_once_with("dev-1")
-        heater.session.device_recovered.assert_called_once_with("dev-1")
+        heater.session.report_device_offline.assert_called_once_with("hw-1")
+        heater.session.device_recovered.assert_called_once_with("hw-1")

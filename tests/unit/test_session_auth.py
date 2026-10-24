@@ -288,6 +288,88 @@ class TestLogin:
         assert excinfo.value is error
 
 
+class TestReauthLatch:
+    async def test_sms_challenge_is_not_asked_for_again(self):
+        hive = _make_hive()
+        hive.auth.login.return_value = SMS_CHALLENGE
+        with pytest.raises(HiveReauthRequired) as first:
+            await hive.login()
+
+        with pytest.raises(HiveReauthRequired) as second:
+            await hive.login()
+
+        assert second.value is first.value
+        hive.auth.login.assert_awaited_once_with()
+
+    async def test_rejected_password_is_not_tried_again(self):
+        hive = _make_hive()
+        hive.auth.login.side_effect = HiveInvalidPassword("wrong password")
+        with pytest.raises(HiveInvalidPassword):
+            await hive.login()
+
+        with pytest.raises(HiveInvalidPassword):
+            await hive.login()
+
+        hive.auth.login.assert_awaited_once_with()
+
+    async def test_api_calls_fail_without_contacting_cognito_or_hive(self):
+        hive = _make_hive()
+        hive.auth.login.return_value = SMS_CHALLENGE
+        api_call = AsyncMock(side_effect=HiveReauthRequired("HTTP 401"))
+        with pytest.raises(HiveReauthRequired):
+            await hive._api_call(api_call)
+        _expire_tokens(hive)
+
+        with pytest.raises(HiveReauthRequired, match="SMS"):
+            await hive._api_call(api_call)
+
+        api_call.assert_awaited_once_with()
+        hive.auth.login.assert_awaited_once_with()
+        hive.auth.refresh_token.assert_not_awaited()
+
+    async def test_polls_fail_without_fetching(self):
+        hive = _make_hive()
+        hive.auth.login.return_value = SMS_CHALLENGE
+        with pytest.raises(HiveReauthRequired):
+            await hive.login()
+
+        with pytest.raises(HiveReauthRequired):
+            await hive.get_devices()
+
+        hive.api.get_all.assert_not_awaited()
+
+    async def test_new_tokens_allow_logging_in_again(self):
+        hive = _make_hive()
+        hive.auth.login.return_value = SMS_CHALLENGE
+        with pytest.raises(HiveReauthRequired):
+            await hive.login()
+        hive.update_tokens(AUTH_RESULT)
+        hive.auth.login.return_value = AUTH_RESULT
+
+        await hive.login()
+
+        assert hive.auth.login.await_count == 2
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(
+                HiveConnectionError("Cognito timed out"), id="connection-error"
+            ),
+            pytest.param(HiveApiError("Cognito refused"), id="api-error"),
+        ],
+    )
+    async def test_other_login_failures_are_tried_again(self, error):
+        hive = _make_hive()
+        hive.auth.login.side_effect = [error, AUTH_RESULT]
+        with pytest.raises(type(error)):
+            await hive.login()
+
+        await hive.login()
+
+        assert hive.tokens.token_data == NEW_TOKENS
+
+
 class TestRefreshDue:
     def test_due_for_tokens_created_long_ago(self):
         hive = _make_hive()
@@ -661,6 +743,15 @@ class TestPoll:
         open_file.assert_called_once_with("data.json")
         assert hive.data.user == {"id": "u1", "temperatureUnit": "C"}
         hive.api.get_all.assert_not_awaited()
+
+    async def test_file_mode_reads_off_the_event_loop(self):
+        hive = _make_hive()
+        hive.config.file = True
+        with patch(
+            "apyhiveapi.hive.asyncio.to_thread", new=AsyncMock(return_value=_nodes())
+        ) as to_thread:
+            await hive._poll()
+        to_thread.assert_awaited_once_with(hive.open_file, "data.json")
 
     async def test_api_mode_fetches_and_stores_all_nodes(self):
         hive = _make_hive()

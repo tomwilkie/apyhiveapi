@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any, Self
 from apyhiveapi.api import HiveApi
 from apyhiveapi.auth import HiveAuth
 from apyhiveapi.const import PRODUCT_ENTITY_TYPES, THERMOSTAT_DEVICE_TYPES
-from apyhiveapi.exceptions import HiveApiError, HiveError, HiveReauthRequired
+from apyhiveapi.exceptions import (
+    HiveApiError,
+    HiveConnectionError,
+    HiveError,
+    HiveReauthRequired,
+)
 from apyhiveapi.heating import Climate
 from apyhiveapi.helpers import sanitize_payload
 from apyhiveapi.hotwater import WaterHeater
@@ -47,8 +52,8 @@ REFRESH_THRESHOLD = 0.90
 # How long after a failed poll the next attempt may run.
 POLL_RETRY_DELAY = timedelta(seconds=30)
 
-# device_data holds device_group_key, device_key and device_password, and
-# optionally the time the tokens were issued.
+# device_data holds device_group_key, device_key and device_password. Entries
+# saved by older versions add the token issue time, which is ignored.
 _DEVICE_DATA_FIELDS = 3
 
 
@@ -99,6 +104,8 @@ class Hive:
         self._refresh_lock = asyncio.Lock()
         self._stale_state_polls: dict[str, int] = {}
         self._offline_devices: set[str] = set()
+        # The login failure that needs the user, kept so later calls fail fast.
+        self._reauth_error: HiveReauthRequired | None = None
         self.heating = Climate(self)
         self.hotwater = WaterHeater(self)
 
@@ -145,6 +152,8 @@ class Hive:
             target: data[source] for source, target in mapping.items() if source in data
         }
         self.tokens.token_data.update(stored)
+        if stored:
+            self._reauth_error = None
         if stored and update_expiry_time:
             self.tokens.token_created = datetime.now(UTC)
         if "ExpiresIn" in data:
@@ -154,8 +163,24 @@ class Hive:
             self.tokens.token_created + self.tokens.token_expiry,
         )
 
+    def _raise_if_reauth_required(self) -> None:
+        """Fail fast once a login has shown that the user has to log in again.
+
+        Logging in again would not help: Hive would send another SMS code, or
+        count another wrong password towards locking the account. New tokens
+        from :meth:`update_tokens` clear the failure.
+
+        Raises:
+            HiveReauthRequired: The earlier login failure.
+        """
+        if self._reauth_error is not None:
+            raise self._reauth_error.with_traceback(None)
+
     async def login(self) -> None:
         """Log in with the stored username, password and device credentials.
+
+        After a login fails with :class:`HiveReauthRequired`, later calls raise
+        it again without contacting Cognito until new tokens are stored.
 
         Raises:
             HiveReauthRequired: Hive wants an SMS code, no longer trusts the
@@ -163,6 +188,15 @@ class Hive:
             HiveConnectionError: Cognito could not be reached.
             HiveApiError: Cognito asked for a challenge this library cannot answer.
         """
+        self._raise_if_reauth_required()
+        try:
+            await self._login()
+        except HiveReauthRequired as err:
+            self._reauth_error = err
+            raise
+
+    async def _login(self) -> None:
+        """Run the Cognito login and store the tokens; see :meth:`login`."""
         result = await self.auth.login()
         if result.get("ChallengeName") == HiveAuth.DEVICE_VERIFIER_CHALLENGE:
             result = await self.auth.device_login()
@@ -190,6 +224,7 @@ class Hive:
             HiveConnectionError: Cognito could not be reached.
             HiveApiError: Cognito refused the refresh for another reason.
         """
+        self._raise_if_reauth_required()
         if self.config.file or not self._refresh_due():
             return
         async with self._refresh_lock:
@@ -311,7 +346,7 @@ class Hive:
             HiveApiError: Hive refused the request.
         """
         if self.config.file:
-            nodes = self.open_file("data.json")
+            nodes = await asyncio.to_thread(self.open_file, "data.json")
         else:
             nodes = await self._api_call(self.api.get_all)
         self._store_nodes(nodes)
@@ -435,37 +470,12 @@ class Hive:
         if username == "use@file.com":
             self.config.file = True
 
-    @staticmethod
-    def _parse_token_created(value: object) -> datetime | None:
-        """Return the saved token-issue time as an aware UTC datetime.
-
-        Home Assistant stores ``device_data`` as JSON, so after a restart the
-        datetime returned by ``get_device_data()`` comes back as an ISO string.
-        Naive values, as older versions saved, are taken as local time.
-
-        Args:
-            value: A datetime, an ISO 8601 string, or a falsy value.
-
-        Returns:
-            The parsed time, or None if it is missing or invalid.
-        """
-        if isinstance(value, datetime):
-            return value.astimezone(UTC)
-        if isinstance(value, str) and value:
-            try:
-                return datetime.fromisoformat(value).astimezone(UTC)
-            except ValueError:
-                _LOGGER.warning(
-                    "Ignoring the invalid token_created value in device_data"
-                )
-        return None
-
     def _apply_device_data(self, device_data: Sequence[Any]) -> None:
-        """Load saved device credentials (and token issue time) into the session.
+        """Load saved device credentials into the session.
 
         Args:
-            device_data: ``(device_group_key, device_key, device_password)``,
-                optionally followed by ``token_created``.
+            device_data: ``(device_group_key, device_key, device_password)``.
+                Any further values, as older versions saved, are ignored.
 
         Raises:
             HiveReauthRequired: Fewer than three values were given.
@@ -477,10 +487,6 @@ class Hive:
         self.auth.device_group_key = device_data[0]
         self.auth.device_key = device_data[1]
         self.auth.device_password = device_data[2]
-        if len(device_data) > _DEVICE_DATA_FIELDS:
-            token_created = self._parse_token_created(device_data[3])
-            if token_created is not None:
-                self.tokens.token_created = token_created
 
     async def start_session(
         self, config: dict[str, Any] | None = None
@@ -497,8 +503,9 @@ class Hive:
         Raises:
             HiveReauthRequired: The config has no tokens, or the user has to
                 log in again.
-            HiveConnectionError: Hive could not be reached.
-            HiveApiError: Hive refused the request or returned no devices.
+            HiveConnectionError: Hive could not be reached or returned no
+                products or devices.
+            HiveApiError: Hive refused the request.
         """
         config = config or {}
         _LOGGER.debug("start_session - Config: %s", sanitize_payload(config))
@@ -510,7 +517,11 @@ class Hive:
             self._apply_config(config)
         await self._poll()
         if not self.data.devices or not self.data.products:
-            raise HiveApiError("Hive returned no products or devices for this account")
+            # The library already treats gaps in a poll as transient, so an
+            # empty answer is retried rather than failing the setup for good.
+            raise HiveConnectionError(
+                "Hive returned no products or devices for this account"
+            )
         return self.create_devices()
 
     def _apply_config(self, config: dict[str, Any]) -> None:
@@ -536,6 +547,7 @@ class Hive:
             ``parent`` (the hub), ``climate`` and ``water_heater`` lists.
         """
         self.device_list = {"parent": [], "climate": [], "water_heater": []}
+        self.hub_id = None
 
         hub = next(
             (
@@ -548,8 +560,10 @@ class Hive:
         if hub is None:
             _LOGGER.warning("No hub found among the Hive devices")
         else:
-            self.hub_id, hub_data = hub
-            self._add_device("parent", hub_data)
+            # Products point at the hub only when it made it into the list.
+            hub_device = self._add_device("parent", hub[1])
+            if hub_device is not None:
+                self.hub_id = hub_device.device_id
 
         temperature_unit = self.data.user.get("temperatureUnit")
         for product_id, product in self.data.products.items():

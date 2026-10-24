@@ -9,13 +9,16 @@ from apyhiveapi.device_handler import DeviceHandler
 from apyhiveapi.exceptions import HiveApiError, HiveDeviceOffline, HiveReauthRequired
 from tests.conftest import make_device, make_session
 
-_HEATING = {"prod-1": {"type": "heating", "state": {"mode": "SCHEDULE"}}}
-_ONLINE_DEVICES = {
-    "dev-1": {
-        "props": {"online": True, "model": "SLT3", "battery": 80},
-        "parent": "hub-1",
+_HEATING = {
+    "prod-1": {
+        "type": "heating",
+        "state": {"mode": "SCHEDULE"},
+        "props": {"online": True},
     }
 }
+_OFFLINE_HEATING = {"prod-1": {"type": "heating", "props": {"online": False}}}
+_TRV_CONTROL = {"prod-1": {"type": "trvcontrol", "props": {"online": True}}}
+_ONLINE_DEVICES = {"dev-1": {"props": {"online": True, "model": "SLT3", "battery": 80}}}
 _OFFLINE_DEVICES = {"dev-1": {"props": {"online": False, "model": "SLT3"}}}
 
 
@@ -103,26 +106,29 @@ class TestAsFloat:
 
 
 class TestIsOnline:
-    def test_true_when_the_product_is_known_and_the_device_online(self):
-        handler = _make_handler(_HEATING, _ONLINE_DEVICES)
+    @pytest.mark.parametrize(
+        "devices",
+        [
+            pytest.param(_ONLINE_DEVICES, id="thermostat-online"),
+            pytest.param(_OFFLINE_DEVICES, id="thermostat-offline"),
+            pytest.param({}, id="no-thermostat"),
+        ],
+    )
+    def test_heating_follows_its_own_online_flag(self, devices):
+        handler = _make_handler(_HEATING, devices)
         assert handler._is_online(make_device()) is True
 
     def test_a_truthy_online_value_counts_as_online(self):
-        handler = _make_handler(_HEATING, {"dev-1": {"props": {"online": 1}}})
+        handler = _make_handler({"prod-1": {"props": {"online": 1}}})
         assert handler._is_online(make_device()) is True
 
     def test_false_when_the_product_is_unknown(self):
         handler = _make_handler({}, _ONLINE_DEVICES)
         assert handler._is_online(make_device()) is False
 
-    def test_false_when_the_device_is_unknown(self):
-        handler = _make_handler(_HEATING, {})
-        assert handler._is_online(make_device()) is False
-
     @pytest.mark.parametrize(
-        "data",
+        "product",
         [
-            pytest.param(None, id="no-device-data"),
             pytest.param({}, id="no-props"),
             pytest.param({"props": None}, id="props-none"),
             pytest.param({"props": {}}, id="no-online-flag"),
@@ -131,19 +137,41 @@ class TestIsOnline:
             pytest.param({"props": {"online": 0}}, id="online-zero"),
         ],
     )
-    def test_false_without_a_truthy_online_flag(self, data):
-        handler = _make_handler(_HEATING, {"dev-1": data})
+    def test_false_without_a_truthy_online_flag(self, product):
+        handler = _make_handler({"prod-1": product}, _ONLINE_DEVICES)
         assert handler._is_online(make_device()) is False
+
+    def test_trv_control_is_online_while_its_trv_is(self):
+        handler = _make_handler(_TRV_CONTROL, _ONLINE_DEVICES)
+        assert handler._is_online(make_device(hive_type="trvcontrol")) is True
+
+    @pytest.mark.parametrize(
+        "devices",
+        [
+            pytest.param(_OFFLINE_DEVICES, id="trv-offline"),
+            pytest.param({}, id="no-trv"),
+            pytest.param({"dev-1": {"props": None}}, id="trv-props-none"),
+        ],
+    )
+    def test_trv_control_is_offline_without_an_online_trv(self, devices):
+        handler = _make_handler(_TRV_CONTROL, devices)
+        assert handler._is_online(make_device(hive_type="trvcontrol")) is False
+
+    def test_offline_trv_control_is_offline_with_an_online_trv(self):
+        handler = _make_handler(
+            {"prod-1": {"type": "trvcontrol", "props": {"online": False}}},
+            _ONLINE_DEVICES,
+        )
+        assert handler._is_online(make_device(hive_type="trvcontrol")) is False
 
 
 class TestRefreshDevice:
     def test_online_device_is_updated_and_recovered(self):
         handler = _make_handler(_HEATING, _ONLINE_DEVICES)
-        device = make_device(parent_device="old-hub")
+        device = make_device()
         assert handler._refresh_device(device) is True
         assert device.device_data == {"online": True, "model": "SLT3", "battery": 80}
-        assert device.parent_device == "hub-1"
-        handler.session.device_recovered.assert_called_once_with("dev-1")
+        handler.session.device_recovered.assert_called_once_with("prod-1")
         handler.session.report_device_offline.assert_not_called()
 
     def test_device_data_is_a_new_dict_and_the_props_are_left_alone(self):
@@ -155,41 +183,42 @@ class TestRefreshDevice:
         device.device_data["battery"] = 10
         assert props == {"online": True, "model": "SLT3"}
 
-    def test_offline_device_is_updated_and_reported(self):
-        handler = _make_handler(_HEATING, _OFFLINE_DEVICES)
-        device = make_device()
-        assert handler._refresh_device(device) is False
-        assert device.device_data == {"online": False, "model": "SLT3"}
-        handler.session.report_device_offline.assert_called_once_with("dev-1")
-        handler.session.device_recovered.assert_not_called()
-
-    def test_unknown_product_makes_an_online_device_offline(self):
-        handler = _make_handler({}, _ONLINE_DEVICES)
+    @pytest.mark.parametrize(
+        "products",
+        [
+            pytest.param(_OFFLINE_HEATING, id="product-offline"),
+            pytest.param({}, id="unknown-product"),
+        ],
+    )
+    def test_offline_product_is_updated_and_reported(self, products):
+        handler = _make_handler(products, _ONLINE_DEVICES)
         device = make_device()
         assert handler._refresh_device(device) is False
         assert device.device_data == {"online": False, "model": "SLT3", "battery": 80}
-        handler.session.report_device_offline.assert_called_once_with("dev-1")
+        handler.session.report_device_offline.assert_called_once_with("prod-1")
+        handler.session.device_recovered.assert_not_called()
 
-    def test_unknown_device_gets_online_false_only(self):
-        handler = _make_handler(_HEATING, {})
-        device = make_device(parent_device="old-hub")
-        assert handler._refresh_device(device) is False
-        assert device.device_data == {"online": False}
-        assert device.parent_device == "old-hub"
-        handler.session.report_device_offline.assert_called_once_with("dev-1")
-
-    def test_missing_props_gives_online_false_only(self):
-        handler = _make_handler(_HEATING, {"dev-1": {"parent": "hub-1"}})
+    @pytest.mark.parametrize(
+        "devices",
+        [
+            pytest.param({}, id="unknown-device"),
+            pytest.param({"dev-1": {}}, id="no-props"),
+            pytest.param({"dev-1": {"props": None}}, id="props-none"),
+        ],
+    )
+    def test_device_without_props_gives_the_online_flag_only(self, devices):
+        handler = _make_handler(_HEATING, devices)
         device = make_device()
-        assert handler._refresh_device(device) is False
-        assert device.device_data == {"online": False}
-        assert device.parent_device == "hub-1"
-
-    def test_missing_parent_key_keeps_the_previous_parent(self):
-        handler = _make_handler(_HEATING, {"dev-1": {"props": {"online": True}}})
-        device = make_device(parent_device="old-hub")
         assert handler._refresh_device(device) is True
-        assert device.parent_device == "old-hub"
+        assert device.device_data == {"online": True}
+
+    def test_parent_device_is_left_alone(self):
+        handler = _make_handler(
+            _HEATING, {"dev-1": {"props": {"online": True}, "parent": "other"}}
+        )
+        device = make_device(parent_device="hub-1")
+        handler._refresh_device(device)
+        assert device.parent_device == "hub-1"
 
     def test_device_data_none_is_replaced(self):
         handler = _make_handler(_HEATING, _ONLINE_DEVICES)
@@ -198,15 +227,15 @@ class TestRefreshDevice:
         assert device.device_data == {"online": True, "model": "SLT3", "battery": 80}
 
     def test_recovery_is_reported_after_going_offline(self):
-        devices = {"dev-1": {"props": {"online": False}}}
-        handler = _make_handler(_HEATING, devices)
+        products = {"prod-1": {"type": "heating", "props": {"online": False}}}
+        handler = _make_handler(products, {})
         device = make_device()
         assert handler._refresh_device(device) is False
-        devices["dev-1"]["props"]["online"] = True
+        products["prod-1"]["props"]["online"] = True
         assert handler._refresh_device(device) is True
         assert device.device_data == {"online": True}
-        handler.session.report_device_offline.assert_called_once_with("dev-1")
-        handler.session.device_recovered.assert_called_once_with("dev-1")
+        handler.session.report_device_offline.assert_called_once_with("prod-1")
+        handler.session.device_recovered.assert_called_once_with("prod-1")
 
 
 class TestBoostStatus:
@@ -247,18 +276,18 @@ class TestSetState:
         handler.session.set_state.assert_not_awaited()
         handler.session.get_devices.assert_not_awaited()
 
-    async def test_offline_device_raises_offline_without_sending(self):
-        handler = _make_handler(_HEATING, _OFFLINE_DEVICES)
+    async def test_offline_product_raises_offline_without_sending(self):
+        handler = _make_handler(_OFFLINE_HEATING, _ONLINE_DEVICES)
         device = make_device(ha_name="Hallway")
         with pytest.raises(HiveDeviceOffline, match="Hallway is offline"):
             await handler._set_state(device, mode="MANUAL")
         handler.session.set_state.assert_not_awaited()
         handler.session.get_devices.assert_not_awaited()
 
-    async def test_unknown_device_raises_offline(self):
-        handler = _make_handler(_HEATING, {})
+    async def test_offline_trv_raises_offline(self):
+        handler = _make_handler(_TRV_CONTROL, _OFFLINE_DEVICES)
         with pytest.raises(HiveDeviceOffline):
-            await handler._set_state(make_device(), mode="MANUAL")
+            await handler._set_state(make_device(hive_type="trvcontrol"), mode="MANUAL")
         handler.session.set_state.assert_not_awaited()
 
     async def test_online_device_sends_the_state_then_polls(self):
@@ -278,9 +307,12 @@ class TestSetState:
         handler.session.get_devices.assert_awaited_once()
 
     @pytest.mark.parametrize("product_type", ["heating", "hotwater", "trvcontrol"])
-    async def test_sends_the_product_type_from_the_data(self, product_type):
-        handler = _make_handler({"prod-1": {"type": product_type}}, _ONLINE_DEVICES)
-        await handler._set_state(make_device(), mode="MANUAL")
+    async def test_sends_the_product_type(self, product_type):
+        handler = _make_handler(
+            {"prod-1": {"type": product_type, "props": {"online": True}}},
+            _ONLINE_DEVICES,
+        )
+        await handler._set_state(make_device(hive_type=product_type), mode="MANUAL")
         handler.session.set_state.assert_awaited_once_with(
             product_type, "prod-1", mode="MANUAL"
         )

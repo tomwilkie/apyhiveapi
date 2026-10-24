@@ -55,8 +55,9 @@ depends on is:
 - `Auth(username, password)` (the `HiveAuth` class) with `login`, `sms_2fa`,
   `device_login`, `is_device_registered`, `device_registration`,
   `get_device_data` and `forget_device`
-- `Device` attributes, read attribute-style or dict-style with snake_case keys
-  (`device.hive_id`, `device["device_data"]`, `device.get("status")`)
+- `Device` attributes, read as attributes (`device.hive_id`,
+  `device.device_data`, `device.status`); `Device` is a plain dataclass with no
+  dict-style access
 - `device.status` keys and value types, and the `hive.heating` /
   `hive.hotwater` methods (`get_climate`, `get_water_heater`, `get_mode`,
   `set_mode`, `set_target_temperature`, `set_boost_on`, `set_boost_off`)
@@ -64,7 +65,9 @@ depends on is:
   `ValueError` for invalid command arguments
 
 The fork still uses the previous names (`hive.session.*`, camelCase methods
-and `Device` keys, imports from `apyhiveapi.helper.hive_exceptions`), catches
+and `Device` keys, imports from `apyhiveapi.helper.hive_exceptions`), reads
+`Device` dict-style (`device["status"]`, `device_data.get(...)` on the device),
+expects four values from `get_device_data()`, catches
 aiohttp's `HTTPException` (which this library no longer raises), treats the
 `set_*` methods as returning `bool`, awaits `get_device_data()` and
 `update_interval()`, which are now synchronous, and passes a device to
@@ -114,10 +117,10 @@ happened. Everything raised is a subclass of `HiveError` (`exceptions.py`):
 
 | Exception | Meaning | Caller's reaction |
 |---|---|---|
-| `HiveConnectionError` | Hive or Cognito unreachable, timeout, HTTP 5xx, Cognito throttling, unreadable body | transient: retry later |
+| `HiveConnectionError` | Hive or Cognito unreachable, timeout, HTTP 5xx, Cognito throttling, unreadable body, no products or devices at session start | transient: retry later |
 | `HiveApiError` | Hive or Cognito refused the request or answered unexpectedly | give up on this request |
 | `HiveDeviceOffline` | a command was sent to a device that is offline or no longer on the account | tell the user |
-| `HiveReauthRequired` | tokens, refresh token or saved device credentials rejected, no tokens, or an SMS code is needed | the user must log in again |
+| `HiveReauthRequired` | tokens, refresh token or saved device credentials rejected, no tokens, or an SMS code is needed; once a login has raised it, the session raises it again without contacting Cognito until new tokens are stored | the user must log in again |
 | `HiveInvalidUsername` / `HiveInvalidPassword` / `HiveInvalid2FACode` | subclasses of `HiveReauthRequired` raised by the login flow | show a form error |
 
 The rules that keep it consistent:
@@ -139,7 +142,9 @@ The rules that keep it consistent:
   state and are retried after `POLL_RETRY_DELAY`; a rejected token leads to one
   re-login through `Hive._api_call()`. "Reauth required" is raised only when
   Hive or Cognito actually rejected the credentials or asked for an SMS code,
-  never as a relabelling of some other failure.
+  never as a relabelling of some other failure, and it is never retried: a
+  failed login is remembered so that polls and commands do not send an SMS
+  code or try a wrong password on every scan interval.
 - **Timeouts are bounded and explicit.** Every Hive HTTP call has a 20 s total
   and 10 s connect budget (`api._TIMEOUT`); Cognito calls get botocore's
   `standard` retry mode with a single retry and 10 s connect / 20 s read
@@ -261,7 +266,10 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens`,
 
 - **Login and tokens** — `login()` logs in with the stored credentials,
   completes the device challenge with `auth.device_login()` and raises
-  `HiveReauthRequired` if Hive wants an SMS code. `update_tokens()` stores a
+  `HiveReauthRequired` if Hive wants an SMS code. A `HiveReauthRequired` from
+  a login is kept in `_reauth_error`, and `login()` and
+  `hive_refresh_tokens()` raise it again straight away until
+  `update_tokens()` stores new tokens. `update_tokens()` stores a
   Cognito response or a saved config entry. `hive_refresh_tokens()` refreshes
   at 90% of the token lifetime (`REFRESH_THRESHOLD`) and falls back to
   `login()` when the refresh token is rejected. `_api_call()` wraps every API
@@ -282,11 +290,13 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens`,
   `create_devices()`, which builds `device_list` with the keys `parent`,
   `climate` and `water_heater` from `PRODUCT_ENTITY_TYPES`. Heating and hot
   water products attach to the thermostat in their zone, TRV controls to their
-  first TRV; a malformed product is skipped with a warning. An entity is named
+  first TRV; a malformed product is skipped with a warning. Every product's
+  `parent_device` is `hub_id`, which is set only when the hub itself made it
+  into `device_list["parent"]` (otherwise `None`). An entity is named
   after its product (`hive_name` / `ha_name`), the device after the hardware
   that carries it (`device_name`); Hive's `Receiver` is shown as `Heating`.
 - **Device bookkeeping** — `device_recovered()`, `report_device_offline()`
-  (logs once until the device recovers) and `_device_name()`.
+  (logs once per product until it recovers) and `_device_name()`.
 
 `Hive` creates its own `aiohttp.ClientSession` when none is passed and closes
 it in `close()` / `__aexit__`. The fork always passes Home Assistant's shared
@@ -298,10 +308,16 @@ session; the owned-session path exists for the tests and the dev scripts.
 `WaterHeater` share: `_get_product_state()` (safe nested read from
 `session.data.products`), `_as_float()`, `_is_online()`, `_refresh_device()`
 (copies the device's props into `device.device_data` with an `online` flag and
-reports offline devices through the session), `_boost_status()` and
+reports offline products through the session), `_boost_status()` and
 `_set_state(device, **state)`, which raises `HiveDeviceOffline` for an
-offline or unknown device and otherwise calls `session.set_state()` and
+offline or unknown product and otherwise calls `session.set_state()` and
 re-polls.
+
+Availability comes from the product's own `props.online`, not from the device
+it is attached to: Hive reports heating and hot water products as the receiver
+that runs them (their `model` is the receiver's, `SLR1` / `SLR2`), so a
+battery thermostat dropping off leaves them online. A TRV control has no
+hardware of its own and is also offline while its TRV is.
 
 | `hive.*` | Class | Hive types | `device.status` after `get_*` |
 |---|---|---|---|
@@ -319,9 +335,8 @@ restores it (a no-op when nothing is boosting).
 
 `Device` is a dataclass: `hive_id`, `hive_name`, `hive_type`, `ha_type`,
 `device_id`, `device_name`, `device_data`, `parent_device`, `ha_name`,
-`temperature_unit`, `status`, `min_temp`, `max_temp`. It supports
-attribute-style and dict-style access (`device["hive_id"]`, `device.get(...)`,
-`"status" in device`) with the snake_case names only.
+`temperature_unit`, `status`, `min_temp`, `max_temp`, read and written as
+attributes.
 
 ### Authentication (`auth.py`)
 
@@ -331,7 +346,9 @@ Two flows:
    the `SMS_REQUIRED` constant). Call `auth.sms_2fa(code, result)`, then
    `auth.device_registration()` to make this machine a trusted device, then
    save the credentials from `auth.get_device_data()`
-   (`device_group_key`, `device_key`, `device_password`, `token_created`).
+   (`device_group_key`, `device_key`, `device_password`). A fourth value, the
+   token issue time saved by older versions, is accepted and ignored: tokens
+   loaded from a config entry count as due for a refresh.
 2. **Subsequent logins** — pass the saved `device_data` in the `start_session`
    config. `login()` is answered with a device challenge, which
    `device_login()` completes without an SMS.
@@ -355,4 +372,5 @@ All timestamps are timezone-aware UTC `datetime`s.
 Set `username="use@file.com"` to make the session load
 `src/apyhiveapi/data/data.json`, an anonymised all-nodes response (`user`,
 `products`, `devices`), instead of calling the API. Used for development
-without live credentials. Commands send nothing in file mode.
+without live credentials. The fixture is read in a worker thread, so file mode
+is safe under Home Assistant. Commands send nothing in file mode.

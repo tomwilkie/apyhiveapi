@@ -106,9 +106,9 @@ class TestHeatingBoost:
             await file_session.heating.set_boost_on(device, mins, temp)
         set_state.assert_not_awaited()
 
-    async def test_boost_on_offline_thermostat_raises(self, file_session):
+    async def test_boost_on_offline_heating_raises(self, file_session):
         device = _find(file_session, "climate", _HEATING_ID)
-        file_session.data.devices[_THERMOSTAT_ID]["props"]["online"] = False
+        file_session.data.products[_HEATING_ID]["props"]["online"] = False
         set_state = _capture_commands(file_session)
         with pytest.raises(HiveDeviceOffline, match="Heating Zone 1 is offline"):
             await file_session.heating.set_boost_on(device, 30, 20)
@@ -163,10 +163,10 @@ class TestHeatingBoost:
             await file_session.heating.set_boost_off(device)
         set_state.assert_not_awaited()
 
-    async def test_boost_off_on_offline_thermostat_raises(self, file_session):
+    async def test_boost_off_on_offline_heating_raises(self, file_session):
         device = _find(file_session, "climate", _HEATING_ID)
         _start_boost(file_session, _HEATING_ID)
-        file_session.data.devices[_THERMOSTAT_ID]["props"]["online"] = False
+        file_session.data.products[_HEATING_ID]["props"]["online"] = False
         set_state = _capture_commands(file_session)
         with pytest.raises(HiveDeviceOffline):
             await file_session.heating.set_boost_off(device)
@@ -198,9 +198,9 @@ class TestHotWaterBoost:
             await file_session.hotwater.set_boost_on(device, mins)
         set_state.assert_not_awaited()
 
-    async def test_boost_on_offline_thermostat_raises(self, file_session):
+    async def test_boost_on_offline_hot_water_raises(self, file_session):
         device = _find(file_session, "water_heater", _HOTWATER_ID)
-        file_session.data.devices[_THERMOSTAT_ID]["props"]["online"] = False
+        file_session.data.products[_HOTWATER_ID]["props"]["online"] = False
         set_state = _capture_commands(file_session)
         with pytest.raises(HiveDeviceOffline, match="is offline"):
             await file_session.hotwater.set_boost_on(device, 60)

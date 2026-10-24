@@ -197,7 +197,7 @@ async def live_config() -> dict[str, Any]:
             # Cognito ties the new tokens to this device: without registering
             # it the refresh token is rejected and the next login needs an SMS.
             await auth.device_registration()
-        device_data = list(auth.get_device_data()[:3])
+        device_data = list(auth.get_device_data())
         if all(device_data) and save_stored(username, device_data):
             print("Device credentials saved in the macOS Keychain.")
         else:

@@ -139,10 +139,10 @@ caller should do about it. aiohttp and botocore exceptions never escape the libr
 
 | Exception | Meaning | What to do |
 |---|---|---|
-| `HiveConnectionError` | Hive or Cognito could not be reached, timed out, failed with a 5xx or sent an unreadable response | Retry later |
+| `HiveConnectionError` | Hive or Cognito could not be reached, timed out, failed with a 5xx, sent an unreadable response, or returned no devices when the session started | Retry later |
 | `HiveApiError` | Hive or Cognito refused the request or answered unexpectedly | Report it; retrying will not help |
 | `HiveDeviceOffline` | A command was sent to a device that is offline or no longer on the account | Report it |
-| `HiveReauthRequired` | The tokens, refresh token or saved device credentials were rejected, there are no tokens, or Hive wants an SMS code | Log in again |
+| `HiveReauthRequired` | The tokens, refresh token or saved device credentials were rejected, there are no tokens, or Hive wants an SMS code. The session then keeps raising it without contacting Hive until it is given new tokens | Log in again |
 | `HiveInvalidUsername`, `HiveInvalidPassword`, `HiveInvalid2FACode` | Subclasses of `HiveReauthRequired` raised by the login flow | Show the user a form error |
 
 Invalid arguments, such as a boost of zero minutes, raise `ValueError`. Polling through

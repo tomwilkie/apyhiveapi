@@ -94,8 +94,15 @@ class TestFileSessionDevices:
         assert isinstance(device, Device)
         assert device.hive_id
         assert device.ha_name
-        assert device.parent_device == _HUB_ID
         assert device.status is None
+
+    async def test_products_hang_off_the_hub(self, file_session):
+        products = [
+            *file_session.device_list["climate"],
+            *file_session.device_list["water_heater"],
+        ]
+        assert [device.parent_device for device in products] == [_HUB_ID] * 3
+        assert file_session.device_list["parent"][0].parent_device is None
 
     async def test_get_climate_returns_status(self, file_session):
         device = file_session.device_list["climate"][0]

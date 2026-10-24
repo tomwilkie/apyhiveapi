@@ -111,7 +111,6 @@ class HiveAuth:
         self.device_key = device_key
         self.device_password = device_password
         self.access_token: str | None = None
-        self.token_created: datetime | None = None
         # Cognito's own ID for the user, learnt from the PASSWORD_VERIFIER challenge.
         self.user_id = username
         self.big_n: int = hex_to_long(N_HEX)
@@ -348,7 +347,6 @@ class HiveAuth:
         """Keep the access token and new device keys from an AuthenticationResult."""
         auth_result = result["AuthenticationResult"]
         self.access_token = auth_result["AccessToken"]
-        self.token_created = datetime.now(UTC)
         if "NewDeviceMetadata" in auth_result:
             self.device_group_key = auth_result["NewDeviceMetadata"]["DeviceGroupKey"]
             self.device_key = auth_result["NewDeviceMetadata"]["DeviceKey"]
@@ -397,23 +395,14 @@ class HiveAuth:
             DeviceRememberedStatus="remembered",
         )
 
-    def get_device_data(
-        self,
-    ) -> tuple[str | None, str | None, str | None, datetime | None]:
+    def get_device_data(self) -> tuple[str | None, str | None, str | None]:
         """Return the credentials to save for device logins.
 
         Returns:
-            ``(device_group_key, device_key, device_password, token_created)``.
-            ``token_created`` marks when the current tokens were issued. Pass
-            all four values as ``device_data`` in the ``start_session`` config
-            so the session can compute token expiry from the real issue time.
+            ``(device_group_key, device_key, device_password)``, to pass as
+            ``device_data`` in the ``start_session`` config.
         """
-        return (
-            self.device_group_key,
-            self.device_key,
-            self.device_password,
-            self.token_created,
-        )
+        return (self.device_group_key, self.device_key, self.device_password)
 
     async def is_device_registered(
         self, access_token: str | None = None, device_key: str | None = None
@@ -425,7 +414,8 @@ class HiveAuth:
             device_key: Device key. Defaults to ``self.device_key``.
 
         Raises:
-            HiveConnectionError: Cognito could not be reached.
+            HiveConnectionError: Cognito or the login page could not be reached.
+            HiveApiError: The login page did not include the Cognito details.
         """
         token = access_token or self.access_token
         key = device_key or self.device_key

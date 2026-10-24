@@ -2,12 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
 from apyhiveapi.models import Device, SessionConfig, SessionData, SessionTokens
-
-# Test constants
-DEFAULT_MAGIC_VALUE = 42
 
 
 def _make_device(**kwargs):
@@ -28,52 +23,14 @@ def _make_device(**kwargs):
 class TestDevice:
     """Tests for Device dataclass."""
 
-    def test_dict_read_snake_case(self):
-        """Test reading device attribute using snake_case key."""
-        d = _make_device(hive_id="abc")
-        assert d["hive_id"] == "abc"
-
-    def test_dict_write(self):
-        """Test writing a device attribute using dict-style access."""
-        d = _make_device(hive_id="abc")
-        d["hive_id"] = "xyz"
-        assert d.hive_id == "xyz"
-
-    def test_dict_read_missing_key_raises_key_error(self):
-        """Test reading an unknown key raises KeyError, not AttributeError."""
+    def test_optional_fields_default_to_none(self):
         d = _make_device()
-        with pytest.raises(KeyError):
-            _ = d["nonexistent"]
-
-    def test_contains_present_key(self):
-        """Test __contains__ returns True for present non-None key."""
-        d = _make_device(hive_id="h1")
-        assert "hive_id" in d
-
-    def test_contains_none_value_is_false(self):
-        """Test __contains__ returns False for None values."""
-        d = _make_device(parent_device=None)
-        assert "parent_device" not in d
-
-    def test_contains_missing_key_is_false(self):
-        """Test __contains__ returns False for missing keys."""
-        d = _make_device()
-        assert "nonexistent" not in d
-
-    def test_get_returns_value(self):
-        """Test get() returns value when key exists."""
-        d = _make_device(hive_id="h1")
-        assert d.get("hive_id") == "h1"
-
-    def test_get_returns_default_for_none(self):
-        """Test get() returns default when value is None."""
-        d = _make_device(parent_device=None)
-        assert d.get("parent_device", "fallback") == "fallback"
-
-    def test_get_returns_default_for_missing(self):
-        """Test get() returns default for missing keys."""
-        d = _make_device()
-        assert d.get("nonexistent", DEFAULT_MAGIC_VALUE) == DEFAULT_MAGIC_VALUE
+        assert d.parent_device is None
+        assert d.temperature_unit is None
+        assert d.status is None
+        assert d.min_temp is None
+        assert d.max_temp is None
+        assert d.ha_name == ""
 
 
 class TestSessionData:
