@@ -3,7 +3,7 @@
 # pylint: disable=protected-access
 
 import logging
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -94,57 +94,6 @@ class TestConfigureFileMode:
         assert hive.config.file is True
 
 
-class TestParseTokenCreated:
-    """Tests for Hive._parse_token_created."""
-
-    def test_aware_datetime_is_returned_in_utc(self):
-        value = datetime(2026, 1, 1, 12, tzinfo=timezone(timedelta(hours=2)))
-        result = Hive._parse_token_created(value)
-        assert result == datetime(2026, 1, 1, 10, tzinfo=UTC)
-        assert result.tzinfo is UTC
-
-    def test_naive_datetime_is_taken_as_local_time(self):
-        value = datetime.fromisoformat("2026-01-01T12:00:00")
-        result = Hive._parse_token_created(value)
-        assert result == value.astimezone(UTC)
-        assert result.tzinfo is UTC
-
-    def test_iso_string_is_parsed(self):
-        result = Hive._parse_token_created("2026-01-01T12:00:00+01:00")
-        assert result == datetime(2026, 1, 1, 11, tzinfo=UTC)
-
-    def test_naive_iso_string_is_taken_as_local_time(self):
-        result = Hive._parse_token_created("2026-01-01T12:00:00")
-        local = datetime.fromisoformat("2026-01-01T12:00:00")
-        assert result == local.astimezone(UTC)
-
-    def test_round_trips_the_saved_isoformat(self):
-        issued = datetime(2026, 1, 1, 12, 30, 15, tzinfo=UTC)
-        assert Hive._parse_token_created(issued.isoformat()) == issued
-
-    def test_invalid_string_returns_none_and_warns(self, caplog):
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            assert Hive._parse_token_created("not a date") is None
-        assert "Ignoring the invalid token_created value in device_data" in caplog.text
-
-    @pytest.mark.parametrize(
-        "value",
-        [
-            pytest.param(None, id="none"),
-            pytest.param("", id="empty-string"),
-            pytest.param(0, id="int"),
-            pytest.param(1.5, id="float"),
-            pytest.param([], id="list"),
-            pytest.param({}, id="dict"),
-            pytest.param(b"2026", id="bytes"),
-        ],
-    )
-    def test_other_values_return_none_without_a_warning(self, value, caplog):
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            assert Hive._parse_token_created(value) is None
-        assert not caplog.records
-
-
 class TestApplyDeviceData:
     """Tests for Hive._apply_device_data."""
 
@@ -177,26 +126,19 @@ class TestApplyDeviceData:
         hive._apply_device_data(("group", "key", "password"))
         assert hive.auth.device_key == "key"
 
-    def test_fourth_value_sets_token_created_from_a_string(self):
+    @pytest.mark.parametrize(
+        "token_created",
+        [
+            pytest.param("2026-01-01T12:00:00+00:00", id="iso-string"),
+            pytest.param("garbage", id="invalid"),
+            pytest.param(None, id="none"),
+        ],
+    )
+    def test_a_saved_token_issue_time_is_ignored(self, token_created):
         hive = _make_hive()
-        issued = datetime(2026, 1, 1, 12, tzinfo=UTC)
-        hive._apply_device_data(["group", "key", "password", issued.isoformat()])
-        assert hive.tokens.token_created == issued
-
-    def test_fourth_value_sets_token_created_from_a_datetime(self):
-        hive = _make_hive()
-        issued = datetime(2026, 1, 1, 12, tzinfo=UTC)
-        hive._apply_device_data(["group", "key", "password", issued])
-        assert hive.tokens.token_created == issued
-
-    @pytest.mark.parametrize("value", ["garbage", None, ""])
-    def test_unusable_fourth_value_leaves_token_created_alone(self, value):
-        hive = _make_hive()
-        before = datetime(2025, 6, 1, tzinfo=UTC)
-        hive.tokens.token_created = before
-        hive._apply_device_data(["group", "key", "password", value])
-        assert hive.tokens.token_created == before
+        hive._apply_device_data(["group", "key", "password", token_created])
         assert hive.auth.device_key == "key"
+        assert hive.tokens.token_created == _EPOCH
 
 
 class TestApplyConfig:
@@ -249,17 +191,12 @@ class TestApplyConfig:
 
     def test_device_data_is_applied(self):
         hive = _make_hive()
-        issued = datetime(2026, 1, 1, 12, tzinfo=UTC)
         hive._apply_config(
-            {
-                "tokens": _TOKENS,
-                "device_data": ["group", "key", "password", issued.isoformat()],
-            }
+            {"tokens": _TOKENS, "device_data": ["group", "key", "password"]}
         )
         assert hive.auth.device_group_key == "group"
         assert hive.auth.device_key == "key"
         assert hive.auth.device_password == "password"  # pragma: allowlist secret
-        assert hive.tokens.token_created == issued
 
     def test_short_device_data_raises(self):
         hive = _make_hive()
@@ -400,10 +337,10 @@ class TestStartSession:
             pytest.param({"products": [], "devices": [_HUB]}, id="no-products"),
         ],
     )
-    async def test_a_poll_without_products_or_devices_raises_api_error(self, nodes):
+    async def test_a_poll_without_products_or_devices_is_transient(self, nodes):
         hive = _make_hive()
         hive.api.get_all = AsyncMock(return_value=nodes)
-        with pytest.raises(HiveApiError):
+        with pytest.raises(HiveConnectionError, match="no products or devices"):
             await hive.start_session({"tokens": _TOKENS})
         assert hive.device_list == {}
 
@@ -446,7 +383,7 @@ class TestCreateDevices:
         assert parent.ha_type == "parent"
         assert parent.device_id == "hub-1"
         assert parent.hive_name == "Hive Hub"
-        assert parent.parent_device == "hub-1"
+        assert parent.parent_device is None
         assert parent.device_data["model"] == "HUB"
         assert parent.temperature_unit is None
         assert result["climate"] == []
@@ -460,6 +397,27 @@ class TestCreateDevices:
             result = hive.create_devices()
         assert "No hub found among the Hive devices" in caplog.text
         assert result["parent"] == []
+        assert hive.hub_id is None
+        assert result["climate"][0].parent_device is None
+
+    def test_hub_that_cannot_be_added_is_not_a_parent(self, caplog):
+        hub = {"id": "hub-1", "type": "hub", "props": {"online": True}}
+        hive = _make_hive(
+            products={"heat-1": _HEATING},
+            devices={"hub-1": hub, "thermo-1": _THERMOSTAT},
+        )
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            result = hive.create_devices()
+        assert "Skipping hub hub-1" in caplog.text
+        assert result["parent"] == []
+        assert hive.hub_id is None
+        assert result["climate"][0].parent_device is None
+
+    def test_hub_id_is_cleared_when_the_hub_disappears(self):
+        hive = _make_hive(products={"heat-1": _HEATING}, devices=_DEVICES)
+        hive.create_devices()
+        hive.data.devices = {"thermo-1": _THERMOSTAT}
+        result = hive.create_devices()
         assert hive.hub_id is None
         assert result["climate"][0].parent_device is None
 

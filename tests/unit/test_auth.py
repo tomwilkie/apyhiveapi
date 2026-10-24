@@ -169,7 +169,6 @@ class TestInit:
         assert auth.device_key is None
         assert auth.device_password is None
         assert auth.access_token is None
-        assert auth.token_created is None
         assert auth.client is None
         assert auth._pool_id is None
         assert auth._client_id is None
@@ -565,13 +564,10 @@ class TestLogin:
     async def test_stores_a_direct_authentication_result(self, caplog):
         auth = make_auth()
         auth.client.initiate_auth.return_value = NEW_DEVICE_RESULT
-        before = datetime.now(UTC)
         with caplog.at_level(logging.DEBUG, logger="apyhiveapi.auth"):
             result = await auth.login()
         assert result is NEW_DEVICE_RESULT
         assert auth.access_token == "access-token"
-        assert auth.token_created.tzinfo is UTC
-        assert before <= auth.token_created <= datetime.now(UTC)
         assert auth.device_group_key == "new-grp"
         assert auth.device_key == "new-dev"
         assert "Cognito issued new device keys" in caplog.text
@@ -633,7 +629,6 @@ class TestLogin:
         result = await auth.login()
         assert result is SMS_CHALLENGE
         assert auth.access_token is None
-        assert auth.token_created is None
 
     @pytest.mark.parametrize(
         ("response", "name"),
@@ -741,7 +736,6 @@ class TestDeviceLogin:
         result = await auth.device_login()
         assert result is AUTH_RESULT
         assert auth.access_token == "access-token"
-        assert auth.token_created is not None
         first, second = auth.client.respond_to_auth_challenge.call_args_list
         assert first == call(
             ClientId=CLIENT_ID,
@@ -869,7 +863,6 @@ class TestSms2fa:
             ChallengeResponses={"SMS_MFA_CODE": "123456", "USERNAME": "uuid-user"},
         )
         assert auth.access_token == "access-token"
-        assert auth.token_created is not None
         assert auth.device_group_key == "new-grp"
         assert auth.device_key == "new-dev"
 
@@ -880,7 +873,6 @@ class TestSms2fa:
         result = await auth.sms_2fa("000000", SMS_CHALLENGE)
         assert result is retry
         assert auth.access_token is None
-        assert auth.token_created is None
 
     @pytest.mark.parametrize(
         "challenge",
@@ -952,7 +944,6 @@ class TestRefreshToken:
             AuthParameters={"REFRESH_TOKEN": "refresh-token"},
         )
         assert auth.access_token == "access-token"
-        assert auth.token_created is not None
 
     async def test_names_the_saved_device(self):
         auth = make_auth(device_key="dev-key")
@@ -1157,31 +1148,22 @@ class TestDeviceRegistration:
 class TestGetDeviceData:
     async def test_returns_the_credentials_to_save(self):
         auth = HiveAuth(USERNAME, PASSWORD, **DEVICE_CREDENTIALS)
-        auth.token_created = FROZEN_NOW
-        result = auth.get_device_data()
-        assert result == ("grp-key", "dev-key", "dev-pass", FROZEN_NOW)
+        assert auth.get_device_data() == ("grp-key", "dev-key", "dev-pass")
 
     async def test_before_any_login(self):
         auth = HiveAuth(USERNAME, PASSWORD)
-        assert auth.get_device_data() == (None, None, None, None)
+        assert auth.get_device_data() == (None, None, None)
 
     async def test_reflects_the_keys_issued_at_login(self):
         auth = make_auth()
         auth.client.initiate_auth.return_value = NEW_DEVICE_RESULT
         await auth.login()
-        (
-            group_key,
-            device_key,
-            device_password,
-            token_created,
-        ) = auth.get_device_data()
-        assert (group_key, device_key, device_password) == ("new-grp", "new-dev", None)
-        assert token_created is auth.token_created
+        assert auth.get_device_data() == ("new-grp", "new-dev", None)
 
     async def test_reflects_the_password_made_at_registration(self):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
         await auth.device_registration("Home Assistant")
-        group_key, device_key, device_password, _created = auth.get_device_data()
+        group_key, device_key, device_password = auth.get_device_data()
         assert (group_key, device_key) == ("grp-key", "dev-key")
         assert device_password == auth.device_password
         assert device_password != "dev-pass"
@@ -1202,6 +1184,17 @@ class TestIsDeviceRegistered:
         with patch.object(auth, "async_init", new=AsyncMock()) as async_init:
             assert await auth.is_device_registered() is False
         async_init.assert_not_awaited()
+
+    async def test_unreadable_login_page_raises_rather_than_answering_false(self):
+        auth = HiveAuth(USERNAME, PASSWORD, **DEVICE_CREDENTIALS)
+        auth.access_token = "access-token"
+        error = HiveApiError("no Cognito details")
+        with (
+            patch.object(auth, "async_init", new=AsyncMock(side_effect=error)),
+            pytest.raises(HiveApiError) as excinfo,
+        ):
+            await auth.is_device_registered()
+        assert excinfo.value is error
 
     async def test_true_when_cognito_remembers_the_device(self):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")

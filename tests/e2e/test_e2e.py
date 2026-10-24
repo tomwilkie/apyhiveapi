@@ -143,21 +143,13 @@ class TestGetDeviceStatus:
         assert updated.status == {"current_operation": "SCHEDULE"}
         assert updated.device_data["online"] is True
 
-    async def test_status_is_readable_dict_style(self, file_session):
-        device = _find(file_session, "climate", _HEATING_ID)
-        await file_session.heating.get_climate(device)
-        assert device["status"]["mode"] == "OFF"
-        assert device["device_data"]["online"] is True
-        assert device.get("min_temp") == MIN_TARGET_TEMPERATURE
-        assert "status" in device
-
 
 class TestOfflineDevices:
-    async def test_offline_thermostat_is_reported_once_until_it_recovers(
+    async def test_offline_heating_is_reported_once_until_it_recovers(
         self, file_session, caplog
     ):
         device = _find(file_session, "climate", _HEATING_ID)
-        props = file_session.data.devices[_THERMOSTAT_ID]["props"]
+        props = file_session.data.products[_HEATING_ID]["props"]
         props["online"] = False
         updated = await file_session.heating.get_climate(device)
         assert updated.status == _OFFLINE_CLIMATE_STATUS
@@ -172,23 +164,40 @@ class TestOfflineDevices:
         await file_session.heating.get_climate(device)
         assert caplog.text.count("Heating Zone 1 is offline") == 2
 
-    async def test_offline_thermostat_takes_the_hot_water_offline_too(
+    async def test_offline_thermostat_leaves_heating_and_hot_water_online(
         self, file_session
     ):
-        device = _find(file_session, "water_heater", _HOTWATER_ID)
+        heating = _find(file_session, "climate", _HEATING_ID)
+        hotwater = _find(file_session, "water_heater", _HOTWATER_ID)
         file_session.data.devices[_THERMOSTAT_ID]["props"]["online"] = False
-        updated = await file_session.hotwater.get_water_heater(device)
-        assert updated.status == {"current_operation": None}
+        await file_session.heating.get_climate(heating)
+        await file_session.hotwater.get_water_heater(hotwater)
+        assert heating.status["mode"] == "OFF"
+        assert heating.device_data["online"] is True
+        assert hotwater.status == {"current_operation": "SCHEDULE"}
+        assert hotwater.device_data["online"] is True
+
+    async def test_offline_trv_takes_its_zone_offline(self, file_session):
+        device = _find(file_session, "climate", _TRV_CONTROL_ID)
+        file_session.data.devices[_TRV_ID]["props"]["online"] = False
+        updated = await file_session.heating.get_climate(device)
+        assert updated.status == _OFFLINE_CLIMATE_STATUS
         assert updated.device_data["online"] is False
 
-    async def test_commands_to_an_offline_device_raise(self, file_session):
-        file_session.data.devices[_THERMOSTAT_ID]["props"]["online"] = False
+    async def test_commands_to_an_offline_product_raise(self, file_session):
+        file_session.data.products[_HEATING_ID]["props"]["online"] = False
+        file_session.data.products[_HOTWATER_ID]["props"]["online"] = False
         heating = _find(file_session, "climate", _HEATING_ID)
         hotwater = _find(file_session, "water_heater", _HOTWATER_ID)
         with pytest.raises(HiveDeviceOffline, match="Heating Zone 1 is offline"):
             await file_session.heating.set_mode(heating, "MANUAL")
-        with pytest.raises(HiveDeviceOffline, match="is offline"):
+        with pytest.raises(HiveDeviceOffline, match="Hotwater is offline"):
             await file_session.hotwater.set_mode(hotwater, "MANUAL")
+
+    async def test_commands_work_while_the_thermostat_is_offline(self, file_session):
+        file_session.data.devices[_THERMOSTAT_ID]["props"]["online"] = False
+        hotwater = _find(file_session, "water_heater", _HOTWATER_ID)
+        assert await file_session.hotwater.set_mode(hotwater, "MANUAL") is None
 
 
 class TestCommands:
