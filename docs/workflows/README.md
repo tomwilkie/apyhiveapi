@@ -23,7 +23,7 @@ feature/* ──PR──▶ main ──version bump──▶ tag vX.Y.Z + GitHub
 | Workflow | Triggers | What it does |
 |---|---|---|
 | `ci.yml` (Lint) | pull requests and pushes to `main` that touch code or lint config | Runs every pre-commit hook: ruff, pylint, mypy, bandit, codespell, yamllint, detect-secrets and the PII check on fixture data. |
-| `tests.yml` (Tests, Coverage, Packaging) | every pull request and push to `main` | Tests on Python 3.13 and 3.14, coverage uploaded to Codecov, and a wheel built and imported in a clean venv. The jobs always report, so they can be required checks. |
+| `tests.yml` (Tests, Coverage, Packaging) | every pull request and push to `main` | Tests on Python 3.13 and 3.14, the 99% coverage gate, and a wheel built and imported in a clean venv. The jobs always report, so they can be required checks. |
 | `claude.yml` | pull requests and `@claude` mentions | Claude reviews the change against `CLAUDE.md` and the Home Assistant fork. |
 | `release.yml` | pushes to `main` that change `pyproject.toml` | Tags `v<version>`, builds the sdist and wheel, verifies the wheel imports, and publishes a GitHub Release with both attached. |
 
