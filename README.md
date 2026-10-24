@@ -2,9 +2,9 @@
 
 ![CI](https://github.com/tomwilkie/pyhive-integration/actions/workflows/ci.yml/badge.svg) ![Release](https://img.shields.io/github/v/release/tomwilkie/pyhive-integration) ![License](https://img.shields.io/github/license/tomwilkie/pyhive-integration)
 
-An async Python library (`apyhiveapi`) for the [Hive](https://www.hivehome.com/) smart home platform. It exists to power the Hive integration for [Home Assistant](https://www.home-assistant.io/) and exposes exactly what that integration needs: Hive heating (thermostats and TRVs) and hot water.
+An async Python library (`apyhiveapi`) for the [Hive](https://www.hivehome.com/) smart home platform. It exists to power [tomwilkie/ha-hive](https://github.com/tomwilkie/ha-hive), a fork of the Hive integration for [Home Assistant](https://www.home-assistant.io/), and exposes exactly what that integration needs: Hive heating (thermostats and TRVs) and hot water.
 
-> This library is a hard fork of [Pyhass/Pyhive](https://github.com/Pyhass/Pyhive), cut down to what the Home Assistant integration needs and restarted at version 0.0.1. It is not published on PyPI: install it from a GitHub release (see below). The import name is `apyhiveapi`.
+> This library is a hard fork of [Pyhass/Pyhive](https://github.com/Pyhass/Pyhive), cut down to what the ha-hive integration needs and restarted at version 0.0.1. It is not published on PyPI: install it from a GitHub release (see below). The import name is `apyhiveapi`.
 
 ---
 
@@ -12,9 +12,9 @@ An async Python library (`apyhiveapi`) for the [Hive](https://www.hivehome.com/)
 
 - Async only, built on `aiohttp`
 - AWS Cognito SRP authentication with SMS two-factor authentication support
-- Automatic token refresh at 90% of token lifetime with silent retry on expiry
-- Polling-based device state with a smart cache to avoid stale reads during in-progress polls
-- Full device discovery — returns a ready-to-use device list for Home Assistant entity creation
+- Automatic token refresh at 90% of token lifetime, with a silent re-login when the refresh token is rejected
+- Polling-based device state, rate limited to one poll per scan interval across all entities
+- Full device discovery — returns a ready-to-use device list for the integration's entities
 - File-based offline mode for development and testing without live credentials
 
 ## Supported Devices
@@ -24,7 +24,7 @@ An async Python library (`apyhiveapi`) for the [Hive](https://www.hivehome.com/)
 | **Heating** (thermostat, TRV) | Current / target temperature, mode (schedule / manual / off), boost on/off |
 | **Hot Water** | Mode (schedule / on / off), boost on/off |
 
-Lights, smart plugs, sensors and the hub are not supported: the Home Assistant integration this library serves does not use them.
+Lights, smart plugs, sensors and the hub are not supported: the ha-hive integration does not use them.
 
 ---
 
@@ -179,6 +179,7 @@ pytest tests/
 
 ## Links
 
+- [ha-hive](https://github.com/tomwilkie/ha-hive), the Home Assistant integration this library powers
 - [Releases](https://github.com/tomwilkie/pyhive-integration/releases)
 - [Source](https://github.com/tomwilkie/pyhive-integration)
 - [Issue Tracker](https://github.com/tomwilkie/pyhive-integration/issues)
