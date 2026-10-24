@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import botocore.exceptions
 import pytest
 
-from apyhiveapi.auth import HiveAuth
+from apyhiveapi.auth import _COGNITO_CONFIG, HiveAuth
 from apyhiveapi.exceptions import (
     HiveApiError,
     HiveConnectionError,
@@ -236,10 +236,18 @@ class TestAsyncInit:
             aws_access_key_id="ACCESS_KEY",
             aws_secret_access_key="SECRET_KEY",
             aws_session_token="SESSION_TOKEN",
+            config=_COGNITO_CONFIG,
         )
         assert auth._pool_id == "eu-west-1_abc"
         assert auth._client_id == CLIENT_ID
         assert auth.client is boto_client
+
+    def test_cognito_timeouts_and_retries_are_bounded(self):
+        # botocore's defaults are 60 s and five attempts; a login must not
+        # hang for minutes when Cognito is unreachable.
+        assert _COGNITO_CONFIG.connect_timeout == 10
+        assert _COGNITO_CONFIG.read_timeout == 20
+        assert _COGNITO_CONFIG.retries == {"max_attempts": 2, "mode": "standard"}
 
     @pytest.mark.parametrize(
         ("pool_id", "region"),

@@ -140,6 +140,12 @@ The rules that keep it consistent:
   re-login through `Hive._api_call()`. "Reauth required" is raised only when
   Hive or Cognito actually rejected the credentials or asked for an SMS code,
   never as a relabelling of some other failure.
+- **Timeouts are bounded and explicit.** Every Hive HTTP call has a 20 s total
+  and 10 s connect budget (`api._TIMEOUT`); Cognito calls get botocore's
+  `standard` retry mode with a single retry and 10 s connect / 20 s read
+  timeouts (`auth._COGNITO_CONFIG`) instead of its 60 s defaults and five
+  attempts. Home Assistant does the rest of the retrying: setup backoff after
+  `ConfigEntryNotReady`, the next poll interval, and the user for commands.
 - **Commands raise, readers return None, polls return bool.** `set_*` methods
   return nothing and raise on failure (`HiveDeviceOffline` included).
   `ValueError` is for invalid arguments (a boost of zero minutes). `get_*`

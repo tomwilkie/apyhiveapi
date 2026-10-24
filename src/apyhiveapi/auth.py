@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import boto3
 import botocore.exceptions
+from botocore.config import Config
 
 from apyhiveapi.api import get_login_info
 from apyhiveapi.exceptions import (
@@ -58,6 +59,15 @@ type CodeMap = Mapping[str, type[HiveError]]
 
 # Cognito error codes that mean "try again later", whatever the call.
 _TRANSIENT_CODES = frozenset({"InternalErrorException", "TooManyRequestsException"})
+
+# botocore's defaults are 60 s timeouts and up to five attempts, so a login
+# against an unreachable Cognito could hang for minutes. Bound it like the
+# Hive HTTP calls and keep a single retry for throttling and server errors.
+_COGNITO_CONFIG = Config(
+    connect_timeout=10,
+    read_timeout=20,
+    retries={"max_attempts": 2, "mode": "standard"},
+)
 
 # Cognito error codes that mean the saved device is no longer trusted.
 _DEVICE_REJECTED: CodeMap = {
@@ -141,6 +151,7 @@ class HiveAuth:
                 aws_access_key_id="ACCESS_KEY",
                 aws_secret_access_key="SECRET_KEY",  # noqa: S106 - placeholder, see above
                 aws_session_token="SESSION_TOKEN",  # noqa: S106 - placeholder, see above
+                config=_COGNITO_CONFIG,
             ),
         )
 

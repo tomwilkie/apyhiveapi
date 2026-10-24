@@ -23,7 +23,10 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-_TIMEOUT = ClientTimeout(total=5)
+# Per-request budget. The total has to sit above Hive's slow days, which can
+# reach several seconds for the all-nodes response, and below the scan
+# interval; the connect limit makes an unreachable Hive fail fast.
+_TIMEOUT = ClientTimeout(total=20, connect=10)
 _SSO_URL = "https://sso.hivehome.com/"
 _BASE_URL = "https://beekeeper.hivehome.com/1.0"
 _ALL_NODES_URL = f"{_BASE_URL}/nodes/all?products=true&devices=true"

@@ -68,8 +68,10 @@ def _api_messages(caplog):
 
 
 class TestConstants:
-    def test_timeout_is_five_seconds_in_total(self):
-        assert aiohttp.ClientTimeout(total=5) == _TIMEOUT
+    def test_timeout_budget(self):
+        # Above Hive's slow responses, below the scan interval, and an
+        # unreachable Hive fails at the connect limit.
+        assert aiohttp.ClientTimeout(total=20, connect=10) == _TIMEOUT
 
     def test_urls(self):
         assert _SSO_URL == "https://sso.hivehome.com/"
@@ -104,7 +106,7 @@ class TestFetch:
             _URL,
             headers={**_HEADERS, "Authorization": "tok"},
             data='{"a": 1}',
-            timeout=aiohttp.ClientTimeout(total=5),
+            timeout=aiohttp.ClientTimeout(total=20, connect=10),
         )
 
     async def test_headers_and_data_default_to_none(self):
