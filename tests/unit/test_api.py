@@ -153,7 +153,6 @@ class TestFetch:
     @pytest.mark.parametrize(
         ("error_type", "body"),
         [
-            pytest.param("ForbiddenException", '{"message":"Forbidden"}', id="blocked"),
             pytest.param(
                 "MissingAuthenticationTokenException",
                 '{"message":"Missing Authentication Token"}',
@@ -348,6 +347,35 @@ class TestFetchGatewayErrorType:
         with pytest.raises(exc, match=rf"HTTP {status} \(SomeException\) calling"):
             await _fetch(websession, "get", _URL, token="test-token")
 
+    @pytest.mark.parametrize("token", [None, "test-token"])
+    async def test_a_gateway_block_is_a_connection_error(self, token):
+        # Hive's gateway answers a burst of requests with 403
+        # ForbiddenException for a minute or two: retry later, don't log in.
+        websession = _make_websession(
+            403,
+            '{"message":"Forbidden"}',
+            {"x-amzn-ErrorType": "ForbiddenException"},
+        )
+
+        with pytest.raises(HiveConnectionError) as exc_info:
+            await _fetch(websession, "post", _URL, token=token)
+
+        assert str(exc_info.value) == (
+            "Hive is temporarily blocking requests, try again in a few minutes: "
+            f'HTTP 403 (ForbiddenException) calling {_URL}: {{"message":"Forbidden"}}'
+        )
+
+    @pytest.mark.parametrize("status", [401, 429])
+    async def test_forbidden_exception_on_another_status_is_not_a_block(self, status):
+        websession = _make_websession(
+            status, "{}", {"x-amzn-ErrorType": "ForbiddenException"}
+        )
+
+        with pytest.raises(HiveApiError) as exc_info:
+            await _fetch(websession, "get", _URL)
+
+        assert not isinstance(exc_info.value, HiveConnectionError)
+
     async def test_documentation_suffix_on_the_error_type_is_dropped(self):
         websession = _make_websession(
             403,
@@ -355,7 +383,7 @@ class TestFetchGatewayErrorType:
             {"x-amzn-ErrorType": "ForbiddenException:http://internal.amazon.com/"},
         )
 
-        with pytest.raises(HiveApiError) as exc_info:
+        with pytest.raises(HiveConnectionError) as exc_info:
             await _fetch(websession, "get", _URL, token="test-token")
 
         assert "HTTP 403 (ForbiddenException) calling" in str(exc_info.value)

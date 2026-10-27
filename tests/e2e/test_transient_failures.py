@@ -24,7 +24,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 from aiohttp.test_utils import TestServer
 
 from apyhiveapi import Hive
-from apyhiveapi.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
+from apyhiveapi.exceptions import HiveConnectionError, HiveReauthRequired
 from apyhiveapi.hive import POLL_RETRY_DELAY
 
 _DATA = json.loads(
@@ -58,10 +58,12 @@ _FAULTS = [
     pytest.param([503], id="http-503"),
     pytest.param([504], id="http-504"),
     pytest.param(["truncated"], id="truncated-body"),
+    pytest.param(["forbidden"], id="gateway-block"),
 ]
 _POLL_WARNING = "Could not poll Hive, keeping the last known state"
 # What Hive's API gateway answers, as observed on the live API: a bad token
-# gets a 401, a request the gateway blocks gets a bare 403 "Forbidden".
+# gets a 401, and after a burst of about 25 requests every request gets a bare
+# 403 "Forbidden" for a minute or two.
 _GATEWAY_REFUSALS = {
     "unauthorized": (401, "UnauthorizedException", '{"message":"Unauthorized"}'),
     "forbidden": (403, "ForbiddenException", '{"message":"Forbidden"}'),
@@ -440,7 +442,9 @@ class TestGatewayRefusals:
         # ha-hive#4: hot water commands got a 403 while the token worked.
         fake_hive.command_outcomes = ["forbidden"]
         hot_water = _device(session, _HOTWATER_ID)
-        with pytest.raises(HiveApiError, match=r"HTTP 403 \(ForbiddenException\)"):
+        with pytest.raises(
+            HiveConnectionError, match=r"HTTP 403 \(ForbiddenException\)"
+        ):
             await session.hotwater.set_mode(hot_water, "MANUAL")
         assert fake_hive.commands == [{"mode": "MANUAL"}]
         session.login.assert_not_awaited()
@@ -448,7 +452,7 @@ class TestGatewayRefusals:
     async def test_a_blocked_command_is_not_a_reauth(self, session, fake_hive):
         fake_hive.command_outcomes = ["forbidden"]
         hot_water = _device(session, _HOTWATER_ID)
-        with pytest.raises(HiveApiError) as exc_info:
+        with pytest.raises(HiveConnectionError) as exc_info:
             await session.hotwater.set_mode(hot_water, "MANUAL")
         assert not isinstance(exc_info.value, HiveReauthRequired)
 
