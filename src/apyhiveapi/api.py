@@ -72,10 +72,12 @@ async def _fetch(
     Raises:
         HiveReauthRequired: Hive rejected the token (HTTP 401 on a request
             that sent one).
-        HiveConnectionError: Network error, timeout or HTTP 5xx.
-        HiveApiError: Any other non-2xx status, including HTTP 403: Hive's
-            API gateway answers a bad token with 401, and a 403 means it
-            refused the request itself (a blocked request, an unknown path).
+        HiveConnectionError: Network error, timeout, HTTP 5xx, or HTTP 403
+            ``ForbiddenException``: Hive's API gateway blocks every request
+            from a connection for a minute or two after a burst of about 25.
+        HiveApiError: Any other non-2xx status, including any other HTTP
+            403: Hive's API gateway answers a bad token with 401, and a 403
+            means it refused the request itself (for example an unknown path).
     """
     headers = {**_HEADERS, "Authorization": token} if token else None
     start = time.monotonic()
@@ -101,10 +103,16 @@ async def _fetch(
         return body
     # API Gateway names the kind of refusal, e.g. UnauthorizedException or
     # ForbiddenException, sometimes followed by ":<documentation URL>".
-    kind = f" ({error_type.split(':')[0]})" if error_type else ""
+    error_name = error_type.split(":")[0] if error_type else None
+    kind = f" ({error_name})" if error_name else ""
     detail = f"HTTP {status}{kind} calling {url}: {body[:200]}"
     if token and status == HTTPStatus.UNAUTHORIZED:
         raise HiveReauthRequired(f"Hive rejected the token: {detail}")
+    if status == HTTPStatus.FORBIDDEN and error_name == "ForbiddenException":
+        raise HiveConnectionError(
+            f"Hive is temporarily blocking requests, try again in a few minutes: "
+            f"{detail}"
+        )
     if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise HiveConnectionError(f"Hive server error: {detail}")
     raise HiveApiError(f"Hive refused the request: {detail}")

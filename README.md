@@ -33,7 +33,7 @@ Lights, smart plugs, sensors and the hub are not supported: the ha-hive integrat
 This library is not on PyPI. Install a release wheel from GitHub, or the current `main`:
 
 ```bash
-pip install "pyhive-integration @ https://github.com/tomwilkie/pyhive-integration/releases/download/v0.1.1/pyhive_integration-0.1.1-py3-none-any.whl"
+pip install "pyhive-integration @ https://github.com/tomwilkie/pyhive-integration/releases/download/v0.1.2/pyhive_integration-0.1.2-py3-none-any.whl"
 pip install "pyhive-integration @ git+https://github.com/tomwilkie/pyhive-integration"
 ```
 

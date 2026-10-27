@@ -129,7 +129,7 @@ happened. Everything raised is a subclass of `HiveError` (`exceptions.py`):
 
 | Exception | Meaning | Caller's reaction |
 |---|---|---|
-| `HiveConnectionError` | Hive or Cognito unreachable, timeout, HTTP 5xx, Cognito throttling, unreadable body, no products or devices at session start | transient: retry later |
+| `HiveConnectionError` | Hive or Cognito unreachable, timeout, HTTP 5xx, Cognito throttling, Hive's gateway blocking requests (HTTP 403 `ForbiddenException`, about 1–2 minutes after a burst of roughly 25 requests), unreadable body, no products or devices at session start | transient: retry later |
 | `HiveApiError` | Hive or Cognito refused the request or answered unexpectedly | give up on this request |
 | `HiveDeviceOffline` | a command was sent to a device that is offline or no longer on the account | tell the user |
 | `HiveReauthRequired` | tokens, refresh token or saved device credentials rejected, no tokens, or an SMS code is needed; once a login has raised it, the session raises it again without contacting Cognito until new tokens are stored | the user must log in again |
