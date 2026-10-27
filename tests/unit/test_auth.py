@@ -1259,7 +1259,8 @@ class TestIsDeviceRegistered:
             assert await auth.is_device_registered() is False
         assert len(caplog.records) == 1
         assert caplog.records[0].levelno == logging.DEBUG
-        assert caplog.text.count("Device dev-key is not registered") == 1
+        assert caplog.text.count("This device is not registered") == 1
+        assert "dev-key" not in caplog.text
         assert f"Cognito get_device failed with {code}: Device does not exist." in (
             caplog.text
         )

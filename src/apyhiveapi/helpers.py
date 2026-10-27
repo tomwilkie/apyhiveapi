@@ -7,7 +7,8 @@ from typing import Any
 
 # Payload keys whose values are masked in logs. A key is masked when its
 # lower-cased name contains any of these, so "token" also covers keys such
-# as "accessToken" and "tokens".
+# as "accessToken" and "tokens". Masked strings are replaced whole: no part
+# of a password, token or device key is ever logged.
 _SENSITIVE_KEY_PARTS = (
     "password",
     "token",
@@ -20,15 +21,11 @@ _SENSITIVE_KEY_PARTS = (
     "newdevicemetadata",
 )
 
-_MAX_UNMASKED_LENGTH = 8
-
 
 def _mask(value: Any) -> Any:  # noqa: ANN401 - arbitrary JSON values
     """Mask a sensitive value, recursing into containers."""
     if isinstance(value, str):
-        if len(value) <= _MAX_UNMASKED_LENGTH:
-            return "***"
-        return f"{value[:4]}...{value[-4:]}"
+        return "***"
     if isinstance(value, dict):
         return {key: _mask(item) for key, item in value.items()}
     if isinstance(value, list):

@@ -232,6 +232,25 @@ class TestStartSession:
         assert hive.tokens.token_data == {}
         assert hive.auth.device_key is None
 
+    async def test_debug_log_shows_no_part_of_the_credentials(self, caplog):
+        hive = _make_hive()
+        config = {
+            "username": "user@example.com",
+            "password": "PWHEADxxxxPWTAIL",  # pragma: allowlist secret
+            "device_data": ["GKHEADxxxxGKTAIL", "DKHEADxxxxDKTAIL", "DPHEADxxxxDPTAIL"],
+            "tokens": {
+                "token": "IDHEADxxxxxxxxxxIDTAIL",
+                "refreshToken": "RFHEADxxxxxxxxxxRFTAIL",
+                "accessToken": "ACHEADxxxxxxxxxxACTAIL",
+            },
+        }
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+            await hive.start_session(config)
+        assert "start_session - Config" in caplog.text
+        for value in ("PW", "GK", "DK", "DP", "ID", "RF", "AC"):
+            assert f"{value}HEAD" not in caplog.text
+            assert f"{value}TAIL" not in caplog.text
+
     async def test_scan_interval_option_is_applied(self):
         hive = _make_hive()
         await hive.start_session({"tokens": _TOKENS, "options": {"scan_interval": 300}})

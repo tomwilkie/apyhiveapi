@@ -425,7 +425,7 @@ class HiveAuth:
         try:
             result = await self._cognito("get_device", AccessToken=token, DeviceKey=key)
         except HiveApiError as err:
-            _LOGGER.debug("Device %s is not registered: %s", key, err)
+            _LOGGER.debug("This device is not registered: %s", err)
             return False
         attributes = result.get("Device", {}).get("DeviceAttributes", [])
         return any(
