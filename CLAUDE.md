@@ -387,7 +387,7 @@ hardware of its own and is also offline while its TRV is.
 | `hive.*` | Class | Hive types | `device.status` after `get_*` |
 |---|---|---|---|
 | `hive.heating` | `Climate` | `heating`, `trvcontrol` | `current_temperature` (float), `target_temperature` (float), `action` (bool, calling for heat), `mode` (`SCHEDULE` / `MANUAL` / `OFF`), `boost` (`ON` / `OFF`); each `None` when unknown or offline |
-| `hive.hotwater` | `WaterHeater` | `hotwater` | `current_operation` (`SCHEDULE` / `ON` / `OFF` / `None`) |
+| `hive.hotwater` | `WaterHeater` | `hotwater` | `current_operation` (`SCHEDULE` / `ON` / `OFF`), `boost` (`ON` / `OFF`); each `None` when unknown or offline |
 
 `get_climate()` also sets `device.min_temp` / `device.max_temp`
 (`MIN_TARGET_TEMPERATURE` 5.0, `MAX_TARGET_TEMPERATURE` 32.0). Both handlers
