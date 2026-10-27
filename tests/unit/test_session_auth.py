@@ -206,6 +206,18 @@ class TestUpdateTokens:
         assert "access-token-0001" not in caplog.text
         assert "refresh-token-0001" not in caplog.text
 
+    def test_debug_log_shows_no_part_of_a_long_token(self, caplog):
+        hive = _make_hive()
+        tokens = {
+            "IdToken": "IDHEADxxxxxxxxxxxxxxxxIDTAIL",
+            "AccessToken": "ACHEADxxxxxxxxxxxxxxxxACTAIL",
+            "RefreshToken": "RFHEADxxxxxxxxxxxxxxxxRFTAIL",
+        }
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+            hive.update_tokens({"AuthenticationResult": tokens})
+        for fragment in ("IDHEAD", "IDTAIL", "ACHEAD", "ACTAIL", "RFHEAD", "RFTAIL"):
+            assert fragment not in caplog.text
+
 
 class TestLogin:
     async def test_stores_the_tokens(self):

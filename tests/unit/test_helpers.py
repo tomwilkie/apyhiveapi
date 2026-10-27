@@ -1,5 +1,7 @@
 """Unit tests for the helpers module."""
 
+import pytest
+
 from apyhiveapi.helpers import sanitize_payload
 
 
@@ -12,28 +14,19 @@ class TestSanitizePayload:
         result = sanitize_payload({"password": _pw})
         assert result["password"] != _pw
 
-    def test_short_value_becomes_stars(self):
-        """Values of 8 characters or fewer are replaced with '***'."""
-        result = sanitize_payload({"token": "abc"})
-        assert result["token"] == "***"
-
-    def test_long_value_shows_head_and_tail(self):
-        """Values over 8 characters are replaced with first4...last4."""
-        result = sanitize_payload({"token": "abcdefghijklmnop"})
-        assert result["token"].startswith("abcd")
-        assert result["token"].endswith("mnop")
-        assert "..." in result["token"]
-
-    def test_exactly_8_chars_becomes_stars(self):
-        """Boundary: an 8-character value becomes '***'."""
-        result = sanitize_payload({"token": "12345678"})
-        assert result["token"] == "***"
-
-    def test_nine_chars_shows_head_and_tail(self):
-        """Boundary: a 9-character value is truncated."""
-        result = sanitize_payload({"token": "123456789"})
-        assert result["token"].startswith("1234")
-        assert result["token"].endswith("6789")
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("", id="empty"),
+            pytest.param("abc", id="short"),
+            pytest.param("12345678", id="eight-chars"),
+            pytest.param("123456789", id="nine-chars"),
+            pytest.param("x" * 1000, id="token-length"),
+        ],
+    )
+    def test_every_string_becomes_stars_whatever_its_length(self, value):
+        """No part of a sensitive string is kept, so its head and tail are hidden."""
+        assert sanitize_payload({"token": value})["token"] == "***"
 
     def test_non_sensitive_key_passes_through(self):
         """Keys with no sensitive substrings are left unchanged."""
@@ -89,7 +82,7 @@ class TestSanitizePayload:
         """A list under a sensitive key has each element masked individually."""
         payload = {"token": ["short", "averylongtoken123"]}
         result = sanitize_payload(payload)
-        assert result["token"] == ["***", "aver...n123"]
+        assert result["token"] == ["***", "***"]
 
     def test_none_under_sensitive_key_passes_through(self):
         """None under a sensitive key is returned unchanged."""
