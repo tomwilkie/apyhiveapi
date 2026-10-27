@@ -83,9 +83,10 @@ applies is: `HiveReauthRequired` → `ConfigEntryAuthFailed`,
 `ValueError` from a command → `ServiceValidationError`; in the config flow
 `HiveInvalidUsername` / `HiveInvalidPassword` / `HiveInvalid2FACode` → their
 form errors, `HiveConnectionError` → `no_internet_available`, any other
-`HiveError` → `unknown`. v0.0.1 still accepted dict-style `Device` reads, so
-bump the fork's manifest to the next release once it is published. An API
-change here is made in the fork in step.
+`HiveError` → `unknown`. v0.0.1 still accepted dict-style `Device` reads;
+v0.1.0 drops them (and returns three values from `get_device_data()`), so
+bump the fork's manifest to v0.1.0 once it is published. An API change here
+is made in the fork in step.
 
 ### Dependency changes
 
