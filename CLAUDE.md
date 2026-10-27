@@ -120,7 +120,8 @@ requires Python 3.14; this library supports 3.13 and later.
 - Never log tokens or PII; log payloads via `apyhiveapi.helpers.sanitize_payload`.
   Data in `src/apyhiveapi/data/*.json` must be anonymised.
 - New behaviour and bug fixes need tests in `tests/unit`, `tests/module` or
-  `tests/e2e`; coverage must stay at 99%.
+  `tests/e2e`; coverage must stay at 99%. One test per behaviour, not per
+  call site: see "What a test is for" below before adding one.
 
 ### Error handling
 
@@ -243,6 +244,57 @@ which is all the device handlers use) and `make_device()`.
 Coverage is enforced at **99%** (`fail_under = 99` in `pyproject.toml`).
 Running only a subset of tests will report very low coverage and fail — always
 verify with the full `pytest tests/` run.
+
+### What a test is for
+
+A test earns its place by pinning one behaviour the library promises and
+nothing else does. The suite was once twice its current size because every
+rule below had been broken; keep it small by applying them before adding a
+test, and in review.
+
+- **One behaviour, one test.** Before writing a test, search for the
+  behaviour (the exception, the status key, the log line, the call) in
+  `tests/`. If it is already pinned, extend that test or add a parametrize
+  case; do not write a sibling. Tests that differ only in their input belong
+  in one `@pytest.mark.parametrize` with descriptive `ids`.
+- **Test at the layer that owns the logic.** `get_all`, `set_state`,
+  `Hive.set_state`, `_poll` and the handlers' `set_*` methods are one-line
+  delegations. Their error propagation is pinned once, where the handling
+  lives: aiohttp translation in `TestFetch`, botocore translation in
+  `TestCognito`, login-and-retry in `TestApiCall`, the offline guard in
+  `test_base_handler.py::TestSetState`. A wrapper gets one test that it calls
+  through, not a copy of the wrapped class's error table. The same goes for
+  cross-layer repeats: `tests/module` and `tests/e2e` exist for what only a
+  real `Hive` on the fixture can show (real `_is_online` data, re-polls,
+  discovery of the fixture's devices, the scripted-fault server), not to
+  re-assert unit-level facts against `data.json`.
+- **Do not test Python.** No tests for dataclass defaults, `field(default_factory)`,
+  `dict.get` defaults, `json.dumps` escaping, `int("abc")` raising, `async
+  with` releasing a lock, `set.discard`, `hmac`/sha256 being deterministic,
+  a constant equalling its literal, or a method returning `None` (mypy
+  enforces `-> None`). Assert the library's own contribution.
+- **Do not test mocks.** A test whose only assertion is that a mock received a
+  kwarg the code passes straight through, or that a mocked method on the
+  object under test was called, pins nothing. Assert the observable result
+  (stored state, the exception, the request Hive would receive).
+- **Do not pin log wording** except where the log *is* the behaviour: the
+  once-per-product offline warning, the one-warning-per-failed-poll rule and
+  the token masking in debug output. Debug-line text is not a contract.
+- **A branch nobody can reach gets deleted, not tested.** If covering a line
+  needs an input no caller produces (an int salt from Cognito, a flat
+  `ExpiresIn`, a second `_poll_is_due()` check with no await in between),
+  remove the branch rather than write the test. Coverage measures the code
+  the fork can exercise.
+- **When a feature is removed, grep `tests/` for it.** Platform removals left
+  tests looking for plug, light and sensor ids that could no longer exist;
+  they passed for months. A test that cannot fail is deleted with the code.
+- **The error table is the floor, not the ceiling.** Every row in "Error
+  handling" keeps at least one test; a recent fix (401-only reauth, the 403
+  `ForbiddenException` block, the reauth latch, full token masking) keeps the
+  regression test named for it. Nothing else is owed a test by default.
+
+If a change makes a test redundant under these rules, remove the test in the
+same PR.
 
 ## Architecture
 
