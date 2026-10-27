@@ -45,9 +45,13 @@ dependencies and GitHub Actions. Pre-commit hook revisions are updated with
 
    ```json
    "requirements": [
-     "pyhive-integration @ https://github.com/tomwilkie/pyhive-integration/releases/download/v0.0.1/pyhive_integration-0.0.1-py3-none-any.whl"
+     "https://github.com/tomwilkie/pyhive-integration/releases/download/v0.1.0/pyhive_integration-0.1.0-py3-none-any.whl#pyhive-integration==0.1.0"
    ]
    ```
+
+   Home Assistant reads the `#pyhive-integration==<version>` fragment to tell
+   whether that version is already installed; without it, the wheel is
+   reinstalled on every start.
 
 A push to `main` that leaves the version alone does nothing, and a version
 whose tag already exists is skipped with a log line, so merging a change to

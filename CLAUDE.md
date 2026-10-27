@@ -30,11 +30,16 @@ explicitly: that code is a removal candidate.
 
 - The fork (the actual caller): `~/Documents/repos/ha-hive/custom_components/hive/`
   with `__init__.py`, `config_flow.py`, `entity.py`, `const.py`, `climate.py`,
-  `water_heater.py` and `manifest.json` (which pins this library's version).
-  Its `light.py`, `switch.py`, `binary_sensor.py` and `sensor.py` platforms
-  have no counterpart in this library any more. In GitHub Actions, where the
-  local checkout is not available, fetch the raw files from
-  `https://raw.githubusercontent.com/tomwilkie/ha-hive/main/custom_components/hive/<file>`.
+  `water_heater.py` and `manifest.json`, which pins this library. Once the
+  fork is ported (see below), the manifest installs a GitHub release wheel
+  (`<wheel URL>#pyhive-integration==<version>`) and its light, switch, binary
+  sensor and sensor platforms are gone. The fork's own `CLAUDE.md` lists the
+  API it calls and the error mapping it applies; its tests mock `Hive` and
+  `Auth` at the boundary, so a renamed method or a changed `Device` attribute
+  is not caught there. In GitHub Actions, where the local checkout is not
+  available, fetch the raw files from
+  `https://raw.githubusercontent.com/tomwilkie/ha-hive/<ref>/custom_components/hive/<file>`,
+  where `<ref>` is `main`, or `ci-and-tests` while the port below is unmerged.
 - Upstream integration, for reference only:
   <https://github.com/home-assistant/core/tree/dev/homeassistant/components/hive>
 - Developer docs:
@@ -52,9 +57,11 @@ depends on is:
 
 - `Hive(websession)` with `start_session`, `update_data`, `update_interval`,
   `device_list` and `close`
-- `Auth(username, password)` (the `HiveAuth` class) with `login`, `sms_2fa`,
-  `device_login`, `is_device_registered`, `device_registration`,
-  `get_device_data` and `forget_device`
+- `Auth(username=, password=)` (the `HiveAuth` class) with `login`, `sms_2fa`,
+  `is_device_registered`, `device_registration`, `get_device_data` (sync; the
+  fork stores whatever it returns as `device_data`) and `forget_device`, plus
+  the `SMS_REQUIRED` constant. `device_login` is used by `Hive.login`, not by
+  the fork.
 - `Device` attributes, read as attributes (`device.hive_id`,
   `device.device_data`, `device.status`); `Device` is a plain dataclass with no
   dict-style access
@@ -64,18 +71,22 @@ depends on is:
 - the exceptions exported from `apyhiveapi` (see "Error handling" below) and
   `ValueError` for invalid command arguments
 
-The fork still uses the previous names (`hive.session.*`, camelCase methods
-and `Device` keys, imports from `apyhiveapi.helper.hive_exceptions`), reads
-`Device` dict-style (`device["status"]`, `device_data.get(...)` on the device),
-expects four values from `get_device_data()`, catches
-aiohttp's `HTTPException` (which this library no longer raises), treats the
-`set_*` methods as returning `bool`, awaits `get_device_data()` and
-`update_interval()`, which are now synchronous, and passes a device to
-`update_data()`, which no longer takes one. It has to be migrated to this API before
-its `manifest.json` is bumped to this version. The mapping it needs is:
-`HiveReauthRequired` → `ConfigEntryAuthFailed`, `HiveConnectionError` →
-`ConfigEntryNotReady`, any other `HiveError` at setup → `ConfigEntryError`,
-and `HiveError` from a command → `HomeAssistantError`.
+The fork's port to this API is tomwilkie/ha-hive#1 (branch `ci-and-tests`).
+Until it merges, the fork's `main` still pins the old PyPI package
+(`pyhive-integration==1.0.10`) and uses the pre-fork API, so review against
+that branch, not `main`. In the port, commit `44e449e` brings the snake_case
+names and the exception mapping, `4634b08` switches the `Device` reads to
+attributes, and the manifest installs the v0.0.1 wheel. The mapping it
+applies is: `HiveReauthRequired` → `ConfigEntryAuthFailed`,
+`HiveConnectionError` → `ConfigEntryNotReady`, any other `HiveError` at setup
+→ `ConfigEntryError`; `HiveError` from a command → `HomeAssistantError` and
+`ValueError` from a command → `ServiceValidationError`; in the config flow
+`HiveInvalidUsername` / `HiveInvalidPassword` / `HiveInvalid2FACode` → their
+form errors, `HiveConnectionError` → `no_internet_available`, any other
+`HiveError` → `unknown`. v0.0.1 still accepted dict-style `Device` reads;
+v0.1.0 drops them (and returns three values from `get_device_data()`), so
+bump the fork's manifest to v0.1.0 once it is published. An API change here
+is made in the fork in step.
 
 ### Dependency changes
 
@@ -98,10 +109,11 @@ requires Python 3.14; this library supports 3.13 and later.
 - Edit the source in `src/apyhiveapi/` only; there is no generated code.
 - Keep it flat and concrete: plain classes and functions, no mixins, no
   compatibility aliases or shims. When a name changes, rename it in the fork.
-- Everything is fully annotated and `mypy --strict` passes on `src/`. Ruff runs
-  with every rule enabled (`select = ["ALL"]`); the ignore lists in
-  `pyproject.toml` are deliberate and short, so fix findings rather than
-  adding `noqa` comments.
+- Everything is fully annotated and `mypy --strict` passes on `src/`. The
+  package ships `py.typed`, so the fork type-checks against these annotations
+  too. Ruff runs with every rule enabled (`select = ["ALL"]`); the ignore
+  lists in `pyproject.toml` are deliberate and short, so fix findings rather
+  than adding `noqa` comments.
 - The placeholder `aws_access_key_id` / `aws_secret_access_key` /
   `aws_session_token` strings in `auth.py` must stay; they are not leaked
   secrets and boto3 Cognito auth breaks without them.
@@ -253,6 +265,7 @@ src/apyhiveapi/
 ├── const.py            ← SMS_REQUIRED, PRODUCT_ENTITY_TYPES, THERMOSTAT_DEVICE_TYPES
 ├── exceptions.py       ← the HiveError hierarchy
 ├── helpers.py          ← sanitize_payload for logging
+├── py.typed            ← PEP 561 marker: the annotations are the public contract
 └── data/data.json      ← anonymised all-nodes response for file mode
 ```
 
