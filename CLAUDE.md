@@ -30,15 +30,16 @@ explicitly: that code is a removal candidate.
 
 - The fork (the actual caller): `~/Documents/repos/ha-hive/custom_components/hive/`
   with `__init__.py`, `config_flow.py`, `entity.py`, `const.py`, `climate.py`,
-  `water_heater.py` and `manifest.json`, which installs this library from a
-  GitHub release wheel (`<wheel URL>#pyhive-integration==<version>`). Its
-  light, switch, binary sensor and sensor platforms were removed when this
-  library dropped them. The fork's own `CLAUDE.md` lists the API it calls and
-  the error mapping it applies; its tests mock `Hive` and `Auth` at the
-  boundary, so a renamed method or a changed `Device` attribute is not caught
-  there. In GitHub Actions, where the local checkout is not available, fetch
-  the raw files from
-  `https://raw.githubusercontent.com/tomwilkie/ha-hive/main/custom_components/hive/<file>`.
+  `water_heater.py` and `manifest.json`, which pins this library. Once the
+  fork is ported (see below), the manifest installs a GitHub release wheel
+  (`<wheel URL>#pyhive-integration==<version>`) and its light, switch, binary
+  sensor and sensor platforms are gone. The fork's own `CLAUDE.md` lists the
+  API it calls and the error mapping it applies; its tests mock `Hive` and
+  `Auth` at the boundary, so a renamed method or a changed `Device` attribute
+  is not caught there. In GitHub Actions, where the local checkout is not
+  available, fetch the raw files from
+  `https://raw.githubusercontent.com/tomwilkie/ha-hive/<ref>/custom_components/hive/<file>`,
+  where `<ref>` is `main`, or `ci-and-tests` while the port below is unmerged.
 - Upstream integration, for reference only:
   <https://github.com/home-assistant/core/tree/dev/homeassistant/components/hive>
 - Developer docs:
@@ -70,18 +71,21 @@ depends on is:
 - the exceptions exported from `apyhiveapi` (see "Error handling" below) and
   `ValueError` for invalid command arguments
 
-The fork has used this API since October 2026: ha-hive commit `44e449e`
-brought the snake_case names and the exception mapping, and the follow-up
-that added its CI switched the `Device` reads to attributes. The mapping it
+The fork's port to this API is tomwilkie/ha-hive#1 (branch `ci-and-tests`).
+Until it merges, the fork's `main` still pins the old PyPI package
+(`pyhive-integration==1.0.10`) and uses the pre-fork API, so review against
+that branch, not `main`. In the port, commit `44e449e` brings the snake_case
+names and the exception mapping, `4634b08` switches the `Device` reads to
+attributes, and the manifest installs the v0.0.1 wheel. The mapping it
 applies is: `HiveReauthRequired` → `ConfigEntryAuthFailed`,
 `HiveConnectionError` → `ConfigEntryNotReady`, any other `HiveError` at setup
 → `ConfigEntryError`; `HiveError` from a command → `HomeAssistantError` and
 `ValueError` from a command → `ServiceValidationError`; in the config flow
 `HiveInvalidUsername` / `HiveInvalidPassword` / `HiveInvalid2FACode` → their
 form errors, `HiveConnectionError` → `no_internet_available`, any other
-`HiveError` → `unknown`. Its `manifest.json` still installs v0.0.1, which
-also accepted dict-style `Device` reads; bump it when the next release is
-published. An API change here is made in the fork in step.
+`HiveError` → `unknown`. v0.0.1 still accepted dict-style `Device` reads, so
+bump the fork's manifest to the next release once it is published. An API
+change here is made in the fork in step.
 
 ### Dependency changes
 
