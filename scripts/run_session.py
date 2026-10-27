@@ -272,6 +272,7 @@ class Admin:
             "poll": (self.poll, False, "", "poll Hive now"),
             "mode": (self.mode, False, "DEVICE", "mode the library reports"),
             "state": (self.state, False, "DEVICE", "state as last received"),
+            "status": (self.status, False, "DEVICE", "status the fork reads"),
             "drop": (self.drop, False, "KEY... | off", "strip state keys from polls"),
             "debug": (self.debug, False, "on | off", "library debug logging"),
             "interval": (self.interval, False, "SECONDS", "seconds between polls"),
@@ -358,6 +359,22 @@ class Admin:
         device = self._find(ref, MODE_TYPES)
         state = self.hive.data.products.get(device.hive_id, {}).get("state") or {}
         return {key: value for key, value in state.items() if key != "schedule"}
+
+    async def status(self, ref: str) -> dict[str, Any]:
+        """Return what get_climate / get_water_heater give the fork."""
+        device = self._find(ref, MODE_TYPES)
+        if device.ha_type == "climate":
+            await self.hive.heating.get_climate(device)
+        else:
+            await self.hive.hotwater.get_water_heater(device)
+        result: dict[str, Any] = {
+            "online": device.device_data.get("online"),
+            "status": device.status,
+        }
+        if device.ha_type == "climate":
+            result["min_temp"] = device.min_temp
+            result["max_temp"] = device.max_temp
+        return result
 
     async def drop(self, *keys: str) -> dict[str, list[str]]:
         """Strip *keys* from every later poll, or stop with ``off``."""

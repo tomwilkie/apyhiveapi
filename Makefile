@@ -44,6 +44,7 @@ help:
 	@echo "  poll                      Poll Hive now"
 	@echo "  mode DEVICE               The mode the library reports (heating, hot water)"
 	@echo "  state DEVICE              The state as last received, without its schedule"
+	@echo "  status DEVICE             device.status, online and min/max temp, as the fork reads them"
 	@echo "  drop KEY... | off         Start or stop stripping state keys from polls"
 	@echo "  debug on | off            Library debug logging"
 	@echo "  interval SECONDS          Seconds between polls, from the next wait"
