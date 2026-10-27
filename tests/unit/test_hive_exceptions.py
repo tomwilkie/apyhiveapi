@@ -26,44 +26,31 @@ LEAF_EXCEPTIONS = (
 
 
 class TestHierarchy:
-    @pytest.mark.parametrize("exc_type", LEAF_EXCEPTIONS)
-    def test_every_exception_is_a_hive_error(self, exc_type):
-        assert issubclass(exc_type, HiveError)
-        with pytest.raises(HiveError):
-            raise exc_type("test")
-
-    def test_connection_and_api_errors_are_distinct(self):
-        # A caller can tell "retry later" from "give up".
-        assert not issubclass(HiveConnectionError, HiveApiError)
-        assert not issubclass(HiveApiError, HiveConnectionError)
-
-    def test_device_offline_is_neither_transient_nor_reauth(self):
-        assert not issubclass(HiveDeviceOffline, HiveConnectionError)
-        assert not issubclass(HiveDeviceOffline, HiveReauthRequired)
-
     @pytest.mark.parametrize(
-        "exc_type", [HiveInvalidUsername, HiveInvalidPassword, HiveInvalid2FACode]
+        ("exc_type", "parent"),
+        [
+            (HiveConnectionError, HiveError),
+            (HiveApiError, HiveError),
+            (HiveDeviceOffline, HiveError),
+            (HiveReauthRequired, HiveError),
+            (HiveInvalidUsername, HiveReauthRequired),
+            (HiveInvalidPassword, HiveReauthRequired),
+            (HiveInvalid2FACode, HiveReauthRequired),
+        ],
     )
-    def test_credential_errors_require_reauthentication(self, exc_type):
-        assert issubclass(exc_type, HiveReauthRequired)
-
-    def test_reauth_required_is_not_an_api_error(self):
-        assert not issubclass(HiveReauthRequired, HiveApiError)
+    def test_direct_parent(self, exc_type, parent):
+        # The fork's except ordering relies on the four categories under
+        # HiveError being disjoint (retry later, give up, device offline,
+        # log in again) and on the credential errors being reauth errors.
+        assert exc_type.__bases__ == (parent,)
 
 
 class TestPublicExports:
-    @pytest.mark.parametrize("exc_type", [HiveError, *LEAF_EXCEPTIONS])
-    def test_exported_from_the_package(self, exc_type):
-        assert getattr(apyhiveapi, exc_type.__name__) is exc_type
-        assert exc_type.__name__ in apyhiveapi.__all__
-
-    def test_no_other_exceptions_are_exported(self):
+    def test_exactly_the_hive_errors_are_exported(self):
         exported = {
-            name
+            name: getattr(apyhiveapi, name)
             for name in apyhiveapi.__all__
             if isinstance(getattr(apyhiveapi, name), type)
             and issubclass(getattr(apyhiveapi, name), BaseException)
         }
-        assert exported == {HiveError.__name__} | {
-            exc_type.__name__ for exc_type in LEAF_EXCEPTIONS
-        }
+        assert exported == {cls.__name__: cls for cls in (HiveError, *LEAF_EXCEPTIONS)}

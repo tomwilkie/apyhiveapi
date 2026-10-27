@@ -42,8 +42,7 @@ def get_random(nbytes: int) -> int:
 
 def hash_sha256(buf: bytes | bytearray) -> str:
     """Authentication helper."""
-    a_value = hashlib.sha256(buf).hexdigest()
-    return (64 - len(a_value)) * "0" + a_value
+    return hashlib.sha256(buf).hexdigest()
 
 
 def hex_hash(hex_string: str) -> str:

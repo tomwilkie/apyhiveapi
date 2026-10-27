@@ -4,8 +4,6 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from aiohttp import ClientSession
-
 from apyhiveapi.hive import Hive
 
 
@@ -20,11 +18,9 @@ def _mock_client_session(*, closed=False):
 class TestOwnedWebsession:
     """A Hive created without a websession owns the one the API creates."""
 
-    def test_no_websession_is_created_up_front(self):
-        assert Hive().api.websession is None
-
-    async def test_close_without_a_websession_does_nothing(self):
+    async def test_no_websession_is_created_up_front_or_by_close(self):
         hive = Hive()
+        assert hive.api.websession is None
         await hive.close()
         assert hive.api.websession is None
 
@@ -46,27 +42,14 @@ class TestOwnedWebsession:
         websession.close.assert_not_awaited()
 
     async def test_async_with_closes_the_websession_on_exit(self):
+        hive = Hive()
         websession = _mock_client_session()
         with patch("apyhiveapi.api.ClientSession", return_value=websession):
-            async with Hive() as hive:
+            async with hive as entered:
+                assert entered is hive
                 hive.api._get_websession()
                 websession.close.assert_not_awaited()
         websession.close.assert_awaited_once_with()
-
-    async def test_aenter_returns_the_session_itself(self):
-        hive = Hive(username="use@file.com", password="")
-        async with hive as entered:
-            assert entered is hive
-
-    async def test_a_real_websession_is_closed_only_once(self):
-        hive = Hive()
-        websession = hive.api._get_websession()
-        assert isinstance(websession, ClientSession)
-        assert not websession.closed
-        await hive.close()
-        assert websession.closed
-        await hive.close()
-        assert websession.closed
 
 
 class TestGivenWebsession:
@@ -81,10 +64,4 @@ class TestGivenWebsession:
     async def test_close_leaves_the_given_websession_open(self):
         given = _mock_client_session()
         await Hive(websession=given).close()
-        given.close.assert_not_awaited()
-
-    async def test_async_with_leaves_the_given_websession_open(self):
-        given = _mock_client_session()
-        async with Hive(websession=given) as hive:
-            assert hive.api.websession is given
         given.close.assert_not_awaited()

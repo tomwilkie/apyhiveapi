@@ -225,9 +225,6 @@ class HiveAuth:
             AuthParameters=self._auth_params(),
             ClientId=self._client_id,
         )
-        if "AuthenticationResult" in response:
-            self._store_auth_result(response)
-            return response
         challenge = response.get("ChallengeName")
         if challenge != self.PASSWORD_VERIFIER_CHALLENGE:
             raise HiveApiError(f"Unsupported Cognito challenge: {challenge}")
@@ -463,15 +460,6 @@ class HiveAuth:
         return self._pool_id.split("_")[1]
 
     @staticmethod
-    def _to_int(value: int | bytes | str) -> int:
-        """Accept an int, bytes or hex string and return an int."""
-        if isinstance(value, int):
-            return value
-        if isinstance(value, bytes):
-            return int(value.hex(), 16)
-        return int(str(value), 16)
-
-    @staticmethod
     def _cognito_timestamp() -> str:
         """Return the current time in the format Cognito's SRP challenge expects."""
         # The regex strips the leading zero from the day number, as Cognito requires.
@@ -509,7 +497,7 @@ class HiveAuth:
         return params
 
     def _srp_key(
-        self, identity: str, secret: str, server_b_value: int | bytes | str, salt: str
+        self, identity: str, secret: str, server_b_value: str, salt: str
     ) -> bytes:
         """Derive the SRP session key for *identity* and its *secret*.
 
@@ -519,13 +507,13 @@ class HiveAuth:
         Args:
             identity: Who is authenticating, as Cognito expects it.
             secret: The password or device password.
-            server_b_value: Cognito's ``SRP_B`` value.
+            server_b_value: Cognito's ``SRP_B`` value, a hex string.
             salt: Cognito's ``SALT`` value.
 
         Returns:
             The HKDF key that signs the challenge response.
         """
-        server_b = self._to_int(server_b_value)
+        server_b = hex_to_long(server_b_value)
         u_value = calculate_u(self.large_a_value, server_b)
         if u_value == 0:
             raise ValueError("U cannot be zero")
@@ -548,8 +536,6 @@ class HiveAuth:
     ) -> dict[str, Any]:
         """Build the signed response to a password or device SRP challenge."""
         salt = challenge_parameters["SALT"]
-        if not isinstance(salt, str):
-            salt = pad_hex(salt)
         secret_block = challenge_parameters["SECRET_BLOCK"]
         timestamp = self._cognito_timestamp()
         key = await asyncio.get_running_loop().run_in_executor(

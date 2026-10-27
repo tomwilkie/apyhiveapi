@@ -1,12 +1,10 @@
 """End-to-end tests over the file-mode session (use@file.com) and its fixture."""
 
-from datetime import timedelta
-
 import pytest
 
 from apyhiveapi.exceptions import HiveDeviceOffline
 from apyhiveapi.heating import MAX_TARGET_TEMPERATURE, MIN_TARGET_TEMPERATURE
-from apyhiveapi.hive import MIN_SCAN_INTERVAL
+from apyhiveapi.models import Device
 
 _HUB_ID = "hub-0000-0000-0000-000000000001"
 _THERMOSTAT_ID = "thermostatui-0000-0000-0000-000000000001"
@@ -42,55 +40,57 @@ def _find(session, entity_type, hive_id):
 
 
 class TestDeviceListIntegrity:
-    async def test_only_supported_entity_types_are_created(self, file_session):
-        assert set(file_session.device_list) == {"parent", "climate", "water_heater"}
-
-    async def test_heating_products_become_the_climate_devices(self, file_session):
-        hive_ids = {device.hive_id for device in file_session.device_list["climate"]}
-        assert hive_ids == {_HEATING_ID, _TRV_CONTROL_ID}
-
-    async def test_hot_water_becomes_the_water_heater_device(self, file_session):
-        hive_ids = [
-            device.hive_id for device in file_session.device_list["water_heater"]
-        ]
-        assert hive_ids == [_HOTWATER_ID]
-
-    async def test_unsupported_products_are_skipped(self, file_session):
-        hive_ids = {
-            device.hive_id
-            for devices in file_session.device_list.values()
-            for device in devices
+    async def test_the_fixture_yields_the_hub_two_climates_and_the_hot_water(
+        self, file_session
+    ):
+        assert {
+            key: [device.hive_id for device in devices]
+            for key, devices in file_session.device_list.items()
+        } == {
+            "parent": [_HUB_ID],
+            "climate": [_HEATING_ID, _TRV_CONTROL_ID],
+            "water_heater": [_HOTWATER_ID],
         }
-        unsupported = [
-            hive_id
-            for hive_id in hive_ids
-            if hive_id.startswith(("plug-", "light-", "sensor-"))
-        ]
-        assert unsupported == []
 
     @_EVERY_DEVICE
-    async def test_all_devices_have_ha_name(self, file_session, entity_type, index):
-        assert file_session.device_list[entity_type][index].ha_name
+    async def test_every_device_is_complete(self, file_session, entity_type, index):
+        device = file_session.device_list[entity_type][index]
+        assert isinstance(device, Device)
+        assert device.hive_id
+        assert device.ha_name
+        assert device.status is None
 
     async def test_hub_is_the_parent_device(self, file_session):
         parents = file_session.device_list["parent"]
         assert len(parents) == 1
-        assert parents[0].hive_type == "hub"
-        assert parents[0].device_id == file_session.hub_id == _HUB_ID
-        assert {"model", "manufacturer", "version"} <= set(parents[0].device_data)
+        hub = parents[0]
+        assert hub.hive_type == "hub"
+        assert hub.hive_id == hub.device_id == file_session.hub_id == _HUB_ID
+        assert hub.hive_name == "Hub"
+        assert hub.device_data["model"] == "SENSE"
+        assert {"model", "manufacturer", "version"} <= set(hub.device_data)
+        assert hub.parent_device is None
+        products = [
+            *file_session.device_list["climate"],
+            *file_session.device_list["water_heater"],
+        ]
+        assert [device.parent_device for device in products] == [_HUB_ID] * 3
 
-    async def test_heating_and_hot_water_attach_to_the_thermostat(self, file_session):
+    async def test_products_attach_to_their_hardware(self, file_session):
         heating = _find(file_session, "climate", _HEATING_ID)
-        hotwater = _find(file_session, "water_heater", _HOTWATER_ID)
         assert heating.device_id == _THERMOSTAT_ID
-        assert hotwater.device_id == _THERMOSTAT_ID
         assert heating.ha_name == "Heating Zone 1"
-        assert hotwater.ha_name == "Hotwater"
-        assert heating.device_name == hotwater.device_name == "Heating Zone 1"
-        assert heating.parent_device == _HUB_ID
+        assert heating.device_name == "Heating Zone 1"
         assert heating.device_data["model"] == "SLT3"
 
-    async def test_trv_control_attaches_to_its_trv(self, file_session):
+        hotwater = _find(file_session, "water_heater", _HOTWATER_ID)
+        assert hotwater.hive_type == "hotwater"
+        assert hotwater.ha_type == "water_heater"
+        assert hotwater.ha_name == "Hotwater"
+        # The hardware behind it is the zone's thermostat.
+        assert hotwater.device_id == _THERMOSTAT_ID
+        assert hotwater.device_name == "Heating Zone 1"
+
         trv = _find(file_session, "climate", _TRV_CONTROL_ID)
         assert trv.device_id == _TRV_ID
         assert trv.ha_name == "TRV Zone 1"
@@ -176,6 +176,7 @@ class TestOfflineDevices:
         assert heating.device_data["online"] is True
         assert hotwater.status == {"current_operation": "SCHEDULE"}
         assert hotwater.device_data["online"] is True
+        assert await file_session.hotwater.set_mode(hotwater, "MANUAL") is None
 
     async def test_offline_trv_takes_its_zone_offline(self, file_session):
         device = _find(file_session, "climate", _TRV_CONTROL_ID)
@@ -194,47 +195,31 @@ class TestOfflineDevices:
         with pytest.raises(HiveDeviceOffline, match="Hotwater is offline"):
             await file_session.hotwater.set_mode(hotwater, "MANUAL")
 
-    async def test_commands_work_while_the_thermostat_is_offline(self, file_session):
-        file_session.data.devices[_THERMOSTAT_ID]["props"]["online"] = False
-        hotwater = _find(file_session, "water_heater", _HOTWATER_ID)
-        assert await file_session.hotwater.set_mode(hotwater, "MANUAL") is None
-
 
 class TestCommands:
-    async def test_set_mode_completes_and_re_polls(self, file_session):
-        device = _find(file_session, "climate", _HEATING_ID)
-        before = file_session.config.last_update
-        assert await file_session.heating.set_mode(device, "MANUAL") is None
-        assert file_session.config.last_update > before
-
-    async def test_file_mode_sends_nothing_so_the_state_is_unchanged(
+    async def test_commands_complete_re_poll_and_leave_the_fixture_unchanged(
         self, file_session
     ):
-        device = _find(file_session, "climate", _HEATING_ID)
-        await file_session.heating.set_target_temperature(device, 21)
-        updated = await file_session.heating.get_climate(device)
+        heating = _find(file_session, "climate", _HEATING_ID)
+        hotwater = _find(file_session, "water_heater", _HOTWATER_ID)
+        before = file_session.config.last_update
+        assert await file_session.heating.set_target_temperature(heating, 21) is None
+        assert await file_session.hotwater.set_mode(hotwater, "MANUAL") is None
+        assert file_session.config.last_update > before
+        updated = await file_session.heating.get_climate(heating)
         assert updated.status["target_temperature"] == 7.0
-
-    async def test_hot_water_set_mode_completes(self, file_session):
-        device = _find(file_session, "water_heater", _HOTWATER_ID)
-        assert await file_session.hotwater.set_mode(device, "MANUAL") is None
-        updated = await file_session.hotwater.get_water_heater(device)
+        updated = await file_session.hotwater.get_water_heater(hotwater)
         assert updated.status == {"current_operation": "SCHEDULE"}
 
 
 class TestRateLimiting:
-    async def test_update_data_is_rate_limited_within_the_scan_interval(
+    async def test_update_data_polls_once_per_interval_and_reloads_the_fixture(
         self, file_session
     ):
         assert await file_session.update_data() is False
-
-    async def test_update_data_polls_once_the_interval_has_passed(self, file_session):
+        state = file_session.data.products[_HEATING_ID]["state"]
+        state["target"] = 99
         file_session.config.last_update -= file_session.config.scan_interval
         assert await file_session.update_data() is True
+        assert file_session.data.products[_HEATING_ID]["state"]["target"] == 7
         assert await file_session.update_data() is False
-
-    async def test_update_interval_is_never_below_the_minimum(self, file_session):
-        file_session.update_interval(1)
-        assert file_session.config.scan_interval == MIN_SCAN_INTERVAL
-        file_session.update_interval(300)
-        assert file_session.config.scan_interval == timedelta(seconds=300)

@@ -307,9 +307,6 @@ class Hive:
         if not self._poll_is_due() or self.update_lock.locked():
             return False
         async with self.update_lock:
-            # Another caller may have polled while this one waited.
-            if not self._poll_is_due():
-                return False
             return await self.get_devices()
 
     async def get_devices(self) -> bool:
