@@ -35,20 +35,21 @@ _LOGIN_INFO = {
 }
 
 
-def _make_response(status=200, body=""):
+def _make_response(status=200, body="", headers=None):
     """Return a mock aiohttp response usable as an async context manager."""
     resp = MagicMock()
     resp.status = status
+    resp.headers = headers or {}
     resp.text = AsyncMock(return_value=body)
     resp.__aenter__ = AsyncMock(return_value=resp)
     resp.__aexit__ = AsyncMock(return_value=False)
     return resp
 
 
-def _make_websession(status=200, body=""):
+def _make_websession(status=200, body="", headers=None):
     """Return a mock ClientSession whose request() yields one response."""
     websession = MagicMock()
-    websession.request.return_value = _make_response(status, body)
+    websession.request.return_value = _make_response(status, body, headers)
     return websession
 
 
@@ -134,16 +135,48 @@ class TestFetch:
 
         assert await _fetch(websession, "get", _URL) == "body"
 
-    @pytest.mark.parametrize("status", [401, 403])
-    async def test_401_and_403_on_an_authenticated_request_raise_reauth(self, status):
-        websession = _make_websession(status, '{"error": "unauthorised"}')
+    async def test_401_on_an_authenticated_request_raises_reauth(self):
+        websession = _make_websession(
+            401,
+            '{"message":"Unauthorized"}',
+            {"x-amzn-ErrorType": "UnauthorizedException"},
+        )
 
         with pytest.raises(HiveReauthRequired) as exc_info:
             await _fetch(websession, "get", _URL, token="test-token")
 
         assert str(exc_info.value) == (
-            f"Hive rejected the token: HTTP {status} calling {_URL}: "
-            '{"error": "unauthorised"}'
+            f"Hive rejected the token: HTTP 401 (UnauthorizedException) calling "
+            f'{_URL}: {{"message":"Unauthorized"}}'
+        )
+
+    @pytest.mark.parametrize(
+        ("error_type", "body"),
+        [
+            pytest.param("ForbiddenException", '{"message":"Forbidden"}', id="blocked"),
+            pytest.param(
+                "MissingAuthenticationTokenException",
+                '{"message":"Missing Authentication Token"}',
+                id="unknown-path",
+            ),
+            pytest.param(None, '{"message":"Forbidden"}', id="no-error-type"),
+        ],
+    )
+    async def test_403_on_an_authenticated_request_is_a_plain_api_error(
+        self, error_type, body
+    ):
+        # Hive answers a bad token with 401; a 403 is the gateway refusing the
+        # request itself, which logging in again would not fix.
+        headers = {"x-amzn-ErrorType": error_type} if error_type else None
+        websession = _make_websession(403, body, headers)
+
+        with pytest.raises(HiveApiError) as exc_info:
+            await _fetch(websession, "post", _URL, token="test-token")
+
+        assert not isinstance(exc_info.value, HiveReauthRequired)
+        kind = f" ({error_type})" if error_type else ""
+        assert str(exc_info.value) == (
+            f"Hive refused the request: HTTP 403{kind} calling {_URL}: {body}"
         )
 
     @pytest.mark.parametrize("status", [401, 403])
@@ -293,6 +326,40 @@ class TestFetch:
 
         with pytest.raises(RuntimeError, match="Session is closed"):
             await _fetch(websession, "get", _URL)
+
+
+class TestFetchGatewayErrorType:
+    """API Gateway's x-amzn-ErrorType header is named in the error."""
+
+    @pytest.mark.parametrize(
+        ("status", "exc"),
+        [
+            (401, HiveReauthRequired),
+            (403, HiveApiError),
+            (429, HiveApiError),
+            (503, HiveConnectionError),
+        ],
+    )
+    async def test_the_gateway_error_type_is_named_in_the_error(self, status, exc):
+        websession = _make_websession(
+            status, "{}", {"x-amzn-ErrorType": "SomeException"}
+        )
+
+        with pytest.raises(exc, match=rf"HTTP {status} \(SomeException\) calling"):
+            await _fetch(websession, "get", _URL, token="test-token")
+
+    async def test_documentation_suffix_on_the_error_type_is_dropped(self):
+        websession = _make_websession(
+            403,
+            "{}",
+            {"x-amzn-ErrorType": "ForbiddenException:http://internal.amazon.com/"},
+        )
+
+        with pytest.raises(HiveApiError) as exc_info:
+            await _fetch(websession, "get", _URL, token="test-token")
+
+        assert "HTTP 403 (ForbiddenException) calling" in str(exc_info.value)
+        assert "amazon.com" not in str(exc_info.value)
 
 
 class TestFetchLogging:
@@ -683,7 +750,7 @@ class TestRequest:
         ("status", "exc"),
         [
             (401, HiveReauthRequired),
-            (403, HiveReauthRequired),
+            (403, HiveApiError),
             (404, HiveApiError),
             (500, HiveConnectionError),
             (503, HiveConnectionError),
@@ -761,7 +828,7 @@ class TestGetAll:
         ("status", "body", "exc"),
         [
             (401, "", HiveReauthRequired),
-            (403, "", HiveReauthRequired),
+            (403, "", HiveApiError),
             (404, "", HiveApiError),
             (503, "", HiveConnectionError),
             (200, "<html>", HiveConnectionError),
@@ -868,7 +935,7 @@ class TestSetState:
         ("status", "body", "exc"),
         [
             (401, "", HiveReauthRequired),
-            (403, "", HiveReauthRequired),
+            (403, "", HiveApiError),
             (404, "", HiveApiError),
             (500, "", HiveConnectionError),
             (200, "<html>", HiveConnectionError),
