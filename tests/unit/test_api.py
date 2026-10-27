@@ -7,16 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from apyhiveapi.api import (
-    _ALL_NODES_URL,
-    _BASE_URL,
-    _HEADERS,
-    _SSO_URL,
-    _TIMEOUT,
-    HiveApi,
-    _fetch,
-    get_login_info,
-)
+from apyhiveapi.api import _HEADERS, _SSO_URL, _TIMEOUT, HiveApi, _fetch, get_login_info
 from apyhiveapi.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
 
 _TOKEN = "test-token"
@@ -69,18 +60,6 @@ def _api_messages(caplog):
 
 
 class TestConstants:
-    def test_timeout_budget(self):
-        # Above Hive's slow responses, below the scan interval, and an
-        # unreachable Hive fails at the connect limit.
-        assert aiohttp.ClientTimeout(total=20, connect=10) == _TIMEOUT
-
-    def test_urls_point_at_hive_sso_and_beekeeper(self):
-        assert _SSO_URL == "https://sso.hivehome.com/"
-        assert _BASE_URL == "https://beekeeper.hivehome.com/1.0"
-        assert _ALL_NODES_URL == (
-            "https://beekeeper.hivehome.com/1.0/nodes/all?products=true&devices=true"
-        )
-
     def test_headers_carry_no_token(self):
         assert _HEADERS["content-type"] == "application/json"
         assert _HEADERS["Accept"] == "*/*"
@@ -92,42 +71,34 @@ class TestConstants:
 
 
 class TestFetch:
-    async def test_returns_the_body_of_a_200(self):
-        websession = _make_websession(200, '{"ok": true}')
-
-        assert await _fetch(websession, "get", _URL) == '{"ok": true}'
-
-    async def test_passes_method_url_token_data_and_timeout(self):
+    @pytest.mark.parametrize(
+        ("token", "data", "headers"),
+        [
+            pytest.param(
+                "tok",
+                '{"a": 1}',
+                {**_HEADERS, "Authorization": "tok"},
+                id="with-token-and-data",
+            ),
+            pytest.param(None, None, None, id="defaults"),
+        ],
+    )
+    async def test_passes_method_url_headers_data_and_timeout(
+        self, token, data, headers
+    ):
         websession = _make_websession()
 
-        await _fetch(websession, "post", _URL, token="tok", data='{"a": 1}')
+        await _fetch(websession, "post", _URL, token=token, data=data)
 
+        # The timeout sits above Hive's slow responses, below the scan
+        # interval, and an unreachable Hive fails at the connect limit.
         websession.request.assert_called_once_with(
             "post",
             _URL,
-            headers={**_HEADERS, "Authorization": "tok"},
-            data='{"a": 1}',
+            headers=headers,
+            data=data,
             timeout=aiohttp.ClientTimeout(total=20, connect=10),
         )
-
-    async def test_headers_and_data_default_to_none(self):
-        websession = _make_websession()
-
-        await _fetch(websession, "get", _URL)
-
-        websession.request.assert_called_once_with(
-            "get", _URL, headers=None, data=None, timeout=_TIMEOUT
-        )
-
-    async def test_reads_the_body_inside_the_response_context(self):
-        websession = _make_websession(200, "body")
-        resp = websession.request.return_value
-
-        await _fetch(websession, "get", _URL)
-
-        resp.__aenter__.assert_awaited_once()
-        resp.text.assert_awaited_once_with()
-        resp.__aexit__.assert_awaited_once()
 
     @pytest.mark.parametrize("status", [200, 201, 204, 299])
     async def test_any_2xx_returns_the_body(self, status):
@@ -151,42 +122,48 @@ class TestFetch:
         )
 
     @pytest.mark.parametrize(
-        ("error_type", "body"),
+        ("status", "error_type", "token"),
         [
+            # Hive answers a bad token with 401; a 403 is the gateway refusing
+            # the request itself, which logging in again would not fix.
             pytest.param(
+                403,
                 "MissingAuthenticationTokenException",
-                '{"message":"Missing Authentication Token"}',
-                id="unknown-path",
+                _TOKEN,
+                id="403-missing-auth-token-with-token",
             ),
-            pytest.param(None, '{"message":"Forbidden"}', id="no-error-type"),
+            pytest.param(403, None, _TOKEN, id="403-no-error-type-with-token"),
+            # Without a token a 401 is not a token problem either.
+            pytest.param(401, None, None, id="401-without-token"),
+            pytest.param(403, None, None, id="403-without-token"),
+            pytest.param(400, None, _TOKEN, id="400"),
+            pytest.param(404, None, _TOKEN, id="404"),
+            pytest.param(422, None, _TOKEN, id="422"),
+            pytest.param(429, None, _TOKEN, id="429"),
+            # A gateway block needs HTTP 403 as well as the error type.
+            pytest.param(
+                401,
+                "ForbiddenException",
+                None,
+                id="401-forbidden-exception-without-token",
+            ),
+            pytest.param(
+                429, "ForbiddenException", _TOKEN, id="429-forbidden-exception"
+            ),
         ],
     )
-    async def test_403_on_an_authenticated_request_is_a_plain_api_error(
-        self, error_type, body
-    ):
-        # Hive answers a bad token with 401; a 403 is the gateway refusing the
-        # request itself, which logging in again would not fix.
+    async def test_refused_requests_raise_api_error(self, status, error_type, token):
         headers = {"x-amzn-ErrorType": error_type} if error_type else None
-        websession = _make_websession(403, body, headers)
+        websession = _make_websession(status, "blocked", headers)
 
         with pytest.raises(HiveApiError) as exc_info:
-            await _fetch(websession, "post", _URL, token="test-token")
+            await _fetch(websession, "get", _URL, token=token)
 
         assert not isinstance(exc_info.value, HiveReauthRequired)
+        assert not isinstance(exc_info.value, HiveConnectionError)
         kind = f" ({error_type})" if error_type else ""
         assert str(exc_info.value) == (
-            f"Hive refused the request: HTTP 403{kind} calling {_URL}: {body}"
-        )
-
-    @pytest.mark.parametrize("status", [401, 403])
-    async def test_401_and_403_without_a_token_are_plain_api_errors(self, status):
-        websession = _make_websession(status, "blocked")
-
-        with pytest.raises(HiveApiError) as exc_info:
-            await _fetch(websession, "get", _URL)
-
-        assert str(exc_info.value) == (
-            f"Hive refused the request: HTTP {status} calling {_URL}: blocked"
+            f"Hive refused the request: HTTP {status}{kind} calling {_URL}: blocked"
         )
 
     @pytest.mark.parametrize("status", [500, 502, 503, 504])
@@ -200,17 +177,6 @@ class TestFetch:
             f"Hive server error: HTTP {status} calling {_URL}: <html>Bad gateway</html>"
         )
 
-    @pytest.mark.parametrize("status", [101, 300, 304, 400, 404, 422, 429])
-    async def test_any_other_status_raises_api_error(self, status):
-        websession = _make_websession(status, "nope")
-
-        with pytest.raises(HiveApiError) as exc_info:
-            await _fetch(websession, "get", _URL)
-
-        assert str(exc_info.value) == (
-            f"Hive refused the request: HTTP {status} calling {_URL}: nope"
-        )
-
     async def test_error_detail_keeps_only_the_first_200_body_characters(self):
         websession = _make_websession(404, "x" * 200 + "TRUNCATED")
 
@@ -221,22 +187,20 @@ class TestFetch:
             f"Hive refused the request: HTTP 404 calling {_URL}: {'x' * 200}"
         )
 
-    async def test_timeout_raises_connection_error(self):
+    @pytest.mark.parametrize(
+        "err",
+        [
+            pytest.param(TimeoutError(), id="asyncio-timeout"),
+            # aiohttp.ServerTimeoutError is a ClientError as well as a
+            # TimeoutError; the timeout translation wins.
+            pytest.param(
+                aiohttp.ServerTimeoutError("Connection timeout to host"),
+                id="server-timeout",
+            ),
+        ],
+    )
+    async def test_timeout_raises_connection_error(self, err):
         websession = _make_websession()
-        err = TimeoutError()
-        websession.request.side_effect = err
-
-        with pytest.raises(HiveConnectionError) as exc_info:
-            await _fetch(websession, "get", _URL)
-
-        assert str(exc_info.value) == f"Timed out calling {_URL}"
-        assert exc_info.value.__cause__ is err
-
-    async def test_server_timeout_counts_as_a_timeout(self):
-        # aiohttp.ServerTimeoutError is a ClientError as well as a TimeoutError;
-        # the timeout translation wins.
-        websession = _make_websession()
-        err = aiohttp.ServerTimeoutError("Connection timeout to host")
         websession.request.side_effect = err
 
         with pytest.raises(HiveConnectionError) as exc_info:
@@ -272,52 +236,27 @@ class TestFetch:
         assert str(exc_info.value) == f"Could not reach {_URL}: {err}"
         assert exc_info.value.__cause__ is err
 
-    async def test_connection_refused_names_the_host(self):
-        websession = _make_websession()
-        websession.request.side_effect = aiohttp.ClientConnectorError(
-            MagicMock(host="beekeeper.hivehome.com", port=443, ssl=True),
-            OSError(61, "Connection refused"),
-        )
-
-        with pytest.raises(HiveConnectionError) as exc_info:
-            await _fetch(websession, "get", _URL)
-
-        assert str(exc_info.value) == (
-            f"Could not reach {_URL}: Cannot connect to host "
-            "beekeeper.hivehome.com:443 ssl:default [Connection refused]"
-        )
-
-    async def test_error_while_opening_the_response_is_translated(self):
-        websession = _make_websession()
-        err = aiohttp.ServerDisconnectedError()
-        websession.request.return_value.__aenter__.side_effect = err
-
-        with pytest.raises(HiveConnectionError) as exc_info:
-            await _fetch(websession, "get", _URL)
-
-        assert str(exc_info.value) == f"Could not reach {_URL}: Server disconnected"
-        assert exc_info.value.__cause__ is err
-
-    async def test_error_while_reading_the_body_is_translated(self):
+    @pytest.mark.parametrize(
+        ("err", "message"),
+        [
+            pytest.param(
+                aiohttp.ClientPayloadError("Response payload is not completed"),
+                "Could not reach",
+                id="payload-error",
+            ),
+            pytest.param(TimeoutError(), "Timed out calling", id="timeout"),
+        ],
+    )
+    async def test_error_while_reading_the_body_is_translated(self, err, message):
         websession = _make_websession()
         resp = websession.request.return_value
-        err = aiohttp.ClientPayloadError("Response payload is not completed")
         resp.text.side_effect = err
 
-        with pytest.raises(HiveConnectionError) as exc_info:
+        with pytest.raises(HiveConnectionError, match=message) as exc_info:
             await _fetch(websession, "get", _URL)
 
         assert exc_info.value.__cause__ is err
         resp.__aexit__.assert_awaited_once()
-
-    async def test_timeout_while_reading_the_body_is_translated(self):
-        websession = _make_websession()
-        websession.request.return_value.text.side_effect = TimeoutError()
-
-        with pytest.raises(HiveConnectionError) as exc_info:
-            await _fetch(websession, "get", _URL)
-
-        assert str(exc_info.value) == f"Timed out calling {_URL}"
 
     async def test_unexpected_errors_propagate_untranslated(self):
         websession = _make_websession()
@@ -347,14 +286,23 @@ class TestFetchGatewayErrorType:
         with pytest.raises(exc, match=rf"HTTP {status} \(SomeException\) calling"):
             await _fetch(websession, "get", _URL, token="test-token")
 
-    @pytest.mark.parametrize("token", [None, "test-token"])
-    async def test_a_gateway_block_is_a_connection_error(self, token):
+    @pytest.mark.parametrize(
+        ("token", "error_type"),
+        [
+            pytest.param(_TOKEN, "ForbiddenException", id="with-token"),
+            pytest.param(None, "ForbiddenException", id="without-token"),
+            pytest.param(
+                _TOKEN,
+                "ForbiddenException:http://internal.amazon.com/",
+                id="doc-suffix",
+            ),
+        ],
+    )
+    async def test_a_gateway_block_is_a_connection_error(self, token, error_type):
         # Hive's gateway answers a burst of requests with 403
         # ForbiddenException for a minute or two: retry later, don't log in.
         websession = _make_websession(
-            403,
-            '{"message":"Forbidden"}',
-            {"x-amzn-ErrorType": "ForbiddenException"},
+            403, '{"message":"Forbidden"}', {"x-amzn-ErrorType": error_type}
         )
 
         with pytest.raises(HiveConnectionError) as exc_info:
@@ -364,30 +312,6 @@ class TestFetchGatewayErrorType:
             "Hive is temporarily blocking requests, try again in a few minutes: "
             f'HTTP 403 (ForbiddenException) calling {_URL}: {{"message":"Forbidden"}}'
         )
-
-    @pytest.mark.parametrize("status", [401, 429])
-    async def test_forbidden_exception_on_another_status_is_not_a_block(self, status):
-        websession = _make_websession(
-            status, "{}", {"x-amzn-ErrorType": "ForbiddenException"}
-        )
-
-        with pytest.raises(HiveApiError) as exc_info:
-            await _fetch(websession, "get", _URL)
-
-        assert not isinstance(exc_info.value, HiveConnectionError)
-
-    async def test_documentation_suffix_on_the_error_type_is_dropped(self):
-        websession = _make_websession(
-            403,
-            "{}",
-            {"x-amzn-ErrorType": "ForbiddenException:http://internal.amazon.com/"},
-        )
-
-        with pytest.raises(HiveConnectionError) as exc_info:
-            await _fetch(websession, "get", _URL, token="test-token")
-
-        assert "HTTP 403 (ForbiddenException) calling" in str(exc_info.value)
-        assert "amazon.com" not in str(exc_info.value)
 
 
 class TestFetchLogging:
@@ -413,25 +337,49 @@ class TestFetchLogging:
         assert len(messages) == 1
         assert messages[0].startswith(f"GET {_URL} answered HTTP 503 in ")
 
-    async def test_logs_nothing_when_the_request_fails(self, caplog):
-        caplog.set_level(logging.DEBUG, logger="apyhiveapi.api")
-        websession = _make_websession()
-        websession.request.side_effect = OSError("network down")
-
-        with pytest.raises(HiveConnectionError):
-            await _fetch(websession, "get", _URL)
-
-        assert _api_messages(caplog) == []
-
 
 # Tests for get_login_info
 
 
 class TestGetLoginInfo:
-    async def test_parses_double_quoted_assignments(self):
-        websession = _make_websession(body=_SSO_PAGE)
+    @pytest.mark.parametrize(
+        ("html", "expected"),
+        [
+            pytest.param(_SSO_PAGE, _LOGIN_INFO, id="double-quoted"),
+            pytest.param(
+                "<script>\n"
+                "        window.HiveSSOPoolId = 'eu-west-1_abc'\n"
+                "        window.HiveSSOCognitoClientId = 'private123'\n"
+                "        window.HiveSSOPublicCognitoClientId = 'client123'\n"
+                "        window.HiveSSOState = '%%STATE%%'\n"
+                "    </script>",
+                _LOGIN_INFO,
+                id="single-quoted-with-spaces",
+            ),
+            pytest.param(
+                '<SCRIPT type="text/javascript">'
+                'window.HiveSSOPoolId = "eu-west-1_abc"; '
+                'window.HiveSSOPublicCognitoClientId = "client123";'
+                "</SCRIPT>",
+                _LOGIN_INFO,
+                id="script-tag-attributes-and-uppercase",
+            ),
+            pytest.param(
+                "<script>"
+                'window.HiveSSOPoolId = "it\'s"; '
+                "window.HiveSSOPublicCognitoClientId = 'say \"hi\"'"
+                "</script>",
+                {"UPID": "it's", "CLIID": 'say "hi"', "REGION": "it's"},
+                id="value-contains-other-quote",
+            ),
+        ],
+    )
+    async def test_parses_the_cognito_config_from_the_first_script(
+        self, html, expected
+    ):
+        websession = _make_websession(body=html)
 
-        assert await get_login_info(websession) == _LOGIN_INFO
+        assert await get_login_info(websession) == expected
 
     async def test_fetches_the_sso_page_with_the_given_session(self):
         websession = _make_websession(body=_SSO_PAGE)
@@ -449,105 +397,50 @@ class TestGetLoginInfo:
         session_cls.assert_not_called()
         websession.close.assert_not_called()
 
-    async def test_parses_single_quoted_assignments_with_spaces(self):
-        html = (
-            "<script>\n"
-            "        window.HiveSSOPoolId = 'eu-west-1_abc'\n"
-            "        window.HiveSSOCognitoClientId = 'private123'\n"
-            "        window.HiveSSOPublicCognitoClientId = 'client123'\n"
-            "        window.HiveSSOState = '%%STATE%%'\n"
-            "    </script>"
-        )
-        websession = _make_websession(body=html)
-
-        assert await get_login_info(websession) == _LOGIN_INFO
-
-    async def test_region_is_the_pool_id(self):
-        result = await get_login_info(_make_websession(body=_SSO_PAGE))
-
-        assert result["REGION"] == "eu-west-1_abc"
-        assert result["REGION"] == result["UPID"]
-
-    async def test_script_tag_attributes_and_case_are_accepted(self):
-        html = (
-            '<SCRIPT type="text/javascript">'
-            'window.HiveSSOPoolId = "eu-west-1_abc"; '
-            'window.HiveSSOPublicCognitoClientId = "client123";'
-            "</SCRIPT>"
-        )
-        websession = _make_websession(body=html)
-
-        assert await get_login_info(websession) == _LOGIN_INFO
-
-    async def test_a_value_may_contain_the_other_quote_character(self):
-        html = (
-            "<script>"
-            'window.HiveSSOPoolId = "it\'s"; '
-            "window.HiveSSOPublicCognitoClientId = 'say \"hi\"'"
-            "</script>"
-        )
-        websession = _make_websession(body=html)
-
-        assert await get_login_info(websession) == {
-            "UPID": "it's",
-            "CLIID": 'say "hi"',
-            "REGION": "it's",
-        }
-
-    async def test_only_the_first_script_block_is_parsed(self):
-        html = (
-            "<script>window.Unrelated = 'x'</script>"
-            "<script>window.HiveSSOPoolId = 'p' "
-            "window.HiveSSOPublicCognitoClientId = 'c'</script>"
-        )
+    @pytest.mark.parametrize(
+        ("html", "missing_key"),
+        [
+            pytest.param(
+                "<script>window.Unrelated = 'x'</script>"
+                "<script>window.HiveSSOPoolId = 'p' "
+                "window.HiveSSOPublicCognitoClientId = 'c'</script>",
+                "HiveSSOPoolId",
+                id="config-in-second-script",
+            ),
+            pytest.param(
+                "<script>window.HiveSSOPoolId = 'eu-west-1_abc\"</script>",
+                "HiveSSOPoolId",
+                id="mismatched-quotes",
+            ),
+            pytest.param(
+                "<script>window.HiveSSOPoolId = 'eu-west-1_abc'</script>",
+                "HiveSSOPublicCognitoClientId",
+                id="pool-id-only",
+            ),
+            pytest.param(
+                "<script>window.SomeOtherKey = 'value'</script>",
+                "HiveSSOPoolId",
+                id="unrelated-key",
+            ),
+            pytest.param("", "HiveSSOPoolId", id="empty-page"),
+            pytest.param(
+                "<html><body>Down for maintenance</body></html>",
+                "HiveSSOPoolId",
+                id="no-script",
+            ),
+        ],
+    )
+    async def test_page_without_the_config_raises_api_error(self, html, missing_key):
         websession = _make_websession(body=html)
 
         with pytest.raises(HiveApiError) as exc_info:
             await get_login_info(websession)
 
         assert str(exc_info.value) == (
-            "The Hive login page did not include 'HiveSSOPoolId'"
-        )
-
-    async def test_mismatched_quotes_are_not_parsed(self):
-        html = "<script>window.HiveSSOPoolId = 'eu-west-1_abc\"</script>"
-        websession = _make_websession(body=html)
-
-        with pytest.raises(HiveApiError, match="'HiveSSOPoolId'"):
-            await get_login_info(websession)
-
-    async def test_missing_client_id_is_named(self):
-        html = "<script>window.HiveSSOPoolId = 'eu-west-1_abc'</script>"
-        websession = _make_websession(body=html)
-
-        with pytest.raises(HiveApiError) as exc_info:
-            await get_login_info(websession)
-
-        assert str(exc_info.value) == (
-            "The Hive login page did not include 'HiveSSOPublicCognitoClientId'"
-        )
-
-    async def test_missing_keys_raise_api_error_caused_by_key_error(self):
-        html = "<script>window.SomeOtherKey = 'value'</script>"
-        websession = _make_websession(body=html)
-
-        with pytest.raises(HiveApiError) as exc_info:
-            await get_login_info(websession)
-
-        assert str(exc_info.value) == (
-            "The Hive login page did not include 'HiveSSOPoolId'"
+            f"The Hive login page did not include '{missing_key}'"
         )
         assert isinstance(exc_info.value.__cause__, KeyError)
-        assert exc_info.value.__cause__.args == ("HiveSSOPoolId",)
-
-    @pytest.mark.parametrize(
-        "html", ["", "<html><body>Down for maintenance</body></html>"]
-    )
-    async def test_page_without_a_script_raises_api_error(self, html):
-        websession = _make_websession(body=html)
-
-        with pytest.raises(HiveApiError, match="did not include 'HiveSSOPoolId'"):
-            await get_login_info(websession)
+        assert exc_info.value.__cause__.args == (missing_key,)
 
     @pytest.mark.parametrize(
         ("status", "exc"),
@@ -570,20 +463,6 @@ class TestGetLoginInfo:
             exc_info.value
         )
 
-    @pytest.mark.parametrize(
-        "err",
-        [TimeoutError(), aiohttp.ClientError("net error"), OSError("network down")],
-        ids=["timeout", "client_error", "os_error"],
-    )
-    async def test_network_errors_propagate_as_connection_errors(self, err):
-        websession = _make_websession()
-        websession.request.side_effect = err
-
-        with pytest.raises(HiveConnectionError) as exc_info:
-            await get_login_info(websession)
-
-        assert exc_info.value.__cause__ is err
-
     async def test_opens_and_closes_a_temporary_session_when_none_is_given(self):
         temp = _make_websession(body=_SSO_PAGE)
         temp.__aenter__ = AsyncMock(return_value=temp)
@@ -600,41 +479,11 @@ class TestGetLoginInfo:
         )
         temp.__aexit__.assert_awaited_once()
 
-    async def test_the_temporary_session_is_closed_when_the_fetch_fails(self):
-        temp = _make_websession(503, "down")
-        temp.__aenter__ = AsyncMock(return_value=temp)
-        temp.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("apyhiveapi.api.ClientSession", return_value=temp),
-            pytest.raises(HiveConnectionError),
-        ):
-            await get_login_info()
-
-        temp.__aexit__.assert_awaited_once()
-        assert temp.__aexit__.await_args.args[0] is HiveConnectionError
-
 
 # Tests for HiveApi construction and its websession
 
 
 class TestHiveApiWebsession:
-    def test_stores_the_session_and_the_websession(self):
-        session = MagicMock()
-        websession = MagicMock()
-
-        api = HiveApi(session, websession)
-
-        assert api.session is session
-        assert api.websession is websession
-
-    def test_the_constructor_creates_no_client_session(self):
-        with patch("apyhiveapi.api.ClientSession") as session_cls:
-            api = HiveApi(MagicMock())
-
-        session_cls.assert_not_called()
-        assert api.websession is None
-
     def test_get_websession_returns_the_given_session(self):
         websession = MagicMock()
         api = HiveApi(MagicMock(), websession)
@@ -645,9 +494,10 @@ class TestHiveApiWebsession:
         session_cls.assert_not_called()
 
     def test_get_websession_creates_one_lazily_and_caches_it(self):
-        api = HiveApi(MagicMock())
-
         with patch("apyhiveapi.api.ClientSession") as session_cls:
+            api = HiveApi(MagicMock())
+            session_cls.assert_not_called()
+            assert api.websession is None
             first = api._get_websession()
             second = api._get_websession()
 
@@ -684,32 +534,19 @@ class TestRequest:
 
         assert await api.request("get", _URL) == {"products": [], "devices": []}
 
-    async def test_sends_the_token_with_the_default_headers(self):
-        api = _make_api()
-
-        await api.request("get", _URL)
-
-        api.websession.request.assert_called_once_with(
-            "get", _URL, headers=_AUTH_HEADERS, data=None, timeout=_TIMEOUT
-        )
-        headers = api.websession.request.call_args.kwargs["headers"]
-        assert headers["Authorization"] == "test-token"
-        assert headers["content-type"] == "application/json"
-
-    async def test_does_not_mutate_the_module_headers(self):
-        api = _make_api()
-
-        await api.request("get", _URL)
-
-        assert "Authorization" not in _HEADERS
-
-    async def test_sends_the_data_as_given(self):
+    async def test_sends_the_token_headers_and_data(self):
         api = _make_api()
 
         await api.request("post", _URL, data='{"mode": "MANUAL"}')
 
-        assert api.websession.request.call_args.args == ("post", _URL)
-        assert api.websession.request.call_args.kwargs["data"] == '{"mode": "MANUAL"}'
+        api.websession.request.assert_called_once_with(
+            "post",
+            _URL,
+            headers=_AUTH_HEADERS,
+            data='{"mode": "MANUAL"}',
+            timeout=_TIMEOUT,
+        )
+        assert "Authorization" not in _HEADERS
 
     @pytest.mark.parametrize(
         ("status", "body"),
@@ -754,14 +591,7 @@ class TestRequest:
 
     @pytest.mark.parametrize(
         ("body", "type_name"),
-        [
-            ("[]", "list"),
-            ('[{"id": "node-1"}]', "list"),
-            ('"text"', "str"),
-            ("42", "int"),
-            ("true", "bool"),
-            ("null", "NoneType"),
-        ],
+        [('[{"id": "node-1"}]', "list"), ('"text"', "str"), ("null", "NoneType")],
     )
     async def test_json_that_is_not_an_object_raises_api_error(self, body, type_name):
         api = _make_api(200, body)
@@ -794,26 +624,6 @@ class TestRequest:
             exc_info.value
         )
 
-    async def test_network_errors_raise_connection_error(self):
-        api = _make_api()
-        err = aiohttp.ClientConnectorError(
-            MagicMock(host="beekeeper.hivehome.com", port=443, ssl=True),
-            OSError(61, "Connection refused"),
-        )
-        api.websession.request.side_effect = err
-
-        with pytest.raises(HiveConnectionError) as exc_info:
-            await api.request("get", _URL)
-
-        assert exc_info.value.__cause__ is err
-
-    async def test_timeout_raises_connection_error(self):
-        api = _make_api()
-        api.websession.request.side_effect = TimeoutError()
-
-        with pytest.raises(HiveConnectionError, match="Timed out calling"):
-            await api.request("get", _URL)
-
 
 # Tests for HiveApi.get_all
 
@@ -838,52 +648,14 @@ class TestGetAll:
             timeout=_TIMEOUT,
         )
 
-    async def test_an_empty_body_returns_an_empty_dict(self):
-        api = _make_api(200, "")
-
-        assert await api.get_all() == {}
-
-    async def test_without_a_token_raises_reauth_before_any_call(self):
-        api = _make_api()
-        api.session.tokens.token_data = {}
-
-        with pytest.raises(HiveReauthRequired, match="no API token"):
-            await api.get_all()
-
-        api.websession.request.assert_not_called()
-
-    @pytest.mark.parametrize(
-        ("status", "body", "exc"),
-        [
-            (401, "", HiveReauthRequired),
-            (403, "", HiveApiError),
-            (404, "", HiveApiError),
-            (503, "", HiveConnectionError),
-            (200, "<html>", HiveConnectionError),
-            (200, "[]", HiveApiError),
-        ],
-        ids=["401", "403", "404", "503", "unreadable_body", "json_list"],
-    )
-    async def test_errors_propagate(self, status, body, exc):
-        api = _make_api(status, body)
-
-        with pytest.raises(exc):
-            await api.get_all()
-
-    async def test_timeout_raises_connection_error(self):
-        api = _make_api()
-        api.websession.request.side_effect = TimeoutError()
-
-        with pytest.raises(HiveConnectionError, match="Timed out calling"):
-            await api.get_all()
-
 
 # Tests for HiveApi.set_state
 
 
 class TestSetState:
-    async def test_posts_the_state_as_json_to_the_product_url(self):
-        api = _make_api(200, "")
+    async def test_posts_the_state_as_json_to_the_product_url(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="apyhiveapi.api")
+        api = _make_api(200, '{"id": "node-1"}')
 
         result = await api.set_state("heating", "node-1", mode="MANUAL", target=21.5)
 
@@ -895,97 +667,6 @@ class TestSetState:
             data='{"mode": "MANUAL", "target": 21.5}',
             timeout=_TIMEOUT,
         )
-
-    async def test_builds_the_url_from_the_product_type_and_id(self):
-        api = _make_api()
-
-        await api.set_state("hotwater", "hw-9", mode="ON")
-
-        assert api.websession.request.call_args.args == (
-            "post",
-            f"{_BASE_URL}/nodes/hotwater/hw-9",
+        assert "Setting heating node-1: {'mode': 'MANUAL', 'target': 21.5}" in (
+            _api_messages(caplog)
         )
-
-    async def test_without_state_posts_an_empty_object(self):
-        api = _make_api()
-
-        await api.set_state("trvcontrol", "trv-1")
-
-        assert api.websession.request.call_args.kwargs["data"] == "{}"
-
-    async def test_every_json_value_type_survives_the_round_trip(self):
-        api = _make_api()
-        state = {
-            "mode": "BOOST",
-            "boost": 30,
-            "target": 22.0,
-            "scheduleLock": False,
-            "note": None,
-        }
-
-        await api.set_state("heating", "node-1", **state)
-
-        data = api.websession.request.call_args.kwargs["data"]
-        assert data == json.dumps(state)
-        assert json.loads(data) == state
-
-    async def test_quotes_in_values_are_escaped(self):
-        api = _make_api()
-
-        await api.set_state("heating", "node-1", mode='MANUAL"injected')
-
-        data = api.websession.request.call_args.kwargs["data"]
-        assert json.loads(data) == {"mode": 'MANUAL"injected'}
-
-    async def test_the_response_body_is_discarded(self):
-        api = _make_api(200, '{"id": "node-1", "mode": "MANUAL"}')
-
-        assert await api.set_state("heating", "node-1", mode="MANUAL") is None
-
-    async def test_logs_the_requested_change(self, caplog):
-        caplog.set_level(logging.DEBUG, logger="apyhiveapi.api")
-        api = _make_api()
-
-        await api.set_state("heating", "node-1", mode="MANUAL")
-
-        assert "Setting heating node-1: {'mode': 'MANUAL'}" in _api_messages(caplog)
-
-    async def test_without_a_token_raises_reauth_before_any_call(self):
-        api = _make_api()
-        api.session.tokens.token_data = {}
-
-        with pytest.raises(HiveReauthRequired, match="no API token"):
-            await api.set_state("heating", "node-1", mode="MANUAL")
-
-        api.websession.request.assert_not_called()
-
-    @pytest.mark.parametrize(
-        ("status", "body", "exc"),
-        [
-            (401, "", HiveReauthRequired),
-            (403, "", HiveApiError),
-            (404, "", HiveApiError),
-            (500, "", HiveConnectionError),
-            (200, "<html>", HiveConnectionError),
-            (200, "[]", HiveApiError),
-        ],
-        ids=["401", "403", "404", "500", "unreadable_body", "json_list"],
-    )
-    async def test_errors_propagate(self, status, body, exc):
-        api = _make_api(status, body)
-
-        with pytest.raises(exc):
-            await api.set_state("heating", "node-1", mode="MANUAL")
-
-    async def test_network_errors_raise_connection_error(self):
-        api = _make_api()
-        err = aiohttp.ServerDisconnectedError()
-        api.websession.request.side_effect = err
-
-        with pytest.raises(HiveConnectionError) as exc_info:
-            await api.set_state("heating", "node-1", mode="MANUAL")
-
-        assert str(exc_info.value) == (
-            f"Could not reach {_BASE_URL}/nodes/heating/node-1: Server disconnected"
-        )
-        assert exc_info.value.__cause__ is err

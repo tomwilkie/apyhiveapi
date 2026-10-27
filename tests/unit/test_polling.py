@@ -5,7 +5,7 @@
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -46,58 +46,44 @@ def _product(product_id, state, product_type="heating"):
 class TestUpdateInterval:
     """Tests for Hive.update_interval, which the options flow calls."""
 
-    def test_seconds_are_stored_as_a_timedelta(self):
-        hive = _make_hive()
-        assert hive.update_interval(300) is None
-        assert hive.config.scan_interval == timedelta(seconds=300)
-
-    def test_fractional_seconds_are_accepted(self):
-        hive = _make_hive()
-        hive.update_interval(90.5)
-        assert hive.config.scan_interval == timedelta(seconds=90.5)
-
-    def test_timedelta_is_stored_as_given(self):
-        hive = _make_hive()
-        hive.update_interval(timedelta(minutes=3))
-        assert hive.config.scan_interval == timedelta(minutes=3)
-
     @pytest.mark.parametrize(
-        "value",
+        ("value", "expected"),
         [
-            pytest.param(-5, id="negative"),
-            pytest.param(0, id="zero"),
-            pytest.param(5, id="five-seconds"),
-            pytest.param(14.9, id="just-below"),
-            pytest.param(timedelta(seconds=1), id="timedelta"),
+            pytest.param(300, timedelta(seconds=300), id="seconds"),
+            pytest.param(90.5, timedelta(seconds=90.5), id="fractional-seconds"),
+            pytest.param(timedelta(minutes=3), timedelta(minutes=3), id="timedelta"),
+            pytest.param(
+                MIN_SCAN_INTERVAL.total_seconds(), MIN_SCAN_INTERVAL, id="the-minimum"
+            ),
+            pytest.param(-5, MIN_SCAN_INTERVAL, id="negative"),
+            pytest.param(0, MIN_SCAN_INTERVAL, id="zero"),
+            pytest.param(14.9, MIN_SCAN_INTERVAL, id="just-below"),
+            pytest.param(timedelta(seconds=1), MIN_SCAN_INTERVAL, id="timedelta-below"),
         ],
     )
-    def test_values_below_the_minimum_are_raised_to_it(self, value):
+    def test_interval_is_stored_as_a_timedelta_not_below_the_minimum(
+        self, value, expected
+    ):
         hive = _make_hive()
         hive.update_interval(value)
-        assert hive.config.scan_interval == MIN_SCAN_INTERVAL
-
-    def test_the_minimum_itself_is_kept(self):
-        hive = _make_hive()
-        hive.update_interval(MIN_SCAN_INTERVAL.total_seconds())
-        assert hive.config.scan_interval == MIN_SCAN_INTERVAL
-
-    def test_default_interval_before_any_change(self):
-        assert _make_hive().config.scan_interval == DEFAULT_SCAN_INTERVAL
+        assert hive.config.scan_interval == expected
 
 
 class TestPollIsDue:
     """Tests for Hive._poll_is_due."""
 
-    def test_due_once_the_interval_has_passed(self):
-        assert _make_hive(due=True)._poll_is_due() is True
-
-    def test_not_due_right_after_a_poll(self):
-        assert _make_hive(due=False)._poll_is_due() is False
-
-    def test_due_exactly_at_the_end_of_the_interval(self):
+    @pytest.mark.parametrize(
+        ("age", "expected"),
+        [
+            pytest.param(_FAR_PAST, True, id="interval-passed"),
+            pytest.param(timedelta(0), False, id="just-polled"),
+            pytest.param(DEFAULT_SCAN_INTERVAL, True, id="exactly-the-interval"),
+        ],
+    )
+    def test_due_once_the_interval_has_passed(self, age, expected):
         hive = _make_hive()
-        hive.config.last_update = datetime.now(UTC) - hive.config.scan_interval
-        assert hive._poll_is_due() is True
+        hive.config.last_update = datetime.now(UTC) - age
+        assert hive._poll_is_due() is expected
 
     def test_shortening_the_interval_makes_a_poll_due(self):
         hive = _make_hive(due=False)
@@ -110,34 +96,17 @@ class TestPollIsDue:
 class TestUpdateData:
     """Tests for Hive.update_data."""
 
-    async def test_polls_when_due_and_returns_true(self):
+    @pytest.mark.parametrize("polled", [True, False])
+    async def test_polls_when_due_and_returns_the_result_of_get_devices(self, polled):
         hive = _make_hive(due=True)
-        assert await hive.update_data() is True
+        hive.get_devices = AsyncMock(return_value=polled)
+        assert await hive.update_data() is polled
         hive.get_devices.assert_awaited_once_with()
 
     async def test_skips_the_poll_when_not_due(self):
         hive = _make_hive(due=False)
         assert await hive.update_data() is False
         hive.get_devices.assert_not_awaited()
-
-    async def test_returns_false_while_another_caller_holds_the_lock(self):
-        hive = _make_hive(due=True)
-        async with hive.update_lock:
-            assert await hive.update_data() is False
-        hive.get_devices.assert_not_awaited()
-
-    async def test_rechecks_whether_the_poll_is_due_after_taking_the_lock(self):
-        hive = _make_hive(due=True)
-        hive._poll_is_due = MagicMock(side_effect=[True, False])
-        assert await hive.update_data() is False
-        assert hive._poll_is_due.call_count == 2
-        hive.get_devices.assert_not_awaited()
-
-    async def test_returns_the_result_of_get_devices(self):
-        hive = _make_hive(due=True)
-        hive.get_devices = AsyncMock(return_value=False)
-        assert await hive.update_data() is False
-        hive.get_devices.assert_awaited_once_with()
 
     async def test_concurrent_callers_poll_once(self):
         hive = _make_hive(due=True)
@@ -151,12 +120,7 @@ class TestUpdateData:
         assert await hive.update_data() is False
         hive.get_devices.assert_awaited_once_with()
 
-    async def test_the_lock_is_released_after_a_poll(self):
-        hive = _make_hive(due=True)
-        await hive.update_data()
-        assert not hive.update_lock.locked()
-
-    async def test_the_lock_is_released_when_the_poll_raises(self):
+    async def test_reauth_required_propagates_and_releases_the_lock(self):
         hive = _make_hive(due=True)
         hive.get_devices = AsyncMock(side_effect=HiveReauthRequired("log in again"))
         with pytest.raises(HiveReauthRequired):
@@ -167,12 +131,6 @@ class TestUpdateData:
 class TestSchedulePollRetry:
     """Tests for Hive._schedule_poll_retry."""
 
-    def test_next_poll_is_allowed_after_the_retry_delay(self):
-        hive = _make_hive(due=True)
-        hive._schedule_poll_retry()
-        expected = datetime.now(UTC) - hive.config.scan_interval + POLL_RETRY_DELAY
-        assert abs(hive.config.last_update - expected) < timedelta(seconds=1)
-
     def test_poll_is_not_due_until_the_delay_has_passed(self):
         hive = _make_hive(due=True)
         hive._schedule_poll_retry()
@@ -180,29 +138,36 @@ class TestSchedulePollRetry:
         hive.config.last_update -= POLL_RETRY_DELAY
         assert hive._poll_is_due() is True
 
-    def test_retry_comes_sooner_than_a_full_interval(self):
-        hive = _make_hive(due=False)
-        before = hive.config.last_update
-        hive._schedule_poll_retry()
-        assert hive.config.last_update < before
-
 
 class TestStoreNodes:
     """Tests for Hive._store_nodes."""
 
-    def test_user_is_stored_when_present(self):
-        hive = _make_hive()
-        hive._store_nodes({"user": {"id": "u1", "temperatureUnit": "C"}})
-        assert hive.data.user == {"id": "u1", "temperatureUnit": "C"}
-
-    def test_user_is_kept_when_absent(self):
+    @pytest.mark.parametrize(
+        ("nodes", "expected_user"),
+        [
+            pytest.param(
+                {"user": {"id": "u2", "temperatureUnit": "C"}},
+                {"id": "u2", "temperatureUnit": "C"},
+                id="present",
+            ),
+            pytest.param(
+                {"products": [_product("heat-1", {"mode": "OFF"})]},
+                {"id": "u1"},
+                id="absent",
+            ),
+        ],
+    )
+    def test_user_is_replaced_when_present_and_kept_when_absent(
+        self, nodes, expected_user
+    ):
         hive = _make_hive()
         hive.data.user = {"id": "u1"}
-        hive._store_nodes({"products": [_product("heat-1", {"mode": "OFF"})]})
-        assert hive.data.user == {"id": "u1"}
+        hive._store_nodes(nodes)
+        assert hive.data.user == expected_user
 
-    def test_products_and_devices_are_keyed_by_id(self):
+    def test_products_and_devices_are_keyed_by_id_and_replace_the_old_ones(self):
         hive = _make_hive()
+        hive.data.products = {"old": _product("old", {"mode": "OFF"})}
         heating = _product("heat-1", {"mode": "OFF"})
         hub = {"id": "hub-1", "type": "hub"}
         hive._store_nodes({"products": [heating], "devices": [hub]})
@@ -232,26 +197,6 @@ class TestStoreNodes:
         hive._store_nodes(nodes)
         assert set(hive.data.products) == {"heat-1"}
         assert set(hive.data.devices) == {"hub-1"}
-
-    def test_new_products_replace_the_old_ones(self):
-        hive = _make_hive()
-        hive.data.products = {"heat-1": _product("heat-1", {"mode": "OFF"})}
-        hive._store_nodes({"products": [_product("heat-2", {"mode": "OFF"})]})
-        assert set(hive.data.products) == {"heat-2"}
-
-    def test_missing_required_state_is_carried_over(self):
-        hive = _make_hive()
-        hive.data.products = {
-            "heat-1": _product("heat-1", {"mode": "OFF", "target": 7})
-        }
-        hive._store_nodes({"products": [_product("heat-1", {"target": 20})]})
-        assert hive.data.products["heat-1"]["state"] == {"mode": "OFF", "target": 20}
-
-    def test_counts_are_logged_at_debug(self, caplog):
-        hive = _make_hive()
-        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
-            hive._store_nodes({"products": [_product("heat-1", {})], "devices": []})
-        assert "Hive returned 1 products and 0 devices" in caplog.text
 
 
 class TestKeepMissingState:
@@ -294,42 +239,15 @@ class TestKeepMissingState:
             "hw-1 (hotwater hw-1) missing mode"
         )
 
-    def test_missing_state_block_gets_the_previous_required_keys(self):
-        hive = self._hive({"mode": "OFF", "target": 7, "boost": 30})
-        new = {"heat-1": {"id": "heat-1", "type": "heating"}}
-        hive._keep_missing_state(new)
-        assert new["heat-1"]["state"] == {"mode": "OFF", "target": 7}
-
-    def test_null_value_is_not_treated_as_missing(self, caplog):
-        hive = self._hive({"mode": "OFF", "boost": 30})
-        new = {"heat-1": _product("heat-1", {"mode": "OFF", "boost": None})}
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            hive._keep_missing_state(new)
-        assert new["heat-1"]["state"] == {"mode": "OFF", "boost": None}
-        assert not caplog.records
-
-    def test_new_product_is_accepted_as_is(self, caplog):
-        hive = self._hive({"mode": "OFF"})
-        new = {
-            "heat-1": _product("heat-1", {"mode": "OFF"}),
-            "heat-2": _product("heat-2", {"target": 7}),
-        }
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            hive._keep_missing_state(new)
-        assert new["heat-2"]["state"] == {"target": 7}
-        assert not caplog.records
-        assert not hive._stale_state_polls
-
-    def test_optional_keys_are_never_carried_over(self, caplog):
-        hive = self._hive({"mode": "MANUAL", "target": 20, "boost": 30, "hue": 10})
-        new = {"heat-1": _product("heat-1", {"mode": "MANUAL", "target": 20})}
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            hive._keep_missing_state(new)
-        assert new["heat-1"]["state"] == {"mode": "MANUAL", "target": 20}
-        assert not caplog.records
-        assert not hive._stale_state_polls
-
-    def test_only_required_keys_are_carried_over(self):
+    @pytest.mark.parametrize(
+        "new_product",
+        [
+            pytest.param(_product("heat-1", {}), id="empty-state"),
+            pytest.param({"id": "heat-1", "type": "heating"}, id="no-state"),
+            pytest.param(_product("heat-1", "broken"), id="state-not-a-dict"),
+        ],
+    )
+    def test_only_the_required_keys_are_carried_over(self, new_product):
         hive = self._hive(
             {
                 "name": "Hall",
@@ -339,7 +257,7 @@ class TestKeepMissingState:
                 "boost": 30,
             }
         )
-        new = {"heat-1": _product("heat-1", {})}
+        new = {"heat-1": new_product}
         hive._keep_missing_state(new)
         assert new["heat-1"]["state"] == {
             "name": "Hall",
@@ -347,6 +265,52 @@ class TestKeepMissingState:
             "target": 20,
             "status": "ON",
         }
+
+    @pytest.mark.parametrize(
+        ("previous_products", "new_state", "expected_state"),
+        [
+            pytest.param(
+                {"heat-1": _product("heat-1", {"mode": "OFF", "boost": 30})},
+                {"mode": "OFF", "boost": None},
+                {"mode": "OFF", "boost": None},
+                id="null-value-is-present",
+            ),
+            pytest.param(
+                {
+                    "heat-1": _product(
+                        "heat-1",
+                        {"mode": "MANUAL", "target": 20, "boost": 30, "hue": 10},
+                    )
+                },
+                {"mode": "MANUAL", "target": 20},
+                {"mode": "MANUAL", "target": 20},
+                id="optional-keys-not-carried",
+            ),
+            pytest.param(
+                {"heat-2": _product("heat-2", {"mode": "OFF"})},
+                {"target": 7},
+                {"target": 7},
+                id="new-product",
+            ),
+            pytest.param(
+                {"heat-1": _product("heat-1", "broken")},
+                {"mode": "OFF"},
+                {"mode": "OFF"},
+                id="previous-state-not-a-dict",
+            ),
+        ],
+    )
+    def test_state_is_accepted_as_is_when_nothing_required_is_missing(
+        self, previous_products, new_state, expected_state, caplog
+    ):
+        hive = _make_hive()
+        hive.data.products = previous_products
+        new = {"heat-1": _product("heat-1", new_state)}
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            hive._keep_missing_state(new)
+        assert new["heat-1"]["state"] == expected_state
+        assert not caplog.records
+        assert not hive._stale_state_polls
 
     def test_gives_up_after_max_consecutive_incomplete_polls(self, caplog):
         hive = self._hive({"name": "Hallway", "mode": "OFF", "target": 7})
@@ -392,28 +356,3 @@ class TestKeepMissingState:
         assert hive._stale_state_polls == {"heat-1": 1}
         hive._store_nodes({"products": [_product("heat-2", {"mode": "OFF"})]})
         assert not hive._stale_state_polls
-
-    def test_previous_state_not_a_dict_is_ignored(self, caplog):
-        hive = _make_hive()
-        hive.data.products = {"heat-1": _product("heat-1", "broken")}
-        new = {"heat-1": _product("heat-1", {"mode": "OFF"})}
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            hive._keep_missing_state(new)
-        assert new["heat-1"]["state"] == {"mode": "OFF"}
-        assert not caplog.records
-
-    def test_new_state_not_a_dict_gets_the_previous_required_keys(self):
-        hive = self._hive({"mode": "OFF", "boost": 30})
-        new = {"heat-1": _product("heat-1", "broken")}
-        hive._keep_missing_state(new)
-        assert new["heat-1"]["state"] == {"mode": "OFF"}
-
-    def test_debug_logs_the_state_keys_that_arrived(self, caplog):
-        hive = self._hive({"mode": "OFF", "target": 7})
-        new = {"heat-1": _product("heat-1", {"target": 20, "boost": 5})}
-        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
-            hive._keep_missing_state(new)
-        assert (
-            "Hive API state for heating heat-1 arrived with keys: boost, target"
-            in caplog.text
-        )

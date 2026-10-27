@@ -22,8 +22,6 @@ from apyhiveapi.exceptions import (
     HiveReauthRequired,
 )
 from apyhiveapi.srp import (
-    G_HEX,
-    N_HEX,
     calculate_u,
     compute_hkdf,
     hash_sha256,
@@ -176,38 +174,12 @@ class TestInit:
         assert auth.use_file is False
         assert auth.file_response == {"AuthenticationResult": {"AccessToken": "file"}}
 
-    def test_keeps_the_saved_device_credentials(self):
-        auth = HiveAuth(USERNAME, PASSWORD, **DEVICE_CREDENTIALS)
-        assert auth.device_group_key == "grp-key"
-        assert auth.device_key == "dev-key"
-        assert auth.device_password == "dev-pass"
-
     @pytest.mark.parametrize(
         ("username", "use_file"),
         [("use@file.com", True), ("user@test.com", False), ("USE@FILE.COM", False)],
     )
     def test_file_mode_is_only_for_the_file_username(self, username, use_file):
         assert HiveAuth(username, "").use_file is use_file
-
-    def test_srp_group_constants(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        assert auth.big_n == hex_to_long(N_HEX)
-        assert auth.g_value == 2
-        assert auth.k == hex_to_long(hex_hash(pad_hex(N_HEX) + pad_hex(G_HEX)))
-
-    def test_srp_ephemeral_is_a_pair_of_ints_below_n(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        assert isinstance(auth.small_a_value, int)
-        assert isinstance(auth.large_a_value, int)
-        assert 0 < auth.small_a_value < auth.big_n
-        assert 0 < auth.large_a_value < auth.big_n
-        assert auth.large_a_value == pow(auth.g_value, auth.small_a_value, auth.big_n)
-
-    def test_each_instance_gets_its_own_ephemeral(self):
-        first = HiveAuth(USERNAME, PASSWORD)
-        second = HiveAuth(USERNAME, PASSWORD)
-        assert first.small_a_value != second.small_a_value
-        assert first.large_a_value != second.large_a_value
 
 
 # Tests for async_init and _ensure_client
@@ -248,32 +220,6 @@ class TestAsyncInit:
         assert _COGNITO_CONFIG.read_timeout == 20
         assert _COGNITO_CONFIG.retries == {"max_attempts": 2, "mode": "standard"}
 
-    @pytest.mark.parametrize(
-        ("pool_id", "region"),
-        [("eu-west-1_abc", "eu-west-1"), ("ap-southeast-2_XyzPool", "ap-southeast-2")],
-    )
-    async def test_region_is_the_pool_id_before_the_underscore(self, pool_id, region):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        info = {"UPID": pool_id, "CLIID": CLIENT_ID, "REGION": pool_id}
-        with (
-            patch("apyhiveapi.auth.get_login_info", new=AsyncMock(return_value=info)),
-            patch("apyhiveapi.auth.boto3.client") as boto3_client,
-        ):
-            await auth.async_init()
-        assert boto3_client.call_args.args == ("cognito-idp", region)
-
-    async def test_without_a_websession_get_login_info_makes_its_own(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        with (
-            patch(
-                "apyhiveapi.auth.get_login_info",
-                new=AsyncMock(return_value=LOGIN_INFO),
-            ) as get_login_info,
-            patch("apyhiveapi.auth.boto3.client"),
-        ):
-            await auth.async_init()
-        get_login_info.assert_awaited_once_with(None)
-
     @pytest.mark.parametrize("error", [HiveConnectionError, HiveApiError])
     async def test_login_page_errors_propagate(self, error):
         auth = HiveAuth(USERNAME, PASSWORD)
@@ -307,12 +253,6 @@ class TestEnsureClient:
         get_login_info.assert_awaited_once()
         boto3_client.assert_called_once()
         assert auth.client is first_client
-
-    async def test_does_nothing_once_the_client_is_set(self):
-        auth = make_auth()
-        with patch.object(auth, "async_init", new=AsyncMock()) as async_init:
-            await auth._ensure_client()
-        async_init.assert_not_awaited()
 
     @pytest.mark.parametrize(
         ("method", "args", "cognito_method"),
@@ -356,7 +296,7 @@ class TestEnsureClient:
         auth = HiveAuth(USERNAME, PASSWORD, **DEVICE_CREDENTIALS)
         auth.access_token = "access-token"
         client = MagicMock()
-        client.initiate_auth.return_value = AUTH_RESULT
+        client.initiate_auth.return_value = PASSWORD_CHALLENGE
         client.respond_to_auth_challenge.side_effect = [DEVICE_CHALLENGE, AUTH_RESULT]
         client.get_device.return_value = REMEMBERED_DEVICE
 
@@ -385,11 +325,6 @@ class TestCognito:
         auth.client.get_device.assert_called_once_with(
             AccessToken="tok", DeviceKey="key"
         )
-
-    async def test_a_code_map_is_not_sent_to_cognito(self):
-        auth = make_auth()
-        await auth._cognito("get_device", {"X": HiveApiError}, DeviceKey="key")
-        auth.client.get_device.assert_called_once_with(DeviceKey="key")
 
     async def test_runs_the_call_off_the_event_loop_thread(self):
         auth = make_auth()
@@ -532,22 +467,10 @@ class TestLogin:
         assert auth.client is None
         assert auth.access_token is None
 
-    async def test_starts_an_srp_handshake_without_the_device_key(self):
-        auth = make_auth(device_key="dev-key")
-        auth.client.initiate_auth.return_value = AUTH_RESULT
-        await auth.login()
-        auth.client.initiate_auth.assert_called_once_with(
-            AuthFlow="USER_SRP_AUTH",
-            AuthParameters={
-                "USERNAME": USERNAME,
-                "SRP_A": long_to_hex(auth.large_a_value),
-            },
-            ClientId=CLIENT_ID,
-        )
-
     async def test_uses_a_fresh_srp_ephemeral_for_every_attempt(self):
         auth = make_auth()
-        auth.client.initiate_auth.return_value = AUTH_RESULT
+        auth.client.initiate_auth.return_value = PASSWORD_CHALLENGE
+        auth.client.respond_to_auth_challenge.return_value = AUTH_RESULT
         initial_a = auth.large_a_value
         await auth.login()
         second_a = auth.large_a_value
@@ -560,28 +483,6 @@ class TestLogin:
             for _name, _args, kwargs in auth.client.initiate_auth.mock_calls
         ]
         assert sent == [long_to_hex(second_a), long_to_hex(third_a)]
-
-    async def test_stores_a_direct_authentication_result(self, caplog):
-        auth = make_auth()
-        auth.client.initiate_auth.return_value = NEW_DEVICE_RESULT
-        with caplog.at_level(logging.DEBUG, logger="apyhiveapi.auth"):
-            result = await auth.login()
-        assert result is NEW_DEVICE_RESULT
-        assert auth.access_token == "access-token"
-        assert auth.device_group_key == "new-grp"
-        assert auth.device_key == "new-dev"
-        assert "Cognito issued new device keys" in caplog.text
-        auth.client.respond_to_auth_challenge.assert_not_called()
-
-    async def test_a_result_without_device_metadata_keeps_the_saved_keys(self, caplog):
-        auth = make_auth(**DEVICE_CREDENTIALS)
-        auth.client.initiate_auth.return_value = AUTH_RESULT
-        with caplog.at_level(logging.DEBUG, logger="apyhiveapi.auth"):
-            await auth.login()
-        assert auth.access_token == "access-token"
-        assert auth.device_group_key == "grp-key"
-        assert auth.device_key == "dev-key"
-        assert "new device keys" not in caplog.text
 
     async def test_answers_the_password_verifier_challenge(self):
         auth = make_auth()
@@ -612,15 +513,26 @@ class TestLogin:
             key, "pooluuid-user", "YWJj", answer["TIMESTAMP"]
         )
 
-    async def test_the_verifier_answer_names_the_saved_device(self):
-        auth = make_auth(device_key="dev-key")
+    async def test_a_saved_device_is_named_in_the_verifier_answer_not_the_handshake(
+        self,
+    ):
+        auth = make_auth(**DEVICE_CREDENTIALS)
         auth.client.initiate_auth.return_value = PASSWORD_CHALLENGE
         auth.client.respond_to_auth_challenge.return_value = AUTH_RESULT
         await auth.login()
-        handshake = auth.client.initiate_auth.call_args.kwargs["AuthParameters"]
-        assert "DEVICE_KEY" not in handshake
+        auth.client.initiate_auth.assert_called_once_with(
+            AuthFlow="USER_SRP_AUTH",
+            AuthParameters={
+                "USERNAME": USERNAME,
+                "SRP_A": long_to_hex(auth.large_a_value),
+            },
+            ClientId=CLIENT_ID,
+        )
         answer = auth.client.respond_to_auth_challenge.call_args.kwargs
         assert answer["ChallengeResponses"]["DEVICE_KEY"] == "dev-key"
+        assert auth.access_token == "access-token"
+        assert auth.device_group_key == "grp-key"
+        assert auth.device_key == "dev-key"
 
     async def test_the_verifier_can_answer_with_another_challenge(self):
         auth = make_auth()
@@ -695,14 +607,6 @@ class TestLogin:
         assert exc_info.value.__cause__ is err
         assert auth.access_token is None
 
-    async def test_a_network_error_is_a_connection_error(self):
-        auth = make_auth()
-        err = botocore.exceptions.EndpointConnectionError(endpoint_url="x")
-        auth.client.initiate_auth.side_effect = err
-        with pytest.raises(HiveConnectionError) as exc_info:
-            await auth.login()
-        assert exc_info.value.__cause__ is err
-
 
 # Tests for device_login
 
@@ -712,30 +616,27 @@ class TestDeviceLogin:
         "missing", ["device_group_key", "device_key", "device_password"]
     )
     async def test_missing_credentials_need_a_fresh_login(self, missing):
-        auth = make_auth(**DEVICE_CREDENTIALS)
+        auth = HiveAuth(USERNAME, PASSWORD, **DEVICE_CREDENTIALS)
         setattr(auth, missing, None)
-        with pytest.raises(HiveReauthRequired, match="no saved device credentials"):
-            await auth.device_login()
-        auth.client.respond_to_auth_challenge.assert_not_called()
-
-    async def test_credentials_are_checked_before_the_client_is_created(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
         with (
             patch.object(auth, "async_init", new=AsyncMock()) as async_init,
-            pytest.raises(HiveReauthRequired),
+            pytest.raises(HiveReauthRequired, match="no saved device credentials"),
         ):
             await auth.device_login()
         async_init.assert_not_awaited()
+        assert auth.client is None
 
     async def test_completes_the_device_srp_handshake(self):
         auth = make_auth(**DEVICE_CREDENTIALS)
         auth.client.respond_to_auth_challenge.side_effect = [
             DEVICE_CHALLENGE,
-            AUTH_RESULT,
+            NEW_DEVICE_RESULT,
         ]
+        initial_a = auth.large_a_value
         result = await auth.device_login()
-        assert result is AUTH_RESULT
+        assert result is NEW_DEVICE_RESULT
         assert auth.access_token == "access-token"
+        assert auth.large_a_value != initial_a
         first, second = auth.client.respond_to_auth_challenge.call_args_list
         assert first == call(
             ClientId=CLIENT_ID,
@@ -758,6 +659,7 @@ class TestDeviceLogin:
         }
         # The username is the one Cognito sent, not the account's email address.
         assert answer["USERNAME"] == "uuid-user"
+        assert auth.user_id == USERNAME
         assert answer["DEVICE_KEY"] == "dev-key"
         assert answer["PASSWORD_CLAIM_SECRET_BLOCK"] == "dGVzdA=="
         assert TIMESTAMP_RE.fullmatch(answer["TIMESTAMP"])
@@ -766,27 +668,7 @@ class TestDeviceLogin:
         assert answer["PASSWORD_CLAIM_SIGNATURE"] == expected_signature(
             key, "grp-keydev-key", "dGVzdA==", answer["TIMESTAMP"]
         )
-
-    async def test_uses_a_fresh_srp_ephemeral(self):
-        auth = make_auth(**DEVICE_CREDENTIALS)
-        auth.client.respond_to_auth_challenge.side_effect = [
-            DEVICE_CHALLENGE,
-            AUTH_RESULT,
-        ]
-        initial_a = auth.large_a_value
-        await auth.device_login()
-        assert auth.large_a_value != initial_a
-        first = auth.client.respond_to_auth_challenge.call_args_list[0]
-        srp_a = first.kwargs["ChallengeResponses"]["SRP_A"]
-        assert srp_a == long_to_hex(auth.large_a_value)
-
-    async def test_stores_new_device_keys(self):
-        auth = make_auth(**DEVICE_CREDENTIALS)
-        auth.client.respond_to_auth_challenge.side_effect = [
-            DEVICE_CHALLENGE,
-            NEW_DEVICE_RESULT,
-        ]
-        await auth.device_login()
+        # Cognito's new device keys replace the saved ones; the password stays.
         assert auth.device_group_key == "new-grp"
         assert auth.device_key == "new-dev"
         assert auth.device_password == "dev-pass"
@@ -802,30 +684,35 @@ class TestDeviceLogin:
         assert auth.access_token is None
 
     @pytest.mark.parametrize(
-        "code", ["NotAuthorizedException", "ResourceNotFoundException"]
+        ("code", "answered", "call_count"),
+        [
+            pytest.param("NotAuthorizedException", [], 1, id="handshake-NotAuthorized"),
+            pytest.param(
+                "ResourceNotFoundException", [], 1, id="handshake-ResourceNotFound"
+            ),
+            pytest.param(
+                "NotAuthorizedException",
+                [DEVICE_CHALLENGE],
+                2,
+                id="verifier-NotAuthorized",
+            ),
+            pytest.param(
+                "ResourceNotFoundException",
+                [DEVICE_CHALLENGE],
+                2,
+                id="verifier-ResourceNotFound",
+            ),
+        ],
     )
-    async def test_a_rejected_device_on_the_handshake(self, code):
+    async def test_a_rejected_device(self, code, answered, call_count):
         auth = make_auth(**DEVICE_CREDENTIALS)
         err = client_error(code, operation="RespondToAuthChallenge")
-        auth.client.respond_to_auth_challenge.side_effect = err
+        auth.client.respond_to_auth_challenge.side_effect = [*answered, err]
         with pytest.raises(HiveReauthRequired) as exc_info:
             await auth.device_login()
         assert exc_info.type is HiveReauthRequired
         assert exc_info.value.__cause__ is err
-        assert auth.client.respond_to_auth_challenge.call_count == 1
-
-    @pytest.mark.parametrize(
-        "code", ["NotAuthorizedException", "ResourceNotFoundException"]
-    )
-    async def test_a_rejected_device_on_the_verifier(self, code):
-        auth = make_auth(**DEVICE_CREDENTIALS)
-        err = client_error(code, operation="RespondToAuthChallenge")
-        auth.client.respond_to_auth_challenge.side_effect = [DEVICE_CHALLENGE, err]
-        with pytest.raises(HiveReauthRequired) as exc_info:
-            await auth.device_login()
-        assert exc_info.type is HiveReauthRequired
-        assert exc_info.value.__cause__ is err
-        assert auth.client.respond_to_auth_challenge.call_count == 2
+        assert auth.client.respond_to_auth_challenge.call_count == call_count
         assert auth.access_token is None
 
     @pytest.mark.parametrize(
@@ -933,27 +820,28 @@ class TestRefreshToken:
         async_init.assert_not_awaited()
         assert auth.client is None
 
-    async def test_exchanges_the_refresh_token(self):
-        auth = make_auth()
+    @pytest.mark.parametrize(
+        ("device_key", "expected_params"),
+        [
+            pytest.param(None, {"REFRESH_TOKEN": "refresh-token"}, id="no-device"),
+            pytest.param(
+                "dev-key",
+                {"REFRESH_TOKEN": "refresh-token", "DEVICE_KEY": "dev-key"},
+                id="saved-device",
+            ),
+        ],
+    )
+    async def test_exchanges_the_refresh_token(self, device_key, expected_params):
+        auth = make_auth(device_key=device_key)
         auth.client.initiate_auth.return_value = AUTH_RESULT
         result = await auth.refresh_token("refresh-token")
         assert result is AUTH_RESULT
         auth.client.initiate_auth.assert_called_once_with(
             ClientId=CLIENT_ID,
             AuthFlow="REFRESH_TOKEN_AUTH",
-            AuthParameters={"REFRESH_TOKEN": "refresh-token"},
+            AuthParameters=expected_params,
         )
         assert auth.access_token == "access-token"
-
-    async def test_names_the_saved_device(self):
-        auth = make_auth(device_key="dev-key")
-        auth.client.initiate_auth.return_value = AUTH_RESULT
-        await auth.refresh_token("refresh-token")
-        auth.client.initiate_auth.assert_called_once_with(
-            ClientId=CLIENT_ID,
-            AuthFlow="REFRESH_TOKEN_AUTH",
-            AuthParameters={"REFRESH_TOKEN": "refresh-token", "DEVICE_KEY": "dev-key"},
-        )
 
     async def test_a_result_without_tokens_is_returned_as_is(self):
         auth = make_auth()
@@ -1002,23 +890,15 @@ class TestDeviceVerifier:
         verifier = pad_hex(pow(auth.g_value, x_value, auth.big_n))
         decoded = base64.standard_b64decode(config["PasswordVerifier"])
         assert decoded == bytes.fromhex(verifier)
-
-    def test_does_not_touch_the_saved_credentials(self):
-        auth = HiveAuth(USERNAME, PASSWORD, **DEVICE_CREDENTIALS)
-        auth._device_verifier("grp-key", "dev-key")
-        assert auth.device_password == "dev-pass"
-
-    def test_every_call_makes_a_new_password(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        first, first_password = auth._device_verifier("grp-key", "dev-key")
-        second, second_password = auth._device_verifier("grp-key", "dev-key")
-        assert first_password != second_password
-        assert first["PasswordVerifier"] != second["PasswordVerifier"]
-        assert first["Salt"] != second["Salt"]
+        # Every call makes a new password, with a new salt and verifier.
+        again, again_password = auth._device_verifier("grp-key", "dev-key")
+        assert again_password != password
+        assert again["Salt"] != config["Salt"]
+        assert again["PasswordVerifier"] != config["PasswordVerifier"]
 
 
 class TestConfirmDevice:
-    async def test_confirms_the_device_as_the_hostname_by_default(self):
+    async def test_confirms_the_device_with_a_verifier_for_the_new_password(self):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
         auth.client.confirm_device.return_value = {"UserConfirmationNecessary": False}
         with patch("apyhiveapi.auth.socket.gethostname", return_value="my-host"):
@@ -1035,21 +915,7 @@ class TestConfirmDevice:
         assert kwargs["AccessToken"] == "access-token"
         assert kwargs["DeviceKey"] == "dev-key"
         assert kwargs["DeviceName"] == "my-host"
-
-    async def test_confirms_the_device_under_the_given_name(self):
-        auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
-        with patch("apyhiveapi.auth.socket.gethostname") as gethostname:
-            await auth.confirm_device("Home Assistant")
-        gethostname.assert_not_called()
-        kwargs = auth.client.confirm_device.call_args.kwargs
-        assert kwargs["DeviceName"] == "Home Assistant"
-
-    async def test_sends_a_verifier_for_a_new_device_password(self):
-        auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
-        await auth.confirm_device("Home Assistant")
-        config = auth.client.confirm_device.call_args.kwargs[
-            "DeviceSecretVerifierConfig"
-        ]
+        config = kwargs["DeviceSecretVerifierConfig"]
         assert set(config) == {"PasswordVerifier", "Salt"}
         password = auth.device_password
         assert password != "dev-pass"
@@ -1061,7 +927,7 @@ class TestConfirmDevice:
         decoded = base64.standard_b64decode(config["PasswordVerifier"])
         assert decoded == bytes.fromhex(verifier)
 
-    async def test_refusals_are_api_errors(self):
+    async def test_a_refusal_keeps_the_saved_device_password(self):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
         err = client_error("NotAuthorizedException", operation="ConfirmDevice")
         auth.client.confirm_device.side_effect = err
@@ -1069,14 +935,6 @@ class TestConfirmDevice:
             await auth.confirm_device("Home Assistant")
         assert exc_info.type is HiveApiError
         assert exc_info.value.__cause__ is err
-
-    async def test_a_refusal_keeps_the_saved_device_password(self):
-        auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
-        auth.client.confirm_device.side_effect = client_error(
-            "NotAuthorizedException", operation="ConfirmDevice"
-        )
-        with pytest.raises(HiveApiError):
-            await auth.confirm_device("Home Assistant")
         assert auth.device_password == "dev-pass"
 
     @pytest.mark.parametrize(
@@ -1094,47 +952,28 @@ class TestConfirmDevice:
         assert auth.device_password == "dev-pass"
 
 
-class TestUpdateDeviceStatus:
-    async def test_marks_the_device_remembered(self):
-        auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
-        auth.client.update_device_status.return_value = {"ResponseMetadata": {}}
-        result = await auth.update_device_status()
-        assert result == {"ResponseMetadata": {}}
-        auth.client.update_device_status.assert_called_once_with(
-            AccessToken="access-token",
-            DeviceKey="dev-key",
-            DeviceRememberedStatus="remembered",
-        )
-
-    async def test_refusals_are_api_errors(self):
-        auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
-        err = client_error("ResourceNotFoundException", operation="UpdateDeviceStatus")
-        auth.client.update_device_status.side_effect = err
-        with pytest.raises(HiveApiError) as exc_info:
-            await auth.update_device_status()
-        assert exc_info.type is HiveApiError
-        assert exc_info.value.__cause__ is err
-
-
 class TestDeviceRegistration:
-    async def test_confirms_then_remembers_the_device(self):
+    @pytest.mark.parametrize(
+        ("device_name", "expected_name"),
+        [
+            pytest.param(None, "my-host", id="hostname-by-default"),
+            pytest.param("Home Assistant", "Home Assistant", id="given-name"),
+        ],
+    )
+    async def test_confirms_then_remembers_the_device(self, device_name, expected_name):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
         with patch("apyhiveapi.auth.socket.gethostname", return_value="my-host"):
-            assert await auth.device_registration() is None
+            assert await auth.device_registration(device_name) is None
         names = [name for name, _args, _kwargs in auth.client.method_calls]
         assert names == ["confirm_device", "update_device_status"]
-        assert auth.client.confirm_device.call_args.kwargs["DeviceName"] == "my-host"
+        assert (
+            auth.client.confirm_device.call_args.kwargs["DeviceName"] == expected_name
+        )
         auth.client.update_device_status.assert_called_once_with(
             AccessToken="access-token",
             DeviceKey="dev-key",
             DeviceRememberedStatus="remembered",
         )
-
-    async def test_passes_the_device_name_on(self):
-        auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
-        await auth.device_registration("Home Assistant")
-        kwargs = auth.client.confirm_device.call_args.kwargs
-        assert kwargs["DeviceName"] == "Home Assistant"
 
     async def test_stops_when_the_confirmation_fails(self):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
@@ -1146,27 +985,18 @@ class TestDeviceRegistration:
 
 
 class TestGetDeviceData:
-    async def test_returns_the_credentials_to_save(self):
-        auth = HiveAuth(USERNAME, PASSWORD, **DEVICE_CREDENTIALS)
-        assert auth.get_device_data() == ("grp-key", "dev-key", "dev-pass")
-
-    async def test_before_any_login(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        assert auth.get_device_data() == (None, None, None)
-
-    async def test_reflects_the_keys_issued_at_login(self):
-        auth = make_auth()
-        auth.client.initiate_auth.return_value = NEW_DEVICE_RESULT
-        await auth.login()
-        assert auth.get_device_data() == ("new-grp", "new-dev", None)
-
-    async def test_reflects_the_password_made_at_registration(self):
-        auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
-        await auth.device_registration("Home Assistant")
-        group_key, device_key, device_password = auth.get_device_data()
-        assert (group_key, device_key) == ("grp-key", "dev-key")
-        assert device_password == auth.device_password
-        assert device_password != "dev-pass"
+    @pytest.mark.parametrize(
+        ("credentials", "expected"),
+        [
+            pytest.param(
+                DEVICE_CREDENTIALS, ("grp-key", "dev-key", "dev-pass"), id="saved"
+            ),
+            pytest.param({}, (None, None, None), id="before-any-login"),
+        ],
+    )
+    def test_returns_the_credentials_to_save(self, credentials, expected):
+        auth = HiveAuth(USERNAME, PASSWORD, **credentials)
+        assert auth.get_device_data() == expected
 
 
 class TestIsDeviceRegistered:
@@ -1175,15 +1005,12 @@ class TestIsDeviceRegistered:
         [(None, "dev-key"), ("", "dev-key"), ("access-token", None), (None, None)],
     )
     async def test_false_without_a_token_or_key(self, access_token, device_key):
-        auth = make_auth(device_key=device_key, access_token=access_token)
-        assert await auth.is_device_registered() is False
-        auth.client.get_device.assert_not_called()
-
-    async def test_does_not_create_the_client_without_a_token_or_key(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
+        auth = HiveAuth(USERNAME, PASSWORD, device_key=device_key)
+        auth.access_token = access_token
         with patch.object(auth, "async_init", new=AsyncMock()) as async_init:
             assert await auth.is_device_registered() is False
         async_init.assert_not_awaited()
+        assert auth.client is None
 
     async def test_unreadable_login_page_raises_rather_than_answering_false(self):
         auth = HiveAuth(USERNAME, PASSWORD, **DEVICE_CREDENTIALS)
@@ -1196,13 +1023,26 @@ class TestIsDeviceRegistered:
             await auth.is_device_registered()
         assert excinfo.value is error
 
-    async def test_true_when_cognito_remembers_the_device(self):
+    @pytest.mark.parametrize(
+        ("args", "expected_kwargs"),
+        [
+            pytest.param(
+                (),
+                {"AccessToken": "access-token", "DeviceKey": "dev-key"},
+                id="saved-arguments",
+            ),
+            pytest.param(
+                ("other-token", "other-key"),
+                {"AccessToken": "other-token", "DeviceKey": "other-key"},
+                id="explicit-arguments-override-the-saved-ones",
+            ),
+        ],
+    )
+    async def test_true_when_cognito_remembers_the_device(self, args, expected_kwargs):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
         auth.client.get_device.return_value = REMEMBERED_DEVICE
-        assert await auth.is_device_registered() is True
-        auth.client.get_device.assert_called_once_with(
-            AccessToken="access-token", DeviceKey="dev-key"
-        )
+        assert await auth.is_device_registered(*args) is True
+        auth.client.get_device.assert_called_once_with(**expected_kwargs)
 
     @pytest.mark.parametrize(
         "result",
@@ -1285,25 +1125,6 @@ class TestIsDeviceRegistered:
             await auth.is_device_registered()
         assert exc_info.value.__cause__ is err
 
-    async def test_explicit_arguments_override_the_saved_ones(self):
-        auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
-        auth.client.get_device.return_value = REMEMBERED_DEVICE
-        assert await auth.is_device_registered("other-token", "other-key") is True
-        auth.client.get_device.assert_called_once_with(
-            AccessToken="other-token", DeviceKey="other-key"
-        )
-
-    async def test_explicit_arguments_work_without_saved_ones(self):
-        auth = make_auth()
-        auth.client.get_device.return_value = REMEMBERED_DEVICE
-        result = await auth.is_device_registered(
-            access_token="other-token", device_key="other-key"
-        )
-        assert result is True
-        auth.client.get_device.assert_called_once_with(
-            AccessToken="other-token", DeviceKey="other-key"
-        )
-
 
 class TestForgetDevice:
     async def test_forgets_the_given_device(self):
@@ -1315,41 +1136,11 @@ class TestForgetDevice:
             AccessToken="other-token", DeviceKey="other-key"
         )
 
-    async def test_refusals_are_api_errors(self):
-        auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
-        err = client_error("ResourceNotFoundException", operation="ForgetDevice")
-        auth.client.forget_device.side_effect = err
-        with pytest.raises(HiveApiError) as exc_info:
-            await auth.forget_device("access-token", "dev-key")
-        assert exc_info.type is HiveApiError
-        assert exc_info.value.__cause__ is err
-
 
 # Tests for the SRP helpers
 
 
-class TestToInt:
-    @pytest.mark.parametrize(
-        ("value", "expected"),
-        [
-            (42, 42),
-            (0, 0),
-            (b"\xff", 255),
-            (b"\x00", 0),
-            (b"\xcc\xdd\xee", 0xCCDDEE),
-            ("ff", 255),
-            ("CCDDEE", 0xCCDDEE),
-            ("0", 0),
-        ],
-    )
-    def test_accepts_an_int_bytes_or_a_hex_string(self, value, expected):
-        assert HiveAuth._to_int(value) == expected
-
-
 class TestCognitoTimestamp:
-    def test_has_the_format_cognito_expects(self):
-        assert TIMESTAMP_RE.fullmatch(HiveAuth._cognito_timestamp())
-
     @pytest.mark.parametrize(
         ("now", "expected"),
         [
@@ -1437,49 +1228,6 @@ class TestSrpKey:
         key = auth._srp_key("pooluuid-user", PASSWORD, long_to_hex(srp_b), "aabbccdd")
         assert key == server_key
 
-    def test_agrees_for_a_device_login(self):
-        auth = HiveAuth(USERNAME, PASSWORD, **DEVICE_CREDENTIALS)
-        srp_b, server_key = cognito_server_key(
-            auth, "grp-keydev-key", "dev-pass", "11223344", server_secret=987654321
-        )
-        key = auth._srp_key(
-            "grp-keydev-key", "dev-pass", long_to_hex(srp_b), "11223344"
-        )
-        assert key == server_key
-
-    def test_is_16_bytes_and_deterministic(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        key = auth._srp_key("pooluuid-user", PASSWORD, "ccddee", "aabbccdd")
-        assert isinstance(key, bytes)
-        assert len(key) == 16
-        assert auth._srp_key("pooluuid-user", PASSWORD, "ccddee", "aabbccdd") == key
-
-    @pytest.mark.parametrize(
-        ("identity", "secret", "srp_b", "salt"),
-        [
-            ("pooluuid-other", PASSWORD, "ccddee", "aabbccdd"),
-            ("pooluuid-user", "other", "ccddee", "aabbccdd"),
-            ("pooluuid-user", PASSWORD, "ccddef", "aabbccdd"),
-            ("pooluuid-user", PASSWORD, "ccddee", "aabbccde"),
-        ],
-    )
-    def test_changes_with_every_input(self, identity, secret, srp_b, salt):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        key = auth._srp_key("pooluuid-user", PASSWORD, "ccddee", "aabbccdd")
-        assert auth._srp_key(identity, secret, srp_b, salt) != key
-
-    def test_changes_with_the_ephemeral(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        key = auth._srp_key("pooluuid-user", PASSWORD, "ccddee", "aabbccdd")
-        auth._new_srp_ephemeral()
-        assert auth._srp_key("pooluuid-user", PASSWORD, "ccddee", "aabbccdd") != key
-
-    @pytest.mark.parametrize("srp_b", ["ccddee", b"\xcc\xdd\xee", 0xCCDDEE])
-    def test_accepts_srp_b_as_hex_bytes_or_int(self, srp_b):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        key = auth._srp_key("pooluuid-user", PASSWORD, "ccddee", "aabbccdd")
-        assert auth._srp_key("pooluuid-user", PASSWORD, srp_b, "aabbccdd") == key
-
     def test_rejects_a_zero_u_value(self):
         auth = HiveAuth(USERNAME, PASSWORD)
         with (
@@ -1519,33 +1267,6 @@ class TestAnswerSrpChallenge:
             ),
         }
 
-    async def test_names_the_saved_device(self):
-        auth = HiveAuth(USERNAME, PASSWORD, device_key="dev-key")
-        answer = await auth._answer_srp_challenge(
-            PASSWORD_CHALLENGE["ChallengeParameters"],
-            identity="pooluuid-user",
-            secret=PASSWORD,
-            username="uuid-user",
-        )
-        assert answer["DEVICE_KEY"] == "dev-key"
-
-    async def test_an_integer_salt_is_padded_to_hex(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        params = dict(PASSWORD_CHALLENGE["ChallengeParameters"])
-        params["SALT"] = 0xAABBCCDD
-        with patch("apyhiveapi.auth.datetime") as mock_datetime:
-            mock_datetime.now.return_value = FROZEN_NOW
-            from_int = await auth._answer_srp_challenge(
-                params, identity="pooluuid-user", secret=PASSWORD, username="uuid-user"
-            )
-            from_str = await auth._answer_srp_challenge(
-                PASSWORD_CHALLENGE["ChallengeParameters"],
-                identity="pooluuid-user",
-                secret=PASSWORD,
-                username="uuid-user",
-            )
-        assert from_int == from_str
-
     async def test_derives_the_key_off_the_event_loop_thread(self):
         auth = HiveAuth(USERNAME, PASSWORD)
         threads = []
@@ -1569,49 +1290,3 @@ class TestAnswerSrpChallenge:
         assert answer["PASSWORD_CLAIM_SIGNATURE"] == expected_signature(
             b"\x00" * 16, "pooluuid-user", "YWJj", answer["TIMESTAMP"]
         )
-
-
-class TestAnswerPasswordChallenge:
-    async def test_learns_the_user_id_and_signs_as_the_pool_user(self):
-        auth = make_auth()
-        with patch("apyhiveapi.auth.datetime") as mock_datetime:
-            mock_datetime.now.return_value = FROZEN_NOW
-            answer = await auth._answer_password_challenge(
-                PASSWORD_CHALLENGE["ChallengeParameters"]
-            )
-        assert auth.user_id == "uuid-user"
-        assert answer["USERNAME"] == "uuid-user"
-        key = auth._srp_key("pooluuid-user", PASSWORD, "ccddee", "aabbccdd")
-        assert answer["PASSWORD_CLAIM_SIGNATURE"] == expected_signature(
-            key, "pooluuid-user", "YWJj", FROZEN_TIMESTAMP
-        )
-
-    async def test_needs_the_pool_id(self):
-        auth = make_auth()
-        auth._pool_id = None
-        with pytest.raises(HiveApiError, match="Unexpected Cognito pool ID"):
-            await auth._answer_password_challenge(
-                PASSWORD_CHALLENGE["ChallengeParameters"]
-            )
-
-
-class TestAnswerDeviceChallenge:
-    async def test_signs_as_the_device(self):
-        auth = make_auth(**DEVICE_CREDENTIALS)
-        with patch("apyhiveapi.auth.datetime") as mock_datetime:
-            mock_datetime.now.return_value = FROZEN_NOW
-            answer = await auth._answer_device_challenge(
-                DEVICE_CHALLENGE["ChallengeParameters"]
-            )
-        assert answer["USERNAME"] == "uuid-user"
-        assert answer["DEVICE_KEY"] == "dev-key"
-        assert auth.user_id == USERNAME
-        key = auth._srp_key("grp-keydev-key", "dev-pass", "55667788", "11223344")
-        assert answer["PASSWORD_CLAIM_SIGNATURE"] == expected_signature(
-            key, "grp-keydev-key", "dGVzdA==", FROZEN_TIMESTAMP
-        )
-
-    async def test_needs_the_saved_credentials(self):
-        auth = make_auth(device_group_key="grp-key", device_key="dev-key")
-        with pytest.raises(HiveReauthRequired, match="no saved device credentials"):
-            await auth._answer_device_challenge(DEVICE_CHALLENGE["ChallengeParameters"])

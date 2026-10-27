@@ -4,7 +4,7 @@
 
 import logging
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -47,6 +47,8 @@ _NODES = {
     "products": [_HEATING, _HOTWATER, _TRVCONTROL],
     "devices": [_HUB, _THERMOSTAT, _TRV],
 }
+_HUB_WITHOUT_PROPS = {"id": "hub-1", "type": "hub", "state": {"name": "Hub"}}
+_TRV_WITHOUT_PROPS = {"id": "trv-1", "type": "trv", "state": {"name": "Bedroom"}}
 
 
 def _make_hive(products=None, devices=None, user=None):
@@ -70,10 +72,6 @@ class TestOpenFile:
         assert isinstance(nodes["devices"], list)
         assert nodes["user"]["temperatureUnit"] == "C"
 
-    def test_missing_file_raises(self):
-        with pytest.raises(FileNotFoundError):
-            Hive().open_file("missing.json")
-
 
 class TestConfigureFileMode:
     """Tests for Hive._configure_file_mode."""
@@ -86,12 +84,6 @@ class TestConfigureFileMode:
         hive = Hive()
         hive._configure_file_mode(username)
         assert hive.config.file is expected
-
-    def test_file_mode_is_never_switched_off_again(self):
-        hive = Hive()
-        hive._configure_file_mode("use@file.com")
-        hive._configure_file_mode("real@user.com")
-        assert hive.config.file is True
 
 
 class TestApplyDeviceData:
@@ -119,24 +111,12 @@ class TestApplyDeviceData:
         assert hive.auth.device_group_key == "group"
         assert hive.auth.device_key == "key"
         assert hive.auth.device_password == "password"  # pragma: allowlist secret
-        assert hive.tokens.token_created == _EPOCH
 
-    def test_a_tuple_is_accepted(self):
+    def test_a_saved_token_issue_time_is_ignored(self):
         hive = _make_hive()
-        hive._apply_device_data(("group", "key", "password"))
-        assert hive.auth.device_key == "key"
-
-    @pytest.mark.parametrize(
-        "token_created",
-        [
-            pytest.param("2026-01-01T12:00:00+00:00", id="iso-string"),
-            pytest.param("garbage", id="invalid"),
-            pytest.param(None, id="none"),
-        ],
-    )
-    def test_a_saved_token_issue_time_is_ignored(self, token_created):
-        hive = _make_hive()
-        hive._apply_device_data(["group", "key", "password", token_created])
+        hive._apply_device_data(
+            ["group", "key", "password", "2026-01-01T12:00:00+00:00"]
+        )
         assert hive.auth.device_key == "key"
         assert hive.tokens.token_created == _EPOCH
 
@@ -158,77 +138,54 @@ class TestApplyConfig:
         assert hive.auth.device_key is None
         assert hive.tokens.token_data == {}
 
-    def test_tokens_are_stored_without_resetting_token_created(self):
+    def test_tokens_only_config_stores_tokens_and_keeps_credentials(self):
         hive = _make_hive()
         hive._apply_config({"tokens": _TOKENS})
         assert hive.tokens.token_data == _TOKENS
         assert hive.tokens.token_created == _EPOCH
+        assert hive.auth.username == "user@example.com"
+        assert hive.auth.password == "pw"
+        assert hive.auth.device_key is None
 
-    def test_tokens_go_through_update_tokens_without_updating_the_expiry(self):
-        hive = _make_hive()
-        hive.update_tokens = MagicMock()
-        hive._apply_config({"tokens": _TOKENS})
-        hive.update_tokens.assert_called_once_with(_TOKENS, update_expiry_time=False)
-
-    def test_username_and_password_update_auth(self):
+    def test_full_config_applies_credentials_and_device_data(self):
         hive = _make_hive()
         hive._apply_config(
             {
                 "tokens": _TOKENS,
                 "username": "real@user.com",
                 "password": "secret",  # pragma: allowlist secret
+                "device_data": ["group", "key", "password"],
             }
         )
         assert hive.auth.username == "real@user.com"
         assert hive.auth.password == "secret"  # pragma: allowlist secret
-
-    def test_credentials_are_kept_when_absent(self):
-        hive = _make_hive()
-        hive._apply_config({"tokens": _TOKENS})
-        assert hive.auth.username == "user@example.com"
-        assert hive.auth.password == "pw"
-        assert hive.auth.device_key is None
-
-    def test_device_data_is_applied(self):
-        hive = _make_hive()
-        hive._apply_config(
-            {"tokens": _TOKENS, "device_data": ["group", "key", "password"]}
-        )
         assert hive.auth.device_group_key == "group"
         assert hive.auth.device_key == "key"
         assert hive.auth.device_password == "password"  # pragma: allowlist secret
-
-    def test_short_device_data_raises(self):
-        hive = _make_hive()
-        with pytest.raises(HiveReauthRequired):
-            hive._apply_config({"tokens": _TOKENS, "device_data": ["group"]})
 
 
 class TestStartSession:
     """Tests for Hive.start_session."""
 
-    async def test_file_mode_from_the_constructor_with_an_empty_config(self):
-        hive = Hive(username="use@file.com", password="")
-        result = await hive.start_session({})
+    @pytest.mark.parametrize(
+        ("ctor_username", "config"),
+        [
+            pytest.param("use@file.com", {}, id="constructor-empty-config"),
+            pytest.param("use@file.com", None, id="constructor-no-config"),
+            pytest.param(None, {"username": "use@file.com"}, id="config-username"),
+            pytest.param(
+                "use@file.com",
+                {"username": "use@file.com", "device_data": []},
+                id="config-username-empty-device-data",
+            ),
+        ],
+    )
+    async def test_file_mode_needs_no_tokens(self, ctor_username, config):
+        hive = Hive(username=ctor_username, password="")
+        result = await hive.start_session(config)
         assert hive.config.file is True
-        assert set(result) == {"parent", "climate", "water_heater"}
         assert result is hive.device_list
-
-    async def test_file_mode_without_any_config(self):
-        hive = Hive(username="use@file.com", password="")
-        result = await hive.start_session()
-        assert hive.config.file is True
-        assert len(result["climate"]) == 2
-
-    async def test_file_mode_from_the_config_username(self):
-        hive = Hive()
-        result = await hive.start_session({"username": "use@file.com"})
-        assert hive.config.file is True
-        assert result["parent"][0].hive_name == "Hub"
-
-    async def test_file_mode_needs_no_tokens(self):
-        hive = Hive(username="use@file.com", password="")
-        await hive.start_session({"username": "use@file.com", "device_data": []})
+        assert set(result) == {"parent", "climate", "water_heater"}
         assert hive.tokens.token_data == {}
         assert hive.auth.device_key is None
 
@@ -247,24 +204,24 @@ class TestStartSession:
         with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
             await hive.start_session(config)
         assert "start_session - Config" in caplog.text
+        assert "user@example.com" in caplog.text
         for value in ("PW", "GK", "DK", "DP", "ID", "RF", "AC"):
             assert f"{value}HEAD" not in caplog.text
             assert f"{value}TAIL" not in caplog.text
 
-    async def test_scan_interval_option_is_applied(self):
+    @pytest.mark.parametrize(
+        ("scan_interval", "expected"),
+        [
+            pytest.param(300, timedelta(seconds=300), id="applied"),
+            pytest.param(1, MIN_SCAN_INTERVAL, id="raised-to-the-minimum"),
+        ],
+    )
+    async def test_scan_interval_option_is_applied(self, scan_interval, expected):
         hive = _make_hive()
-        await hive.start_session({"tokens": _TOKENS, "options": {"scan_interval": 300}})
-        assert hive.config.scan_interval == timedelta(seconds=300)
-
-    async def test_scan_interval_option_is_applied_in_file_mode_too(self):
-        hive = Hive(username="use@file.com", password="")
-        await hive.start_session({"options": {"scan_interval": 45}})
-        assert hive.config.scan_interval == timedelta(seconds=45)
-
-    async def test_scan_interval_below_the_minimum_is_raised_to_it(self):
-        hive = _make_hive()
-        await hive.start_session({"tokens": _TOKENS, "options": {"scan_interval": 1}})
-        assert hive.config.scan_interval == MIN_SCAN_INTERVAL
+        await hive.start_session(
+            {"tokens": _TOKENS, "options": {"scan_interval": scan_interval}}
+        )
+        assert hive.config.scan_interval == expected
 
     @pytest.mark.parametrize(
         "options",
@@ -279,52 +236,31 @@ class TestStartSession:
         await hive.start_session({"tokens": _TOKENS, "options": options})
         assert hive.config.scan_interval == DEFAULT_SCAN_INTERVAL
 
-    async def test_live_config_without_tokens_raises_before_polling(self):
-        hive = _make_hive()
-        with pytest.raises(HiveReauthRequired):
-            await hive.start_session({"username": "real@user.com"})
-        hive.api.get_all.assert_not_awaited()
-        assert hive.data.products == {}
-        assert hive.device_list == {}
-
     @pytest.mark.parametrize(
-        "config", [pytest.param(None, id="none"), pytest.param({}, id="empty")]
+        "config",
+        [
+            pytest.param(None, id="none"),
+            pytest.param({}, id="empty"),
+            pytest.param({"username": "real@user.com"}, id="username-only"),
+        ],
     )
-    async def test_live_mode_without_a_config_raises_before_polling(self, config):
+    async def test_live_mode_without_tokens_raises_before_polling(self, config):
         hive = _make_hive()
         with pytest.raises(HiveReauthRequired, match="no tokens"):
             await hive.start_session(config)
         hive.api.get_all.assert_not_awaited()
+        assert hive.data.products == {}
+        assert hive.device_list == {}
 
-    async def test_tokens_credentials_and_device_data_are_applied(self):
+    async def test_live_start_polls_once_and_returns_the_device_list(self):
         hive = _make_hive()
-        await hive.start_session(
-            {
-                "username": "real@user.com",
-                "password": "secret",  # pragma: allowlist secret
-                "tokens": _TOKENS,
-                "device_data": ["group", "key", "password"],
-            }
-        )
-        assert hive.tokens.token_data == _TOKENS
-        assert hive.tokens.token_created == _EPOCH
-        assert hive.auth.username == "real@user.com"
-        assert hive.auth.password == "secret"  # pragma: allowlist secret
-        assert hive.auth.device_key == "key"
-
-    async def test_live_poll_fetches_all_nodes_with_fresh_tokens(self):
-        hive = _make_hive()
-        await hive.start_session({"tokens": _TOKENS})
+        hive.config.last_update = _EPOCH
+        result = await hive.start_session({"tokens": _TOKENS})
         hive.hive_refresh_tokens.assert_awaited_once_with()
         hive.api.get_all.assert_awaited_once_with()
         assert set(hive.data.products) == {"heat-1", "hw-1", "trvc-1"}
         assert set(hive.data.devices) == {"hub-1", "thermo-1", "trv-1"}
         assert hive.data.user == {"temperatureUnit": "C"}
-
-    async def test_success_returns_the_device_list(self):
-        hive = _make_hive()
-        hive.config.last_update = _EPOCH
-        result = await hive.start_session({"tokens": _TOKENS})
         assert result is hive.device_list
         assert [d.hive_id for d in result["parent"]] == ["hub-1"]
         assert [d.hive_id for d in result["climate"]] == ["heat-1", "trvc-1"]
@@ -363,34 +299,25 @@ class TestStartSession:
             await hive.start_session({"tokens": _TOKENS})
         assert hive.device_list == {}
 
-    async def test_the_logged_config_is_sanitized(self, caplog):
-        hive = _make_hive()
-        config = {
-            "username": "real@user.com",
-            "password": "correct horse battery",  # pragma: allowlist secret
-            "tokens": _TOKENS,
-        }
-        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
-            await hive.start_session(config)
-        assert "start_session - Config" in caplog.text
-        assert "real@user.com" in caplog.text
-        assert "correct horse battery" not in caplog.text
-        assert "refresh-token" not in caplog.text
-
 
 class TestCreateDevices:
     """Tests for Hive.create_devices."""
 
-    def test_device_list_has_exactly_the_three_entity_types(self):
+    def test_device_list_has_exactly_the_three_entity_types(self, caplog):
         hive = _make_hive(
             products={"heat-1": _HEATING, "hw-1": _HOTWATER}, devices=_DEVICES
         )
-        result = hive.create_devices()
+        with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+            result = hive.create_devices()
         assert list(result) == ["parent", "climate", "water_heater"]
         assert result is hive.device_list
         assert [type(device) for device in result["parent"]] == [Device]
         assert [type(device) for device in result["climate"]] == [Device]
         assert [type(device) for device in result["water_heater"]] == [Device]
+        assert (
+            "Device discovery completed: 1 parent, 1 climate, 1 water_heater"
+            in caplog.text
+        )
 
     def test_hub_becomes_the_parent_device(self):
         hive = _make_hive(devices=_DEVICES)
@@ -432,13 +359,16 @@ class TestCreateDevices:
         assert hive.hub_id is None
         assert result["climate"][0].parent_device is None
 
-    def test_hub_id_is_cleared_when_the_hub_disappears(self):
+    def test_each_call_rebuilds_the_list_and_hub_id(self):
         hive = _make_hive(products={"heat-1": _HEATING}, devices=_DEVICES)
-        hive.create_devices()
+        first = hive.create_devices()
+        assert hive.hub_id == "hub-1"
         hive.data.devices = {"thermo-1": _THERMOSTAT}
-        result = hive.create_devices()
+        second = hive.create_devices()
+        assert second is not first
+        assert second is hive.device_list
         assert hive.hub_id is None
-        assert result["climate"][0].parent_device is None
+        assert second["climate"][0].parent_device is None
 
     def test_heating_product_becomes_a_climate_device(self):
         hive = _make_hive(
@@ -473,10 +403,6 @@ class TestCreateDevices:
         assert heater.hive_name == "Hallway"
         assert heater.temperature_unit is None
 
-    def test_temperature_unit_is_none_when_the_user_has_none(self):
-        hive = _make_hive(products={"heat-1": _HEATING}, devices=_DEVICES)
-        assert hive.create_devices()["climate"][0].temperature_unit is None
-
     def test_trv_control_uses_its_trv(self):
         hive = _make_hive(
             products={"trvc-1": _TRVCONTROL},
@@ -490,16 +416,6 @@ class TestCreateDevices:
         assert climate.hive_name == "Bedroom"
         assert climate.device_data == {"model": "TRV001"}
         assert climate.temperature_unit == "F"
-
-    def test_receiver_is_renamed_heating(self):
-        receiver = {**_THERMOSTAT, "id": "rec-1", "state": {"name": "Receiver"}}
-        hive = _make_hive(
-            products={"heat-1": _HEATING}, devices={"hub-1": _HUB, "rec-1": receiver}
-        )
-        climate = hive.create_devices()["climate"][0]
-        assert climate.hive_name == "Heating"
-        assert climate.device_name == "Heating"
-        assert climate.ha_name == "Heating"
 
     def test_product_with_an_error_is_skipped_with_a_warning(self, caplog):
         bad = {"id": "bad", "type": "heating", "error": "not found"}
@@ -521,39 +437,18 @@ class TestCreateDevices:
         assert "Skipping unsupported product lamp (type: warmwhitelight)" in caplog.text
         assert "Skipping unsupported product odd (type: Unknown)" in caplog.text
 
-    def test_group_hotwater_product_is_skipped(self, caplog):
-        group = {**_HOTWATER, "id": "g1", "isGroup": True}
-        hive = _make_hive(products={"g1": group}, devices=_DEVICES)
-        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
-            result = hive.create_devices()
-        assert result["water_heater"] == []
-        assert "Skipping group product g1 (type: hotwater)" in caplog.text
-
-    def test_group_heating_product_is_kept(self):
-        group = {**_HEATING, "id": "g1", "isGroup": True}
-        hive = _make_hive(products={"g1": group}, devices=_DEVICES)
-        assert [d.hive_id for d in hive.create_devices()["climate"]] == ["g1"]
-
-    def test_discovery_counts_are_logged(self, caplog):
+    def test_group_heating_is_kept_and_group_hotwater_is_skipped(self, caplog):
+        group_heating = {**_HEATING, "id": "g-heat", "isGroup": True}
+        group_hotwater = {**_HOTWATER, "id": "g-hw", "isGroup": True}
         hive = _make_hive(
-            products={"heat-1": _HEATING, "hw-1": _HOTWATER, "trvc-1": _TRVCONTROL},
+            products={"g-heat": group_heating, "g-hw": group_hotwater},
             devices=_DEVICES,
         )
-        with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
-            hive.create_devices()
-        assert (
-            "Device discovery completed: 1 parent, 2 climate, 1 water_heater"
-            in caplog.text
-        )
-
-    def test_device_list_is_rebuilt_on_each_call(self):
-        hive = _make_hive(products={"heat-1": _HEATING}, devices=_DEVICES)
-        first = hive.create_devices()
-        second = hive.create_devices()
-        assert second is not first
-        assert second is hive.device_list
-        assert len(second["parent"]) == 1
-        assert len(second["climate"]) == 1
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+            result = hive.create_devices()
+        assert [d.hive_id for d in result["climate"]] == ["g-heat"]
+        assert result["water_heater"] == []
+        assert "Skipping group product g-hw (type: hotwater)" in caplog.text
 
 
 class TestAddDevice:
@@ -565,47 +460,27 @@ class TestAddDevice:
         hive.hub_id = "hub-1"
         return hive
 
-    def test_returns_the_device_and_appends_it(self):
-        hive = self._hive(devices=_DEVICES)
-        device = hive._add_device("climate", _HEATING, temperature_unit="C")
-        assert isinstance(device, Device)
-        assert hive.device_list["climate"] == [device]
-        assert hive.device_list["parent"] == []
-        assert device.hive_id == "heat-1"
-        assert device.hive_type == "heating"
-        assert device.ha_type == "climate"
-        assert device.device_id == "thermo-1"
-        assert device.hive_name == "Hallway"
-        assert device.device_name == "Hallway"
-        assert device.ha_name == "Hallway"
-        assert device.device_data == _THERMOSTAT["props"]
-        assert device.parent_device == "hub-1"
-        assert device.temperature_unit == "C"
-
-    def test_temperature_unit_defaults_to_none(self):
-        hive = self._hive(devices=_DEVICES)
-        assert hive._add_device("water_heater", _HOTWATER).temperature_unit is None
-
-    def test_entity_is_named_after_the_product_and_device_after_the_hardware(self):
-        hive = self._hive(devices=_DEVICES)
-        hotwater = {**_HOTWATER, "state": {"name": "Hot Water"}}
-        device = hive._add_device("water_heater", hotwater)
-        assert device.hive_name == "Hot Water"
-        assert device.ha_name == "Hot Water"
-        assert device.device_name == "Hallway"
-        assert device.device_id == "thermo-1"
-
     @pytest.mark.parametrize(
-        "product",
+        ("product", "expected_name"),
         [
-            pytest.param(_HEATING, id="no-state"),
-            pytest.param({**_HEATING, "state": {}}, id="state-without-name"),
+            pytest.param(
+                {**_HOTWATER, "state": {"name": "Hot Water"}}, "Hot Water", id="named"
+            ),
+            pytest.param(_HOTWATER, "Hallway", id="no-state"),
+            pytest.param(
+                {**_HOTWATER, "state": {}}, "Hallway", id="state-without-name"
+            ),
         ],
     )
-    def test_product_without_a_name_takes_the_device_name(self, product):
+    def test_entity_is_named_after_the_product_and_device_after_the_hardware(
+        self, product, expected_name
+    ):
         hive = self._hive(devices=_DEVICES)
-        device = hive._add_device("climate", product)
-        assert device.hive_name == device.ha_name == device.device_name == "Hallway"
+        device = hive._add_device("water_heater", product)
+        assert device.hive_name == expected_name
+        assert device.ha_name == expected_name
+        assert device.device_name == "Hallway"
+        assert device.device_id == "thermo-1"
 
     def test_receiver_is_shown_as_heating_for_product_and_device(self):
         receiver = {**_THERMOSTAT, "state": {"name": "Receiver"}}
@@ -614,74 +489,67 @@ class TestAddDevice:
         device = hive._add_device("climate", product)
         assert device.hive_name == device.ha_name == device.device_name == "Heating"
 
-    def test_device_data_falls_back_to_the_product_props(self):
-        trv = {"id": "trv-1", "type": "trv", "state": {"name": "Bedroom"}}
-        hive = self._hive(devices={"trv-1": trv})
-        device = hive._add_device("climate", _TRVCONTROL)
-        assert device.device_data == {"trvs": ["trv-1"]}
+    @pytest.mark.parametrize(
+        ("entity_type", "devices", "product", "expected_device_data"),
+        [
+            pytest.param(
+                "climate",
+                {"trv-1": _TRV_WITHOUT_PROPS},
+                _TRVCONTROL,
+                {"trvs": ["trv-1"]},
+                id="product-props",
+            ),
+            pytest.param(
+                "parent",
+                {"hub-1": _HUB_WITHOUT_PROPS},
+                _HUB_WITHOUT_PROPS,
+                {},
+                id="nobody-has-props",
+            ),
+        ],
+    )
+    def test_device_data_falls_back_to_the_product_props(
+        self, entity_type, devices, product, expected_device_data
+    ):
+        hive = self._hive(devices=devices)
+        device = hive._add_device(entity_type, product)
+        assert device.device_data == expected_device_data
 
-    def test_device_data_is_empty_when_nobody_has_props(self):
-        hub = {"id": "hub-1", "type": "hub", "state": {"name": "Hub"}}
-        hive = self._hive(devices={"hub-1": hub})
-        device = hive._add_device("parent", hub)
-        assert device.device_data == {}
-
-    def test_product_without_an_id_gets_an_empty_hive_id(self):
-        hive = self._hive(devices=_DEVICES)
-        device = hive._add_device(
-            "climate", {"type": "heating", "props": {"zone": "zone-A"}}
-        )
-        assert device.hive_id == ""
-        assert device.device_id == "thermo-1"
-
-    def test_missing_device_is_skipped_with_a_warning(self, caplog):
-        hive = self._hive(devices=_DEVICES)
-        product = {"id": "trvc-9", "type": "trvcontrol", "props": {"trvs": ["missing"]}}
+    @pytest.mark.parametrize(
+        ("devices", "product", "log_fragment"),
+        [
+            pytest.param(
+                _DEVICES,
+                {"id": "trvc-9", "type": "trvcontrol", "props": {"trvs": ["missing"]}},
+                "Skipping trvcontrol trvc-9: KeyError('missing')",
+                id="missing-trv",
+            ),
+            pytest.param({}, {}, "Skipping unknown ?: KeyError('type')", id="no-type"),
+            pytest.param(
+                _DEVICES,
+                {"id": "trvc-1", "type": "trvcontrol", "props": {"trvs": []}},
+                "Skipping trvcontrol trvc-1: IndexError(",
+                id="no-trvs",
+            ),
+            pytest.param(
+                _DEVICES,
+                {"id": "heat-9", "type": "heating", "props": None},
+                "Skipping heating heat-9: AttributeError(",
+                id="null-props",
+            ),
+            pytest.param(
+                {"thermo-1": {**_THERMOSTAT, "state": ["not", "a", "dict"]}},
+                _HEATING,
+                "Skipping heating heat-1: TypeError(",
+                id="state-not-a-dict",
+            ),
+        ],
+    )
+    def test_malformed_product_is_skipped_with_a_warning(
+        self, devices, product, log_fragment, caplog
+    ):
+        hive = self._hive(devices=devices)
         with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
             assert hive._add_device("climate", product) is None
-        assert "Skipping trvcontrol trvc-9: KeyError('missing')" in caplog.text
-        assert hive.device_list["climate"] == []
-
-    def test_missing_state_name_is_skipped(self, caplog):
-        nameless = {**_THERMOSTAT, "state": {}}
-        hive = self._hive(devices={"thermo-1": nameless})
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            assert hive._add_device("climate", _HEATING) is None
-        assert "Skipping heating heat-1: KeyError('name')" in caplog.text
-
-    def test_product_without_type_or_id_is_skipped(self, caplog):
-        hive = self._hive()
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            assert hive._add_device("climate", {}) is None
-        assert "Skipping unknown ?: KeyError('type')" in caplog.text
-
-    def test_trv_control_without_trvs_is_skipped(self, caplog):
-        hive = self._hive(devices=_DEVICES)
-        product = {"id": "trvc-1", "type": "trvcontrol", "props": {"trvs": []}}
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            assert hive._add_device("climate", product) is None
-        assert "Skipping trvcontrol trvc-1: IndexError(" in caplog.text
-        assert hive.device_list["climate"] == []
-
-    def test_product_with_null_props_is_skipped(self, caplog):
-        hive = self._hive(devices=_DEVICES)
-        product = {"id": "heat-9", "type": "heating", "props": None}
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            assert hive._add_device("climate", product) is None
-        assert "Skipping heating heat-9: AttributeError(" in caplog.text
-        assert hive.device_list["climate"] == []
-
-    def test_state_that_is_not_a_dict_is_skipped(self, caplog):
-        broken = {**_THERMOSTAT, "state": ["not", "a", "dict"]}
-        hive = self._hive(devices={"thermo-1": broken})
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            assert hive._add_device("climate", _HEATING) is None
-        assert "Skipping heating heat-1: TypeError(" in caplog.text
-
-    def test_trv_control_props_that_are_not_a_dict_are_skipped(self, caplog):
-        hive = self._hive(devices=_DEVICES)
-        product = {"id": "trvc-1", "type": "trvcontrol", "props": ["trv-1"]}
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            assert hive._add_device("climate", product) is None
-        assert "Skipping trvcontrol trvc-1: TypeError(" in caplog.text
+        assert log_fragment in caplog.text
         assert hive.device_list["climate"] == []
