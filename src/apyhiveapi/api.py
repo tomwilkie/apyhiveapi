@@ -65,15 +65,17 @@ async def _fetch(
         websession: The aiohttp session to use.
         method: HTTP method.
         url: URL to call.
-        token: API token to send. When one is sent, an HTTP 401 or 403 means
-            Hive rejected it.
+        token: API token to send. When one is sent, an HTTP 401 means Hive
+            rejected it.
         data: Request body.
 
     Raises:
-        HiveReauthRequired: Hive rejected the token (HTTP 401 or 403 on a
-            request that sent one).
+        HiveReauthRequired: Hive rejected the token (HTTP 401 on a request
+            that sent one).
         HiveConnectionError: Network error, timeout or HTTP 5xx.
-        HiveApiError: Any other non-2xx status.
+        HiveApiError: Any other non-2xx status, including HTTP 403: Hive's
+            API gateway answers a bad token with 401, and a 403 means it
+            refused the request itself (a blocked request, an unknown path).
     """
     headers = {**_HEADERS, "Authorization": token} if token else None
     start = time.monotonic()
@@ -83,6 +85,7 @@ async def _fetch(
         ) as resp:
             body = await resp.text()
             status = resp.status
+            error_type = resp.headers.get("x-amzn-ErrorType")
     except TimeoutError as err:
         raise HiveConnectionError(f"Timed out calling {url}") from err
     except (ClientError, OSError) as err:
@@ -96,8 +99,11 @@ async def _fetch(
     )
     if HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
         return body
-    detail = f"HTTP {status} calling {url}: {body[:200]}"
-    if token and status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+    # API Gateway names the kind of refusal, e.g. UnauthorizedException or
+    # ForbiddenException, sometimes followed by ":<documentation URL>".
+    kind = f" ({error_type.split(':')[0]})" if error_type else ""
+    detail = f"HTTP {status}{kind} calling {url}: {body[:200]}"
+    if token and status == HTTPStatus.UNAUTHORIZED:
         raise HiveReauthRequired(f"Hive rejected the token: {detail}")
     if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
         raise HiveConnectionError(f"Hive server error: {detail}")

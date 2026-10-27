@@ -286,7 +286,7 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens`,
   Cognito response or a saved config entry. `hive_refresh_tokens()` refreshes
   at 90% of the token lifetime (`REFRESH_THRESHOLD`) and falls back to
   `login()` when the refresh token is rejected. `_api_call()` wraps every API
-  call: refresh first, and on `HiveReauthRequired` (HTTP 401/403) log in once
+  call: refresh first, and on `HiveReauthRequired` (HTTP 401) log in once
   and retry. `set_state()` is the handlers' way to change a product, a no-op in
   file mode.
 - **Polling** — `update_data()` is rate limited to `config.scan_interval`

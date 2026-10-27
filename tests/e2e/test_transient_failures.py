@@ -24,7 +24,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 from aiohttp.test_utils import TestServer
 
 from apyhiveapi import Hive
-from apyhiveapi.exceptions import HiveConnectionError
+from apyhiveapi.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
 from apyhiveapi.hive import POLL_RETRY_DELAY
 
 _DATA = json.loads(
@@ -60,6 +60,12 @@ _FAULTS = [
     pytest.param(["truncated"], id="truncated-body"),
 ]
 _POLL_WARNING = "Could not poll Hive, keeping the last known state"
+# What Hive's API gateway answers, as observed on the live API: a bad token
+# gets a 401, a request the gateway blocks gets a bare 403 "Forbidden".
+_GATEWAY_REFUSALS = {
+    "unauthorized": (401, "UnauthorizedException", '{"message":"Unauthorized"}'),
+    "forbidden": (403, "ForbiddenException", '{"message":"Forbidden"}'),
+}
 
 
 class _Clock:
@@ -116,6 +122,14 @@ class _FakeHive:
             await self._release.wait()
         if outcome == "disconnect":
             request.transport.close()
+        if outcome in _GATEWAY_REFUSALS:
+            status, error_type, text = _GATEWAY_REFUSALS[outcome]
+            return web.Response(
+                status=status,
+                text=text,
+                content_type="application/json",
+                headers={"x-amzn-ErrorType": error_type},
+            )
         if isinstance(outcome, int):
             return web.Response(status=outcome, text="Service Unavailable")
         if outcome == "truncated":
@@ -415,6 +429,49 @@ class TestDroppedConnection:
         with pytest.raises(HiveConnectionError):
             await session.heating.set_target_temperature(heating, 21.0)
         assert fake_hive.commands == [{"target": 21.0}]
+
+
+class TestGatewayRefusals:
+    """Hive's API gateway refuses a request with a 401 or a 403."""
+
+    async def test_a_blocked_command_raises_without_logging_in(
+        self, session, fake_hive
+    ):
+        # ha-hive#4: hot water commands got a 403 while the token worked.
+        fake_hive.command_outcomes = ["forbidden"]
+        hot_water = _device(session, _HOTWATER_ID)
+        with pytest.raises(HiveApiError, match=r"HTTP 403 \(ForbiddenException\)"):
+            await session.hotwater.set_mode(hot_water, "MANUAL")
+        assert fake_hive.commands == [{"mode": "MANUAL"}]
+        session.login.assert_not_awaited()
+
+    async def test_a_blocked_command_is_not_a_reauth(self, session, fake_hive):
+        fake_hive.command_outcomes = ["forbidden"]
+        hot_water = _device(session, _HOTWATER_ID)
+        with pytest.raises(HiveApiError) as exc_info:
+            await session.hotwater.set_mode(hot_water, "MANUAL")
+        assert not isinstance(exc_info.value, HiveReauthRequired)
+
+    async def test_a_blocked_poll_keeps_the_state_and_is_retried(
+        self, session, fake_hive, clock, caplog
+    ):
+        fake_hive.poll_outcomes = ["forbidden"]
+        before = _statuses(session)
+        clock.advance(timedelta(seconds=_SCAN_INTERVAL))
+        with caplog.at_level(logging.WARNING, logger="apyhiveapi"):
+            assert await session.update_data() is False
+        assert _statuses(session) == before
+        assert "(ForbiddenException)" in _poll_warnings(caplog)[0].getMessage()
+        session.login.assert_not_awaited()
+        clock.advance(POLL_RETRY_DELAY)
+        assert await session.update_data() is True
+
+    async def test_a_rejected_token_logs_in_once_and_resends(self, session, fake_hive):
+        fake_hive.command_outcomes = ["unauthorized"]
+        hot_water = _device(session, _HOTWATER_ID)
+        await session.hotwater.set_mode(hot_water, "MANUAL")
+        session.login.assert_awaited_once()
+        assert fake_hive.commands == [{"mode": "MANUAL"}, {"mode": "MANUAL"}]
 
 
 class TestSlowServer:
