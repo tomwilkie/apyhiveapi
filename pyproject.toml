@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyhive-integration"
-version = "0.1.2"
+version = "0.1.3"
 description = "An async Python library to interface with the Hive API"
 readme = "README.md"
 license = "MIT"

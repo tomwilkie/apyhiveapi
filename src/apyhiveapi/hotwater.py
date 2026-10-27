@@ -71,7 +71,10 @@ class WaterHeater(DeviceHandler):
             values and ``device_data["online"]`` set to False.
         """
         if not self._refresh_device(device):
-            device.status = {"current_operation": None}
+            device.status = {"current_operation": None, "boost": None}
             return device
-        device.status = {"current_operation": await self.get_mode(device)}
+        device.status = {
+            "current_operation": await self.get_mode(device),
+            "boost": self._boost_status(device),
+        }
         return device

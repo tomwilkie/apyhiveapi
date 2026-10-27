@@ -83,7 +83,7 @@ class TestHotWaterBoost:
         )
         assert file_session.config.last_update > before
         updated = await file_session.hotwater.get_water_heater(device)
-        assert updated.status == {"current_operation": "SCHEDULE"}
+        assert updated.status == {"current_operation": "SCHEDULE", "boost": "OFF"}
 
     async def test_boost_off_restores_the_fixture_mode_and_clears_the_status(
         self, file_session
@@ -91,9 +91,9 @@ class TestHotWaterBoost:
         device = _find(file_session, "water_heater", _HOTWATER_ID)
         _start_boost(file_session, _HOTWATER_ID, 60)
         updated = await file_session.hotwater.get_water_heater(device)
-        assert updated.status == {"current_operation": "OFF"}
+        assert updated.status == {"current_operation": "OFF", "boost": "ON"}
         set_state = _capture_commands(file_session)
         await file_session.hotwater.set_boost_off(device)
         set_state.assert_awaited_once_with("hotwater", _HOTWATER_ID, mode="OFF")
         updated = await file_session.hotwater.get_water_heater(device)
-        assert updated.status == {"current_operation": "SCHEDULE"}
+        assert updated.status == {"current_operation": "SCHEDULE", "boost": "OFF"}

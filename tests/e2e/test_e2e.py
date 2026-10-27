@@ -140,7 +140,7 @@ class TestGetDeviceStatus:
         device = _find(file_session, "water_heater", _HOTWATER_ID)
         updated = await file_session.hotwater.get_water_heater(device)
         assert updated is device
-        assert updated.status == {"current_operation": "SCHEDULE"}
+        assert updated.status == {"current_operation": "SCHEDULE", "boost": "OFF"}
         assert updated.device_data["online"] is True
 
 
@@ -174,7 +174,7 @@ class TestOfflineDevices:
         await file_session.hotwater.get_water_heater(hotwater)
         assert heating.status["mode"] == "OFF"
         assert heating.device_data["online"] is True
-        assert hotwater.status == {"current_operation": "SCHEDULE"}
+        assert hotwater.status == {"current_operation": "SCHEDULE", "boost": "OFF"}
         assert hotwater.device_data["online"] is True
         assert await file_session.hotwater.set_mode(hotwater, "MANUAL") is None
 
@@ -209,7 +209,7 @@ class TestCommands:
         updated = await file_session.heating.get_climate(heating)
         assert updated.status["target_temperature"] == 7.0
         updated = await file_session.hotwater.get_water_heater(hotwater)
-        assert updated.status == {"current_operation": "SCHEDULE"}
+        assert updated.status == {"current_operation": "SCHEDULE", "boost": "OFF"}
 
 
 class TestRateLimiting:

@@ -223,12 +223,27 @@ class TestCommands:
 
 
 class TestGetWaterHeater:
-    async def test_online_device_gets_its_status(self):
-        heater = _make_hotwater(_hotwater(state={"mode": "SCHEDULE"}))
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            pytest.param(
+                {"mode": "SCHEDULE"},
+                {"current_operation": "SCHEDULE", "boost": "OFF"},
+                id="scheduled",
+            ),
+            pytest.param(
+                {**_BOOSTING},
+                {"current_operation": None, "boost": "ON"},
+                id="boosting",
+            ),
+        ],
+    )
+    async def test_online_device_gets_its_status(self, state, expected):
+        heater = _make_hotwater(_hotwater(state=state))
         device = _device()
         result = await heater.get_water_heater(device)
         assert result is device
-        assert device.status == {"current_operation": "SCHEDULE"}
+        assert device.status == expected
         assert device.device_data == {"online": True, "model": "SLT"}
         heater.session.device_recovered.assert_called_once_with("hw-1")
         heater.session.report_device_offline.assert_not_called()
@@ -236,7 +251,7 @@ class TestGetWaterHeater:
     async def test_sparse_product_reports_unknown_while_online(self):
         heater = _make_hotwater(_hotwater())
         device = await heater.get_water_heater(_device())
-        assert device.status == {"current_operation": None}
+        assert device.status == {"current_operation": None, "boost": None}
         assert device.device_data["online"] is True
 
     @pytest.mark.parametrize(
@@ -254,7 +269,7 @@ class TestGetWaterHeater:
         device = _device(status={"current_operation": "SCHEDULE"})
         result = await heater.get_water_heater(device)
         assert result is device
-        assert device.status == {"current_operation": None}
+        assert device.status == {"current_operation": None, "boost": None}
         assert device.device_data == {"online": False, "model": "SLT"}
         heater.session.report_device_offline.assert_called_once_with("hw-1")
         heater.session.device_recovered.assert_not_called()
