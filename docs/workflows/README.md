@@ -45,7 +45,7 @@ dependencies and GitHub Actions. Pre-commit hook revisions are updated with
 
    ```json
    "requirements": [
-     "https://github.com/tomwilkie/pyhive-integration/releases/download/v0.1.0/pyhive_integration-0.1.0-py3-none-any.whl#pyhive-integration==0.1.0"
+     "https://github.com/tomwilkie/pyhive-integration/releases/download/v0.1.1/pyhive_integration-0.1.1-py3-none-any.whl#pyhive-integration==0.1.1"
    ]
    ```
 
