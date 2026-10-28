@@ -8,8 +8,8 @@
 ## Setup
 
 ```bash
-git clone https://github.com/tomwilkie/pyhive-integration.git
-cd pyhive-integration
+git clone https://github.com/tomwilkie/apyhiveapi.git
+cd apyhiveapi
 make setup
 ```
 

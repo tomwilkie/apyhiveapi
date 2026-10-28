@@ -5,10 +5,11 @@ GitHub Actions. Both Claude jobs in `.github/workflows/claude.yml` (the
 automatic PR review and `@claude` mentions) load this file, so project
 knowledge and rules belong here, not in the workflow prompt.
 
-This is pyhive-integration, the async Python library (`apyhiveapi`) behind
-the Hive integration for Home Assistant. It is a hard fork of Pyhass/Pyhive,
-restarted at version 0.0.1 and installed from its GitHub releases rather than
-PyPI. It covers Hive heating (thermostats and TRVs) and hot water only. The source is one flat package in
+This is apyhiveapi, the async Python library behind the Hive integration for
+Home Assistant. It is a hard fork of Pyhass/Pyhive, restarted at version
+0.0.1 and published on PyPI as `apyhiveapi` (it was `pyhive-integration`,
+installed from GitHub release wheels, until v0.1.5; upstream owns that name
+on PyPI). It covers Hive heating (thermostats and TRVs) and hot water only. The source is one flat package in
 `src/apyhiveapi/`: no sync package, no mixins, no deprecation shims and no
 camelCase compatibility aliases. The public API is snake_case only.
 
@@ -31,9 +32,10 @@ explicitly: that code is a removal candidate.
 - The fork (the actual caller): `~/Documents/repos/ha-hive/custom_components/hive/`
   with `__init__.py`, `config_flow.py`, `entity.py`, `const.py`, `climate.py`,
   `water_heater.py` and `manifest.json`, which pins this library. Once the
-  fork is ported (see below), the manifest installs a GitHub release wheel
-  (`<wheel URL>#pyhive-integration==<version>`) and its light, switch, binary
-  sensor and sensor platforms are gone. The fork's own `CLAUDE.md` lists the
+  fork is ported (see below), the manifest pins a release of this library
+  (`apyhiveapi==<version>` from PyPI; up to v0.1.5 it installed a GitHub
+  release wheel as `<wheel URL>#pyhive-integration==<version>`) and its
+  light, switch, binary sensor and sensor platforms are gone. The fork's own `CLAUDE.md` lists the
   API it calls and the error mapping it applies; its tests mock `Hive` and
   `Auth` at the boundary, so a renamed method or a changed `Device` attribute
   is not caught there. In GitHub Actions, where the local checkout is not
@@ -210,9 +212,12 @@ mypy src/
 bandit --configfile=tests/bandit.yaml src/
 ```
 
-All work happens on `main` through pull requests. A release is a version bump
-in `pyproject.toml` merged into `main`: `release.yml` tags it and publishes a
-GitHub Release with the wheel attached (see `docs/workflows/README.md`).
+All work happens on `main` through pull requests, and every merge is a
+release: `release.yml` runs `bump-my-version bump patch` on `main`, which
+bumps `version` in `pyproject.toml`, commits and tags it, then publishes a
+GitHub Release with the wheel attached (see `docs/workflows/README.md`). A
+minor or major release is the same workflow run by hand with that part
+chosen. Never change `version` in a pull request.
 
 A PII check pre-commit hook (`scripts/check_data_pii.py`) runs on any
 `src/apyhiveapi/data/*.json` change — ensure fixture data is anonymised before

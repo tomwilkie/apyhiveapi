@@ -1,69 +1,116 @@
 name: Release
 
-# Releases are cut from main: change `version` in pyproject.toml and merge.
-# This tags the merge commit, builds the sdist and wheel, checks that the
-# wheel imports in a clean venv and publishes a GitHub Release with both
-# attached. The Home Assistant fork pins a release's wheel URL in its
-# manifest.json. See docs/workflows/README.md.
+# Every merge into main is a release. bump-my-version bumps the patch version
+# in pyproject.toml, commits it as github-actions[bot] and tags it; the job
+# builds the sdist and wheel, checks that the wheel imports in a clean venv,
+# and only then pushes the commit and tag to main and publishes a GitHub
+# Release with both files attached. A second job uploads the same files to
+# PyPI as `apyhiveapi` through Trusted Publishing (OpenID Connect, no API
+# token). For a minor or major release, run the workflow by hand (Actions →
+# Release → Run workflow) and pick the part to bump. The Home Assistant fork
+# pins a release in its manifest.json. See docs/workflows/README.md.
+#
+# This cannot loop: the bump commit carries "[skip release]", which the job
+# condition honours, and a push made with GITHUB_TOKEN triggers no workflows
+# anyway. Runs are serialised so two quick merges do not race for the same
+# patch number.
 # yamllint disable-line rule:truthy
 on:
   push:
     branches:
       - main
-    paths:
-      - pyproject.toml
+  workflow_dispatch:
+    inputs:
+      part:
+        description: Part of the version to bump
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
-    name: Tag and release
+    name: Bump, tag and release
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # The tip of main, not the pushed sha: a merge that lands while an
+          # earlier run is still releasing is picked up by that run.
+          ref: main
           fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.14"
 
-      - name: Read the version from pyproject.toml
+      - name: Install the release tools
+        run: python -m pip install bump-my-version build
+
+      - name: Bump the version, commit and tag
         id: version
+        env:
+          PART: ${{ inputs.part || 'patch' }}
         run: |
-          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bump-my-version bump "$PART"
+          version=$(bump-my-version show current_version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
-      - name: Check whether the version is already tagged
-        id: tag
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG already exists; nothing to release."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build the distributions
-        if: steps.tag.outputs.exists == 'false'
-        run: |
-          python -m pip install build
-          python -m build
+        run: python -m build
 
       - name: Verify the wheel imports in a clean venv
-        if: steps.tag.outputs.exists == 'false'
         run: python scripts/verify_dist.py dist
 
+      - name: Keep the distributions for the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+      - name: Push the bump and its tag to main
+        run: git push --follow-tags origin HEAD:main
+
       - name: Create the GitHub Release
-        if: steps.tag.outputs.exists == 'false'
         uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd  # v1.21.0
         with:
           tag: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
-          commit: ${{ github.sha }}
           generateReleaseNotes: true
           artifacts: dist/*
           artifactErrorsFailBuild: true
+
+  publish:
+    name: Publish to PyPI
+    needs: release
+    runs-on: ubuntu-latest
+    # The `pypi` environment is what PyPI's trusted publisher is registered
+    # against; its name must match the publisher's exactly.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/apyhiveapi/${{ needs.release.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3

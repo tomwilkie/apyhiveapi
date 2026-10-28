@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pyhive-integration"
+name = "apyhiveapi"
 version = "0.1.4"
 description = "An async Python library to interface with the Hive API"
 readme = "README.md"
@@ -33,9 +33,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tomwilkie/pyhive-integration"
-Source = "https://github.com/tomwilkie/pyhive-integration"
-"Issue Tracker" = "https://github.com/tomwilkie/pyhive-integration/issues"
+Homepage = "https://github.com/tomwilkie/apyhiveapi"
+Source = "https://github.com/tomwilkie/apyhiveapi"
+"Issue Tracker" = "https://github.com/tomwilkie/apyhiveapi/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -48,6 +48,7 @@ dev = [
     "bandit",
     "pre-commit",
     "build",
+    "bump-my-version",
 ]
 
 [tool.setuptools]
@@ -184,3 +185,17 @@ ignore_missing_imports = true
 # Tests are untyped by design (see the ANN ignore above) and lean on MagicMock.
 module = ["tests.*"]
 ignore_errors = true
+
+[tool.bumpversion]
+# release.yml runs `bump-my-version bump <part>` on main. The current version
+# is read from project.version above, so it is not repeated here.
+commit = true
+tag = true
+tag_name = "v{new_version}"
+tag_message = "Release v{new_version}"
+message = "Release v{new_version} [skip release]"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
