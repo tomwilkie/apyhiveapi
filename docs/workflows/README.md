@@ -25,7 +25,7 @@ feature/* ──PR──▶ main ──patch bump──▶ tag vX.Y.Z + GitHub R
 | `ci.yml` (Lint) | pull requests and pushes to `main` that touch code or lint config | Runs every pre-commit hook: ruff, pylint, mypy, bandit, codespell, yamllint, detect-secrets and the PII check on fixture data. |
 | `tests.yml` (Tests, Coverage, Packaging) | every pull request and push to `main` | Tests on Python 3.13 and 3.14, the 99% coverage gate, and a wheel built and imported in a clean venv. The jobs always report, so they can be required checks. |
 | `claude.yml` | pull requests and `@claude` mentions | Claude reviews the change against `CLAUDE.md` and the Home Assistant fork. |
-| `release.yml` | every push to `main`, and by hand for a minor or major release | Bumps the version with `bump-my-version`, builds the sdist and wheel, verifies the wheel imports, pushes the bump commit and its `v<version>` tag to `main`, and publishes a GitHub Release with both files attached. |
+| `release.yml` | every push to `main`, and by hand for a minor or major release | Bumps the version with `bump-my-version`, builds the sdist and wheel, verifies the wheel imports, pushes the bump commit and its `v<version>` tag to `main`, publishes a GitHub Release with both files attached, then uploads them to PyPI as `apyhiveapi` through Trusted Publishing. |
 
 Dependabot (`.github/dependabot.yml`) opens weekly pull requests for pip
 dependencies and GitHub Actions. Pre-commit hook revisions are updated with
@@ -43,7 +43,8 @@ tip of `main` and runs `bump-my-version bump patch`, which rewrites `version`
 builds the sdist and wheel, checks that the wheel imports in a clean venv,
 pushes the commit and tag to `main`, and publishes a GitHub Release with
 generated notes and both files attached. Nothing lands on `main` unless the
-wheel built.
+wheel built. A second job then uploads the same files to PyPI as
+[`apyhiveapi`](https://pypi.org/project/apyhiveapi/).
 
 For a **minor or major release**, run the workflow by hand: Actions →
 Release → Run workflow, and pick `minor` or `major` as the part to bump. The
@@ -53,18 +54,45 @@ same job runs with that part.
 and reads the current version from `project.version`, so the version is
 written in one place only.
 
-Point the Home Assistant fork at the wheel. In
+Point the Home Assistant fork at the release. In
 `custom_components/hive/manifest.json`:
 
 ```json
-"requirements": [
-  "https://github.com/tomwilkie/pyhive-integration/releases/download/v0.1.4/pyhive_integration-0.1.4-py3-none-any.whl#pyhive-integration==0.1.4"
-]
+"requirements": ["apyhiveapi==0.1.6"]
 ```
 
-Home Assistant reads the `#pyhive-integration==<version>` fragment to tell
-whether that version is already installed; without it, the wheel is
-reinstalled on every start.
+Up to v0.1.5 the package was called `pyhive-integration` and the manifest
+installed the GitHub release wheel by URL, with a
+`#pyhive-integration==<version>` fragment so Home Assistant could tell the
+version was already installed. A plain PyPI pin needs none of that.
+
+### PyPI Trusted Publishing
+
+The `publish` job in `release.yml` uploads with
+[`pypa/gh-action-pypi-publish`](https://github.com/pypa/gh-action-pypi-publish)
+and an OpenID Connect token (`id-token: write`), so there is no PyPI API
+token to store or rotate. PyPI has to be told to trust this workflow once,
+and the values must match exactly:
+
+| Field | Value |
+|---|---|
+| PyPI project name | `apyhiveapi` |
+| Owner | `tomwilkie` |
+| Repository name | `apyhiveapi` |
+| Workflow name | `release.yml` |
+| Environment name | `pypi` |
+
+Before the first upload the project does not exist on PyPI, so add it as a
+*pending publisher* under <https://pypi.org/manage/account/publishing/>. The
+first successful upload creates the project and turns the pending publisher
+into a normal one. The `pypi` environment exists on the GitHub repository;
+adding required reviewers to it would make every PyPI upload wait for an
+approval.
+
+If the upload fails (for example the publisher is not registered yet), the
+GitHub Release already exists and the distributions are kept as the run's
+`dist` artifact, so fix the cause and re-run the failed `publish` job rather
+than the whole workflow, which would bump the version again.
 
 Details worth knowing:
 
@@ -84,13 +112,6 @@ Details worth knowing:
   the job's token, so pin it if that trade-off changes.
 - `main` must let `github-actions[bot]` push directly. If branch protection or
   a ruleset is added, give the Actions app a bypass.
-
-Releases are not published to PyPI: the `pyhive-integration` name there
-belongs to the upstream project. To publish under a name of your own, change
-`project.name` in `pyproject.toml`, register a trusted publisher for that name
-on PyPI pointing at this repository and `release.yml`, and add a job to
-`release.yml` that downloads the built distributions and runs
-`pypa/gh-action-pypi-publish` with `id-token: write`.
 
 ---
 

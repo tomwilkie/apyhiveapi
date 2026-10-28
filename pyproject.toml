@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pyhive-integration"
+name = "apyhiveapi"
 version = "0.1.4"
 description = "An async Python library to interface with the Hive API"
 readme = "README.md"
@@ -33,9 +33,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tomwilkie/pyhive-integration"
-Source = "https://github.com/tomwilkie/pyhive-integration"
-"Issue Tracker" = "https://github.com/tomwilkie/pyhive-integration/issues"
+Homepage = "https://github.com/tomwilkie/apyhiveapi"
+Source = "https://github.com/tomwilkie/apyhiveapi"
+"Issue Tracker" = "https://github.com/tomwilkie/apyhiveapi/issues"
 
 [project.optional-dependencies]
 dev = [
