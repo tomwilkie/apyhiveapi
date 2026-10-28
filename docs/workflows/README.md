@@ -39,7 +39,7 @@ Merging a pull request is releasing. Pull requests leave `version` in
 `pyproject.toml` alone. On every push to `main`, `release.yml` checks out the
 tip of `main` and runs `bump-my-version bump patch`, which rewrites `version`
 (`0.1.4` → `0.1.5`), commits it as `github-actions[bot]` with the message
-`Release v0.1.5 [skip release]` and tags the commit `v0.1.5`. The job then
+`Release v0.1.5` and tags the commit `v0.1.5`. The job then
 builds the sdist and wheel, checks that the wheel imports in a clean venv,
 pushes the commit and tag to `main`, and publishes a GitHub Release with
 generated notes and both files attached. Nothing lands on `main` unless the
@@ -100,9 +100,12 @@ Details worth knowing:
   change is harmless; the fork only picks up a version when its manifest is
   bumped to it.
 - The bump commit is pushed with `GITHUB_TOKEN`, which triggers no workflows,
-  so Lint and Tests do not run on it and it cannot start another release. Its
-  `[skip release]` marker makes the job skip itself anyway, so the workflow
-  cannot loop even if that changes.
+  so Lint and Tests do not run on it and it cannot start another release. The
+  job also skips any push whose commit is authored by `github-actions[bot]`,
+  so the workflow cannot loop even if that changes. The author is checked
+  rather than a marker in the commit message because a squash merge puts the
+  pull request body into the commit message, and a body that merely mentioned
+  the marker once skipped a release.
 - Runs are serialised (`concurrency: release`). Two merges in quick
   succession give one release containing both when the first run checks out
   a tip that already includes the second merge; the second run then bumps
@@ -129,7 +132,7 @@ change touches no Python, so the checks never block a docs-only pull request.
 
 | Symptom | Likely cause |
 |---|---|
-| No release after a merge | The merge commit's message contains `[skip release]`, or an earlier run released the merge together with a previous one. Check the Release workflow's log. |
+| No release after a merge | The merge commit is authored by `github-actions[bot]`, or an earlier run released the merge together with a previous one. Check the Release workflow's log. |
 | Release fails at "Bump the version" | `bump-my-version` could not parse `project.version` or find `version = "<current>"` in `pyproject.toml`; check `[tool.bumpversion]` there. |
 | Release fails pushing the bump | `main` rejects pushes from the Actions app (branch protection or a ruleset without a bypass). The tag and commit exist only in the runner, so nothing needs cleaning up; fix the protection and re-run. |
 | Release fails at "Verify the wheel" | The wheel is missing a module or data file: check `[tool.setuptools]` in `pyproject.toml` and `MANIFEST.in`. |
