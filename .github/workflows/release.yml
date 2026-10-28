@@ -1,20 +1,29 @@
 name: Release
 
-# Releases are cut from main: change `version` in pyproject.toml and merge.
-# This tags the merge commit, builds the sdist and wheel, checks that the
-# wheel imports in a clean venv and publishes a GitHub Release with both
-# attached. The Home Assistant fork pins a release's wheel URL in its
-# manifest.json. See docs/workflows/README.md.
+# Every merge into main is a release. The job checks out the tip of main and
+# reads `version` from pyproject.toml. If that version has no tag yet (the
+# pull request set it, for a minor or major bump), it is released as it is.
+# Otherwise the patch number is bumped, the bump is committed to main as
+# github-actions[bot], and that commit is released. Either way the sdist and
+# wheel are built, the wheel is checked to import in a clean venv and a
+# GitHub Release is published with both attached. The Home Assistant fork
+# pins a release's wheel URL in its manifest.json. See docs/workflows/README.md.
+#
+# This cannot loop: a push made with GITHUB_TOKEN triggers no workflows, and
+# a tip of main authored by github-actions[bot] is skipped anyway. Runs are
+# serialised so two quick merges do not race for the same patch number.
 # yamllint disable-line rule:truthy
 on:
   push:
     branches:
       - main
-    paths:
-      - pyproject.toml
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -23,47 +32,76 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # The tip of main, not the pushed sha: a merge that lands while an
+          # earlier run is still releasing is picked up by that run.
+          ref: main
           fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.14"
 
-      - name: Read the version from pyproject.toml
+      - name: Decide which version to release
         id: version
         run: |
-          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-
-      - name: Check whether the version is already tagged
-        id: tag
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG already exists; nothing to release."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+          if [ "$(git log -1 --format=%an)" = "github-actions[bot]" ]; then
+            echo "The tip of main is a release commit; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "v$version is already released; bumping the patch version."
+            version=$(python - "$version" <<'EOF'
+          import re
+          import sys
+          from pathlib import Path
+
+          current = sys.argv[1]
+          major, minor, patch = re.match(r"(\d+)\.(\d+)\.(\d+)", current).groups()
+          new = f"{major}.{minor}.{int(patch) + 1}"
+          path = Path("pyproject.toml")
+          text, count = re.subn(
+              rf'^version = "{re.escape(current)}"$',
+              f'version = "{new}"',
+              path.read_text(),
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              sys.exit(f"could not find version = \"{current}\" in pyproject.toml")
+          path.write_text(text)
+          print(new)
+          EOF
+            )
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Release v$version"
+            git push origin HEAD:main
+          else
+            echo "pyproject.toml sets $version, which is not tagged yet; releasing it as it is."
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build the distributions
-        if: steps.tag.outputs.exists == 'false'
+        if: steps.version.outputs.release == 'true'
         run: |
           python -m pip install build
           python -m build
 
       - name: Verify the wheel imports in a clean venv
-        if: steps.tag.outputs.exists == 'false'
+        if: steps.version.outputs.release == 'true'
         run: python scripts/verify_dist.py dist
 
       - name: Create the GitHub Release
-        if: steps.tag.outputs.exists == 'false'
+        if: steps.version.outputs.release == 'true'
         uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd  # v1.21.0
         with:
           tag: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
-          commit: ${{ github.sha }}
+          commit: ${{ steps.version.outputs.sha }}
           generateReleaseNotes: true
           artifacts: dist/*
           artifactErrorsFailBuild: true
