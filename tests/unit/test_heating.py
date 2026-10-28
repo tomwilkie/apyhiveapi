@@ -417,7 +417,11 @@ class TestGetClimate:
         }
         assert device.min_temp == MIN_TARGET_TEMPERATURE
         assert device.max_temp == MAX_TARGET_TEMPERATURE
-        assert device.device_data == {"online": True, "model": "SLT"}
+        assert device.device_data == {
+            "online": True,
+            "device_online": True,
+            "model": "SLT",
+        }
         climate.session.device_recovered.assert_called_once_with("heat-1")
         climate.session.report_device_offline.assert_not_called()
 
@@ -470,7 +474,11 @@ class TestGetClimate:
         result = await climate.get_climate(device)
         assert result is device
         assert device.status == _OFFLINE_STATUS
-        assert device.device_data == {"online": False, "model": "SLT"}
+        assert device.device_data == {
+            "online": False,
+            "device_online": True,
+            "model": "SLT",
+        }
         assert device.min_temp is None
         assert device.max_temp is None
         climate.session.report_device_offline.assert_called_once_with("heat-1")

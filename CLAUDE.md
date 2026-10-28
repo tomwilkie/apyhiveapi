@@ -64,7 +64,13 @@ depends on is:
   the fork.
 - `Device` attributes, read as attributes (`device.hive_id`,
   `device.device_data`, `device.status`); `Device` is a plain dataclass with no
-  dict-style access
+  dict-style access. After a `get_*` call `device.device_data` is the hardware
+  device's props (`model`, `manufacturer`, `version`, `battery`, …) plus two
+  flags: `online`, the product's availability, which the climate, water heater
+  and boost binary sensor platforms use; and `device_online`, the hardware's
+  own `props.online`, which the fork's battery sensor (tomwilkie/ha-hive#9)
+  uses for its availability so a dead thermostat battery goes unavailable
+  instead of showing its last level
 - `device.status` keys and value types, and the `hive.heating` /
   `hive.hotwater` methods (`get_climate`, `get_water_heater`, `get_mode`,
   `set_mode`, `set_target_temperature`, `set_boost_on`, `set_boost_off`)
@@ -372,17 +378,27 @@ session; the owned-session path exists for the tests and the dev scripts.
 `DeviceHandler(session)` (`device_handler.py`) holds what `Climate` and
 `WaterHeater` share: `_get_product_state()` (safe nested read from
 `session.data.products`), `_as_float()`, `_is_online()`, `_refresh_device()`
-(copies the device's props into `device.device_data` with an `online` flag and
-reports offline products through the session), `_boost_status()` and
-`_set_state(device, **state)`, which raises `HiveDeviceOffline` for an
-offline or unknown product and otherwise calls `session.set_state()` and
-re-polls.
+(copies the device's props into `device.device_data` with the `online` and
+`device_online` flags and reports offline products through the session),
+`_boost_status()` and `_set_state(device, **state)`, which raises
+`HiveDeviceOffline` for an offline or unknown product and otherwise calls
+`session.set_state()` and re-polls.
 
-Availability comes from the product's own `props.online`, not from the device
-it is attached to: Hive reports heating and hot water products as the receiver
-that runs them (their `model` is the receiver's, `SLR1` / `SLR2`), so a
-battery thermostat dropping off leaves them online. A TRV control has no
-hardware of its own and is also offline while its TRV is.
+Availability (`device_data["online"]`, `_is_online()`) comes from the
+product's own `props.online`, not from the device it is attached to: Hive
+reports heating and hot water products as the receiver that runs them (their
+`model` is the receiver's, `SLR1` / `SLR2`), so a battery thermostat dropping
+off leaves them online. A TRV control has no hardware of its own and is also
+offline while its TRV is.
+
+`device_data["device_online"]` is the other half: the hardware device's own
+`props.online`, `False` when the device or the prop is missing. For a heating
+or hot water product carried by a thermostat it is the thermostat's flag and
+can differ from `online`; for a TRV control both flags follow the TRV; a
+heating or hot water product with no thermostat in its zone is its own device
+(`_device_for_product` falls back to the product), so both flags are the
+product's. The spread of the device's props keeps every other prop, so the
+hardware's `props.online` is only ever visible as `device_online`.
 
 | `hive.*` | Class | Hive types | `device.status` after `get_*` |
 |---|---|---|---|

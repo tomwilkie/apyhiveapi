@@ -164,7 +164,12 @@ class TestRefreshDevice:
         handler = _make_handler(_HEATING, _ONLINE_DEVICES)
         device = make_device()
         assert handler._refresh_device(device) is True
-        assert device.device_data == {"online": True, "model": "SLT3", "battery": 80}
+        assert device.device_data == {
+            "online": True,
+            "device_online": True,
+            "model": "SLT3",
+            "battery": 80,
+        }
         handler.session.device_recovered.assert_called_once_with("prod-1")
         handler.session.report_device_offline.assert_not_called()
 
@@ -188,9 +193,56 @@ class TestRefreshDevice:
         handler = _make_handler(products, _ONLINE_DEVICES)
         device = make_device()
         assert handler._refresh_device(device) is False
-        assert device.device_data == {"online": False, "model": "SLT3", "battery": 80}
+        assert device.device_data == {
+            "online": False,
+            "device_online": True,
+            "model": "SLT3",
+            "battery": 80,
+        }
         handler.session.report_device_offline.assert_called_once_with("prod-1")
         handler.session.device_recovered.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "devices",
+        [
+            pytest.param(_OFFLINE_DEVICES, id="thermostat-offline"),
+            pytest.param({"dev-1": {"props": {"model": "SLT3"}}}, id="no-online-prop"),
+        ],
+    )
+    def test_device_online_is_the_hardware_flag_not_the_product(self, devices):
+        handler = _make_handler(_HEATING, devices)
+        device = make_device()
+        assert handler._refresh_device(device) is True
+        assert device.device_data["online"] is True
+        assert device.device_data["device_online"] is False
+
+    @pytest.mark.parametrize(
+        ("devices", "expected"),
+        [
+            pytest.param(_ONLINE_DEVICES, True, id="trv-online"),
+            pytest.param(_OFFLINE_DEVICES, False, id="trv-offline"),
+        ],
+    )
+    def test_trv_control_flags_agree_with_its_trv(self, devices, expected):
+        handler = _make_handler(_TRV_CONTROL, devices)
+        device = make_device(hive_type="trvcontrol")
+        assert handler._refresh_device(device) is expected
+        assert device.device_data["online"] is expected
+        assert device.device_data["device_online"] is expected
+
+    @pytest.mark.parametrize("online", [True, False], ids=["online", "offline"])
+    def test_product_without_a_thermostat_is_its_own_device(self, online):
+        products = {
+            "prod-1": {"type": "heating", "props": {"online": online, "model": "SLR2"}}
+        }
+        handler = _make_handler(products, {})
+        device = make_device(device_id="prod-1")
+        assert handler._refresh_device(device) is online
+        assert device.device_data == {
+            "online": online,
+            "device_online": online,
+            "model": "SLR2",
+        }
 
     @pytest.mark.parametrize(
         "devices",
@@ -200,11 +252,11 @@ class TestRefreshDevice:
             pytest.param({"dev-1": {"props": None}}, id="props-none"),
         ],
     )
-    def test_device_without_props_gives_the_online_flag_only(self, devices):
+    def test_device_without_props_gives_the_flags_only(self, devices):
         handler = _make_handler(_HEATING, devices)
         device = make_device()
         assert handler._refresh_device(device) is True
-        assert device.device_data == {"online": True}
+        assert device.device_data == {"online": True, "device_online": False}
 
     def test_recovery_is_reported_after_going_offline(self):
         products = {"prod-1": {"type": "heating", "props": {"online": False}}}
@@ -213,7 +265,7 @@ class TestRefreshDevice:
         assert handler._refresh_device(device) is False
         products["prod-1"]["props"]["online"] = True
         assert handler._refresh_device(device) is True
-        assert device.device_data == {"online": True}
+        assert device.device_data == {"online": True, "device_online": False}
         handler.session.report_device_offline.assert_called_once_with("prod-1")
         handler.session.device_recovered.assert_called_once_with("prod-1")
 

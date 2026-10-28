@@ -244,7 +244,11 @@ class TestGetWaterHeater:
         result = await heater.get_water_heater(device)
         assert result is device
         assert device.status == expected
-        assert device.device_data == {"online": True, "model": "SLT"}
+        assert device.device_data == {
+            "online": True,
+            "device_online": True,
+            "model": "SLT",
+        }
         heater.session.device_recovered.assert_called_once_with("hw-1")
         heater.session.report_device_offline.assert_not_called()
 
@@ -270,6 +274,10 @@ class TestGetWaterHeater:
         result = await heater.get_water_heater(device)
         assert result is device
         assert device.status == {"current_operation": None, "boost": None}
-        assert device.device_data == {"online": False, "model": "SLT"}
+        assert device.device_data == {
+            "online": False,
+            "device_online": True,
+            "model": "SLT",
+        }
         heater.session.report_device_offline.assert_called_once_with("hw-1")
         heater.session.device_recovered.assert_not_called()
