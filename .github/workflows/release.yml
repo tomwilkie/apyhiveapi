@@ -1,22 +1,33 @@
 name: Release
 
-# Every merge into main is a release. The job checks out the tip of main and
-# reads `version` from pyproject.toml. If that version has no tag yet (the
-# pull request set it, for a minor or major bump), it is released as it is.
-# Otherwise the patch number is bumped, the bump is committed to main as
-# github-actions[bot], and that commit is released. Either way the sdist and
-# wheel are built, the wheel is checked to import in a clean venv and a
-# GitHub Release is published with both attached. The Home Assistant fork
-# pins a release's wheel URL in its manifest.json. See docs/workflows/README.md.
+# Every merge into main is a release. bump-my-version bumps the patch version
+# in pyproject.toml, commits it as github-actions[bot] and tags it; the job
+# builds the sdist and wheel, checks that the wheel imports in a clean venv,
+# and only then pushes the commit and tag to main and publishes a GitHub
+# Release with both files attached. For a minor or major release, run the
+# workflow by hand (Actions → Release → Run workflow) and pick the part to
+# bump. The Home Assistant fork pins a release's wheel URL in its
+# manifest.json. See docs/workflows/README.md.
 #
-# This cannot loop: a push made with GITHUB_TOKEN triggers no workflows, and
-# a tip of main authored by github-actions[bot] is skipped anyway. Runs are
-# serialised so two quick merges do not race for the same patch number.
+# This cannot loop: the bump commit carries "[skip release]", which the job
+# condition honours, and a push made with GITHUB_TOKEN triggers no workflows
+# anyway. Runs are serialised so two quick merges do not race for the same
+# patch number.
 # yamllint disable-line rule:truthy
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      part:
+        description: Part of the version to bump
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
 
 permissions:
   contents: write
@@ -27,7 +38,8 @@ concurrency:
 
 jobs:
   release:
-    name: Tag and release
+    name: Bump, tag and release
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -41,67 +53,33 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Decide which version to release
-        id: version
-        run: |
-          if [ "$(git log -1 --format=%an)" = "github-actions[bot]" ]; then
-            echo "The tip of main is a release commit; nothing to release."
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
-          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
-            echo "v$version is already released; bumping the patch version."
-            version=$(python - "$version" <<'EOF'
-          import re
-          import sys
-          from pathlib import Path
+      - name: Install the release tools
+        run: python -m pip install bump-my-version build
 
-          current = sys.argv[1]
-          major, minor, patch = re.match(r"(\d+)\.(\d+)\.(\d+)", current).groups()
-          new = f"{major}.{minor}.{int(patch) + 1}"
-          path = Path("pyproject.toml")
-          text, count = re.subn(
-              rf'^version = "{re.escape(current)}"$',
-              f'version = "{new}"',
-              path.read_text(),
-              count=1,
-              flags=re.MULTILINE,
-          )
-          if count != 1:
-              sys.exit(f"could not find version = \"{current}\" in pyproject.toml")
-          path.write_text(text)
-          print(new)
-          EOF
-            )
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -am "Release v$version"
-            git push origin HEAD:main
-          else
-            echo "pyproject.toml sets $version, which is not tagged yet; releasing it as it is."
-          fi
-          echo "release=true" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Bump the version, commit and tag
+        id: version
+        env:
+          PART: ${{ inputs.part || 'patch' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bump-my-version bump "$PART"
+          echo "tag=v$(bump-my-version show current_version)" >> "$GITHUB_OUTPUT"
 
       - name: Build the distributions
-        if: steps.version.outputs.release == 'true'
-        run: |
-          python -m pip install build
-          python -m build
+        run: python -m build
 
       - name: Verify the wheel imports in a clean venv
-        if: steps.version.outputs.release == 'true'
         run: python scripts/verify_dist.py dist
 
+      - name: Push the bump and its tag to main
+        run: git push --follow-tags origin HEAD:main
+
       - name: Create the GitHub Release
-        if: steps.version.outputs.release == 'true'
         uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd  # v1.21.0
         with:
           tag: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
-          commit: ${{ steps.version.outputs.sha }}
           generateReleaseNotes: true
           artifacts: dist/*
           artifactErrorsFailBuild: true

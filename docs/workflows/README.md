@@ -25,7 +25,7 @@ feature/* ──PR──▶ main ──patch bump──▶ tag vX.Y.Z + GitHub R
 | `ci.yml` (Lint) | pull requests and pushes to `main` that touch code or lint config | Runs every pre-commit hook: ruff, pylint, mypy, bandit, codespell, yamllint, detect-secrets and the PII check on fixture data. |
 | `tests.yml` (Tests, Coverage, Packaging) | every pull request and push to `main` | Tests on Python 3.13 and 3.14, the 99% coverage gate, and a wheel built and imported in a clean venv. The jobs always report, so they can be required checks. |
 | `claude.yml` | pull requests and `@claude` mentions | Claude reviews the change against `CLAUDE.md` and the Home Assistant fork. |
-| `release.yml` | every push to `main` | Bumps the patch version unless the pull request already set a new one, tags `v<version>`, builds the sdist and wheel, verifies the wheel imports, and publishes a GitHub Release with both attached. |
+| `release.yml` | every push to `main`, and by hand for a minor or major release | Bumps the version with `bump-my-version`, builds the sdist and wheel, verifies the wheel imports, pushes the bump commit and its `v<version>` tag to `main`, and publishes a GitHub Release with both files attached. |
 
 Dependabot (`.github/dependabot.yml`) opens weekly pull requests for pip
 dependencies and GitHub Actions. Pre-commit hook revisions are updated with
@@ -35,20 +35,23 @@ dependencies and GitHub Actions. Pre-commit hook revisions are updated with
 
 ## Releasing
 
-Merging a pull request is releasing. On every push to `main`, `release.yml`
-checks out the tip of `main` and reads `version` from `pyproject.toml`:
+Merging a pull request is releasing. Pull requests leave `version` in
+`pyproject.toml` alone. On every push to `main`, `release.yml` checks out the
+tip of `main` and runs `bump-my-version bump patch`, which rewrites `version`
+(`0.1.4` → `0.1.5`), commits it as `github-actions[bot]` with the message
+`Release v0.1.5 [skip release]` and tags the commit `v0.1.5`. The job then
+builds the sdist and wheel, checks that the wheel imports in a clean venv,
+pushes the commit and tag to `main`, and publishes a GitHub Release with
+generated notes and both files attached. Nothing lands on `main` unless the
+wheel built.
 
-- **The version is already tagged** (the usual case: the pull request left it
-  alone). The patch number is bumped, `0.1.4` → `0.1.5`, and the bump is
-  committed to `main` as `github-actions[bot]` with the message
-  `Release v0.1.5`. That commit is tagged and released.
-- **The version is not tagged yet** (the pull request set it, for a minor or
-  major bump such as `0.2.0`, or a pre-release such as `0.2.0b1`). It is
-  tagged and released as it is, on the merge commit.
+For a **minor or major release**, run the workflow by hand: Actions →
+Release → Run workflow, and pick `minor` or `major` as the part to bump. The
+same job runs with that part.
 
-Either way the sdist and wheel are built, the wheel is checked to import in a
-clean venv, and a GitHub Release is published with generated notes and both
-files attached.
+`bump-my-version` is configured in `[tool.bumpversion]` in `pyproject.toml`
+and reads the current version from `project.version`, so the version is
+written in one place only.
 
 Point the Home Assistant fork at the wheel. In
 `custom_components/hive/manifest.json`:
@@ -69,16 +72,16 @@ Details worth knowing:
   change is harmless; the fork only picks up a version when its manifest is
   bumped to it.
 - The bump commit is pushed with `GITHUB_TOKEN`, which triggers no workflows,
-  so Lint and Tests do not run on it and it cannot start another release. A
-  tip of `main` authored by `github-actions[bot]` is skipped anyway, so the
-  workflow cannot loop even if that changes.
+  so Lint and Tests do not run on it and it cannot start another release. Its
+  `[skip release]` marker makes the job skip itself anyway, so the workflow
+  cannot loop even if that changes.
 - Runs are serialised (`concurrency: release`). Two merges in quick
   succession give one release containing both when the first run checks out
-  a tip that already includes the second merge; the second run then finds the
-  bot's commit at the tip and does nothing.
-- The patch bump only reads the leading `major.minor.patch` of the version, so
-  a tagged pre-release such as `0.2.0b1` is followed by `0.2.1`. Set the
-  final version in a pull request instead when that matters.
+  a tip that already includes the second merge; the second run then bumps
+  again and publishes a release with no library change in it.
+- `bump-my-version` is installed unpinned in the release job, like the other
+  development tools in this repository. It has write access to `main` through
+  the job's token, so pin it if that trade-off changes.
 - `main` must let `github-actions[bot]` push directly. If branch protection or
   a ruleset is added, give the Actions app a bypass.
 
@@ -105,8 +108,9 @@ change touches no Python, so the checks never block a docs-only pull request.
 
 | Symptom | Likely cause |
 |---|---|
-| No release after a merge | The tip of `main` was authored by `github-actions[bot]`, or an earlier run released the merge together with a previous one. Check the Release workflow's log. |
-| Release fails pushing the bump | `main` rejects pushes from the Actions app (branch protection or a ruleset without a bypass), or the `version` line in `pyproject.toml` is not `version = "<major>.<minor>.<patch>"`. |
+| No release after a merge | The merge commit's message contains `[skip release]`, or an earlier run released the merge together with a previous one. Check the Release workflow's log. |
+| Release fails at "Bump the version" | `bump-my-version` could not parse `project.version` or find `version = "<current>"` in `pyproject.toml`; check `[tool.bumpversion]` there. |
+| Release fails pushing the bump | `main` rejects pushes from the Actions app (branch protection or a ruleset without a bypass). The tag and commit exist only in the runner, so nothing needs cleaning up; fix the protection and re-run. |
 | Release fails at "Verify the wheel" | The wheel is missing a module or data file: check `[tool.setuptools]` in `pyproject.toml` and `MANIFEST.in`. |
 | Release fails creating the tag | The `GITHUB_TOKEN` needs `contents: write`, which the workflow requests; check the repository's Actions permissions allow it. |
 | Home Assistant cannot install the requirement | The wheel filename in the manifest must match the release asset exactly, including the normalised version (`0.1.0b1`, not `0.1.0.B1`). |

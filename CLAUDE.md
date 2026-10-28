@@ -211,11 +211,11 @@ bandit --configfile=tests/bandit.yaml src/
 ```
 
 All work happens on `main` through pull requests, and every merge is a
-release: `release.yml` bumps the patch version in `pyproject.toml` on `main`
-(unless the pull request already set a new version, for a minor or major
-bump), tags it and publishes a GitHub Release with the wheel attached (see
-`docs/workflows/README.md`). Do not bump the version in a pull request for a
-patch release.
+release: `release.yml` runs `bump-my-version bump patch` on `main`, which
+bumps `version` in `pyproject.toml`, commits and tags it, then publishes a
+GitHub Release with the wheel attached (see `docs/workflows/README.md`). A
+minor or major release is the same workflow run by hand with that part
+chosen. Never change `version` in a pull request.
 
 A PII check pre-commit hook (`scripts/check_data_pii.py`) runs on any
 `src/apyhiveapi/data/*.json` change — ensure fixture data is anonymised before
