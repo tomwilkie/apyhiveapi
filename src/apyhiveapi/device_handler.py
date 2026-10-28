@@ -72,12 +72,29 @@ class DeviceHandler:
     def _refresh_device(self, device: Device) -> bool:
         """Update the device's hardware details and return whether it is online.
 
+        ``device.device_data`` becomes the hardware device's props plus two
+        flags: ``online``, the product's availability from :meth:`_is_online`,
+        and ``device_online``, the hardware's own ``props.online`` (False when
+        the device or the prop is missing). A heating or hot water product with
+        no thermostat in its zone is its own device, so both flags are the
+        product's.
+
         Offline products are reported through the session, which logs each one
         once until it recovers.
         """
-        data = self.session.data.devices.get(device.device_id) or {}
+        nodes = self.session.data
+        data = (
+            nodes.devices.get(device.device_id)
+            or nodes.products.get(device.device_id)
+            or {}
+        )
+        props = data.get("props") or {}
         online = self._is_online(device)
-        device.device_data = {**(data.get("props") or {}), "online": online}
+        device.device_data = {
+            **props,
+            "online": online,
+            "device_online": bool(props.get("online")),
+        }
         if online:
             self.session.device_recovered(device.hive_id)
         else:

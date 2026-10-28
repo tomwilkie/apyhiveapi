@@ -174,8 +174,10 @@ class TestOfflineDevices:
         await file_session.hotwater.get_water_heater(hotwater)
         assert heating.status["mode"] == "OFF"
         assert heating.device_data["online"] is True
+        assert heating.device_data["device_online"] is False
         assert hotwater.status == {"current_operation": "SCHEDULE", "boost": "OFF"}
         assert hotwater.device_data["online"] is True
+        assert hotwater.device_data["device_online"] is False
         assert await file_session.hotwater.set_mode(hotwater, "MANUAL") is None
 
     async def test_offline_trv_takes_its_zone_offline(self, file_session):
