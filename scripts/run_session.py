@@ -171,7 +171,7 @@ async def _stored_login(
 
 
 async def live_config() -> dict[str, Any]:
-    """Log in to a real Hive account and return the start_session config."""
+    """Log in to a real Hive account and return the new_session config."""
     stored = load_stored()
     username = stored.get("username") or input("Hive email: ").strip()
     password = getpass.getpass("Hive password (hidden, not stored): ")
@@ -413,7 +413,7 @@ async def run(args: argparse.Namespace, config: dict[str, Any]) -> None:
         allow_writes=args.allow_writes,
     )
     async with hive:
-        hive.start_session(config)
+        hive.new_session(config)
         admin = Admin(hive, settings)
         ok = await admin.refresh()
         LOG.info("Session started.")

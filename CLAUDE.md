@@ -57,7 +57,7 @@ field it reads is renamed or changes type, a new exception is raised that it
 doesn't catch, or something blocks the event loop. The library mirrors Hive's
 own API and knows nothing about Home Assistant; the public API is:
 
-- `Hive(websession)` with `start_session` (sync: loads the config entry's
+- `Hive(websession)` with `new_session` (sync: loads the config entry's
   tokens and device credentials, sends nothing), `get_nodes` (Hive's
   `GET /nodes/all`), the commands `set_mode`, `set_target_temperature`,
   `set_heating_boost` and `set_hot_water_boost` (each one
@@ -170,7 +170,7 @@ The rules that keep it consistent:
   `ConfigEntryNotReady`, the next poll interval, and the user for commands.
 - **Calls to Hive raise; the data they return does not.** `get_nodes()`
   returns a snapshot or raises; the `set_*` commands return nothing or
-  raise. All let every `HiveError` propagate. `start_session()` sends nothing and raises
+  raise. All let every `HiveError` propagate. `new_session()` sends nothing and raises
   only `HiveReauthRequired`, for a config with no tokens or incomplete device
   data. The library does not check command values: the fork does.
 - **Parse JSON in one place.** `nodes.parse_nodes()` turns a `/nodes/all`
@@ -304,7 +304,7 @@ same PR.
 ```text
 src/apyhiveapi/
 ├── __init__.py         ← public exports: Hive, Auth, the node dataclasses, SMS_REQUIRED, the exceptions
-├── hive.py             ← Hive — the session: login and token refresh, start_session,
+├── hive.py             ← Hive — the session: login and token refresh, new_session,
 │                         get_nodes and the set_* commands
 ├── auth.py             ← HiveAuth (exported as Auth) — Cognito SRP login, SMS 2FA,
 │                         token refresh, trusted devices; _cognito() translates botocore errors
@@ -337,7 +337,7 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens` and
   `login()` when the refresh token is rejected. `_api_call()` wraps every API
   call: refresh first, and on `HiveReauthRequired` (HTTP 401) log in once
   and retry.
-- **Session start** — `start_session(config)` applies the config (username and
+- **New session** — `new_session(config)` applies the config (username and
   password, `tokens`, `device_data`; the username `use@file.com` switches to
   file mode) and sends nothing.
 - **Hive's endpoints** — `get_nodes()` fetches `/nodes/all` (or the fixture),
@@ -382,7 +382,7 @@ Two flows:
    (`device_group_key`, `device_key`, `device_password`). A fourth value, the
    token issue time saved by older versions, is accepted and ignored: tokens
    loaded from a config entry count as due for a refresh.
-2. **Subsequent logins** — pass the saved `device_data` in the `start_session`
+2. **Subsequent logins** — pass the saved `device_data` in the `new_session`
    config. `login()` is answered with a device challenge, which
    `device_login()` completes without an SMS.
 

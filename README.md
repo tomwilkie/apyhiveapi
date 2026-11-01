@@ -65,7 +65,7 @@ async def main():
 
     async with ClientSession() as websession:
         hive = Hive(websession)
-        hive.start_session(
+        hive.new_session(
             {
                 "username": username,
                 "password": password,
@@ -110,7 +110,7 @@ python examples/example_login.py
 
 ## Reading and Controlling Devices
 
-`start_session()` only loads the saved credentials; nothing is sent until the
+`new_session()` only loads the saved credentials; nothing is sent until the
 first call. `get_nodes()` fetches `GET /nodes/all` and returns a `Nodes`
 snapshot: `user`, `products` and `devices`, each keyed by Hive ID. Products are
 `HeatingProduct` (`heating`, `trvcontrol`) or `HotWaterProduct` (`hotwater`);
@@ -167,7 +167,7 @@ Set `username="use@file.com"` to load device state from the bundled JSON fixture
 
 ```python
 async with Hive(username="use@file.com", password="") as hive:
-    hive.start_session({})
+    hive.new_session({})
     nodes = await hive.get_nodes()
 ```
 

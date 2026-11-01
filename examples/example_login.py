@@ -49,7 +49,7 @@ def save_device(username: str, device_data: list[str]) -> None:
 
 
 def tokens_from(result: dict[str, Any]) -> dict[str, str]:
-    """Convert a Cognito AuthenticationResult into start_session tokens."""
+    """Convert a Cognito AuthenticationResult into new_session tokens."""
     auth_result = result["AuthenticationResult"]
     return {
         "token": auth_result["IdToken"],
@@ -131,7 +131,7 @@ async def main() -> None:
     config = await build_config()
     hive = Hive(username=config["username"], password=config["password"])
     async with hive:
-        hive.start_session(config)
+        hive.new_session(config)
         nodes = await hive.get_nodes()
         print("\nProducts:")
         for product in nodes.products.values():

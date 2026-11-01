@@ -151,7 +151,7 @@ def session(websession):
     hive = Hive(websession)
     hive.auth.refresh_token = AsyncMock(return_value=_COGNITO_RESULT)
     hive.login = AsyncMock()
-    hive.start_session(
+    hive.new_session(
         {
             "username": "user@example.com",
             "password": "password",  # pragma: allowlist secret

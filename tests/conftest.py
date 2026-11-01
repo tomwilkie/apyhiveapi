@@ -9,5 +9,5 @@ from apyhiveapi import Hive
 async def file_session():
     """Hive session reading the bundled data.json fixture."""
     async with Hive(username="use@file.com", password="") as hive:
-        hive.start_session({})
+        hive.new_session({})
         yield hive

@@ -46,7 +46,7 @@ _DEVICE_DATA_FIELDS = 3
 class Hive:
     """A Hive account session.
 
-    Create one per account and call :meth:`start_session` with the saved
+    Create one per account and call :meth:`new_session` with the saved
     tokens and device credentials. Then :meth:`get_nodes` fetches Hive's
     ``GET /nodes/all``, and the ``set_*`` commands each send one
     ``POST /nodes/{type}/{id}``. The session keeps no device state and has no
@@ -340,7 +340,7 @@ class Hive:
         )
         return result
 
-    # --- Session start -----------------------------------------------------
+    # --- New session -------------------------------------------------------
 
     def _configure_file_mode(self, username: str | None) -> None:
         """Switch to the bundled fixture data for the magic testing username."""
@@ -365,7 +365,7 @@ class Hive:
         self.auth.device_key = device_data[1]
         self.auth.device_password = device_data[2]
 
-    def start_session(self, config: dict[str, Any] | None = None) -> None:
+    def new_session(self, config: dict[str, Any] | None = None) -> None:
         """Load the credentials, tokens and device data from a config entry.
 
         Nothing is sent to Hive or Cognito; the first :meth:`get_nodes` is.
@@ -379,7 +379,7 @@ class Hive:
                 is incomplete.
         """
         config = config or {}
-        _LOGGER.debug("start_session - Config: %s", sanitize_payload(config))
+        _LOGGER.debug("new_session - Config: %s", sanitize_payload(config))
         self._configure_file_mode(config.get("username", self.config.username))
         if self.config.file:
             return

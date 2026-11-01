@@ -87,8 +87,8 @@ class TestApplyDeviceData:
         assert hive.tokens.token_created == _EPOCH
 
 
-class TestStartSession:
-    """Tests for Hive.start_session."""
+class TestNewSession:
+    """Tests for Hive.new_session."""
 
     @pytest.mark.parametrize(
         ("ctor_username", "config"),
@@ -105,7 +105,7 @@ class TestStartSession:
     )
     def test_file_mode_needs_no_tokens(self, ctor_username, config):
         hive = Hive(username=ctor_username, password="")
-        hive.start_session(config)
+        hive.new_session(config)
         assert hive.config.file is True
         assert hive.tokens.token_data == {}
         assert hive.auth.device_key is None
@@ -128,7 +128,7 @@ class TestStartSession:
     def test_live_mode_without_tokens_raises_before_anything_is_applied(self, config):
         hive = _make_hive()
         with pytest.raises(HiveReauthRequired, match="no tokens"):
-            hive.start_session(config)
+            hive.new_session(config)
         assert hive.auth.username == "user@example.com"
         assert hive.auth.password == "pw"  # pragma: allowlist secret
         assert hive.auth.device_key is None
@@ -136,7 +136,7 @@ class TestStartSession:
 
     def test_tokens_only_config_stores_tokens_and_keeps_credentials(self):
         hive = _make_hive()
-        hive.start_session({"tokens": _TOKENS})
+        hive.new_session({"tokens": _TOKENS})
         assert hive.tokens.token_data == _TOKENS
         assert hive.tokens.token_created == _EPOCH
         assert hive.auth.username == "user@example.com"
@@ -147,7 +147,7 @@ class TestStartSession:
         self,
     ):
         hive = _make_hive()
-        hive.start_session(
+        hive.new_session(
             {
                 "tokens": _TOKENS,
                 "username": "real@user.com",
@@ -176,8 +176,8 @@ class TestStartSession:
             },
         }
         with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
-            hive.start_session(config)
-        assert "start_session - Config" in caplog.text
+            hive.new_session(config)
+        assert "new_session - Config" in caplog.text
         assert "user@example.com" in caplog.text
         for value in ("PW", "GK", "DK", "DP", "ID", "RF", "AC"):
             assert f"{value}HEAD" not in caplog.text
