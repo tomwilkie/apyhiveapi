@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/tomwilkie/apyhiveapi/actions/workflows/ci.yml/badge.svg) ![PyPI](https://img.shields.io/pypi/v/apyhiveapi) ![License](https://img.shields.io/github/license/tomwilkie/apyhiveapi)
 
-An async Python library for the [Hive](https://www.hivehome.com/) smart home platform. It exists to power [tomwilkie/ha-hive](https://github.com/tomwilkie/ha-hive), a fork of the Hive integration for [Home Assistant](https://www.home-assistant.io/), and exposes exactly what that integration needs: Hive heating (thermostats and TRVs) and hot water.
+An async Python library for the [Hive](https://www.hivehome.com/) smart home platform. It exists to power [tomwilkie/ha-hive](https://github.com/tomwilkie/ha-hive), a fork of the Hive integration for [Home Assistant](https://www.home-assistant.io/), and exposes exactly what that integration needs: Hive heating and hot water.
 
 > This library is a hard fork of [Pyhass/Pyhive](https://github.com/Pyhass/Pyhive), cut down to what the ha-hive integration needs and restarted at version 0.0.1. It was called `pyhive-integration` until v0.1.5; that name on PyPI belongs to the upstream project, so this one is published as `apyhiveapi`, which is also the import name.
 
@@ -21,7 +21,7 @@ An async Python library for the [Hive](https://www.hivehome.com/) smart home pla
 
 | Device Type | Capabilities |
 | --- | --- |
-| **Heating** (thermostat, TRV) | Current / target temperature, mode (schedule / manual / off), boost on/off |
+| **Heating** (thermostat) | Current / target temperature, mode (schedule / manual / off), boost on/off |
 | **Hot Water** | Mode (schedule / on / off), boost on/off |
 
 Lights, smart plugs, sensors and the hub are not supported: the ha-hive integration does not use them.
@@ -113,8 +113,8 @@ python examples/example_login.py
 `new_session()` only loads the saved credentials; nothing is sent until the
 first call. `get_nodes()` fetches `GET /nodes/all` and returns a `Nodes`
 snapshot: `user`, `products` and `devices`, each keyed by Hive ID. Products are
-`HeatingProduct` (`heating`, `trvcontrol`) or `HotWaterProduct` (`hotwater`);
-devices are `Device` (`hub`, `thermostatui`, `boilermodule`, `trv`). Fields keep
+`HeatingProduct` (`heating`) or `HotWaterProduct` (`hotwater`);
+devices are `Device` (`hub`, `thermostatui`, `boilermodule`). Fields keep
 Hive's names and values: a heating `mode` can be `BOOST`, a `previous_mode` can be
 `False`. A value Hive left out or sent with an unexpected type is `None`.
 
