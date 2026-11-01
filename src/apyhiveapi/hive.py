@@ -387,8 +387,10 @@ class Hive:
         """Carry over required state keys that a poll response has dropped.
 
         Hive sometimes answers a poll with products whose ``state`` block is
-        missing keys it normally has. Keep the last known value for the keys
-        in ``REQUIRED_STATE_KEYS``, for up to ``MAX_STALE_STATE_POLLS``
+        missing keys it normally has, and the ``props`` of such a degraded
+        product cannot be trusted either (it can report the product offline).
+        Keep the last known value for the keys in ``REQUIRED_STATE_KEYS``, and
+        the last known ``props``, for up to ``MAX_STALE_STATE_POLLS``
         consecutive polls.
 
         Args:
@@ -412,10 +414,11 @@ class Hive:
             name = previous_state.get("name", product_id)
             product_type = product.get("type")
             _LOGGER.debug(
-                "Hive API state for %s %s arrived with keys: %s",
+                "Hive API state for %s %s arrived with keys: %s; props: %s",
                 product_type,
                 product_id,
                 ", ".join(sorted(new_state)),
+                sanitize_payload({"props": product.get("props")}),
             )
             polls = self._stale_state_polls.get(product_id, 0) + 1
             self._stale_state_polls[product_id] = polls
@@ -434,6 +437,8 @@ class Hive:
                 **{key: previous_state[key] for key in missing},
                 **new_state,
             }
+            if isinstance(previous.get("props"), dict):
+                product["props"] = previous["props"]
             incomplete.append(
                 f"{name} ({product_type} {product_id}) missing {', '.join(missing)}"
             )

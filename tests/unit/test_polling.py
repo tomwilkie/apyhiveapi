@@ -207,9 +207,12 @@ class TestKeepMissingState:
         hive.data.products = {"heat-1": _product("heat-1", dict(state))}
         return hive
 
-    def test_missing_required_key_keeps_the_previous_value(self, caplog):
+    def test_missing_required_key_keeps_the_previous_value_and_props(self, caplog):
         hive = self._hive({"name": "Hallway", "mode": "OFF", "target": 7})
+        props = {"online": True, "temperature": 19.5, "working": False}
+        hive.data.products["heat-1"]["props"] = props
         new = {"heat-1": _product("heat-1", {"name": "Hallway", "target": 20})}
+        new["heat-1"]["props"] = {"online": False}
         with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
             hive._keep_missing_state(new)
         assert new["heat-1"]["state"] == {
@@ -217,6 +220,7 @@ class TestKeepMissingState:
             "mode": "OFF",
             "target": 20,
         }
+        assert new["heat-1"]["props"] == props
         expected = (
             "Hive API returned incomplete state - keeping the last known values: "
             "Hallway (heating heat-1) missing mode"
@@ -314,14 +318,23 @@ class TestKeepMissingState:
 
     def test_gives_up_after_max_consecutive_incomplete_polls(self, caplog):
         hive = self._hive({"name": "Hallway", "mode": "OFF", "target": 7})
+        hive.data.products["heat-1"]["props"] = {"online": True}
         incomplete = {"name": "Hallway", "target": 7}
+
+        def _degraded():
+            product = _product("heat-1", dict(incomplete))
+            product["props"] = {"online": False}
+            return product
+
         for _ in range(MAX_STALE_STATE_POLLS):
-            hive._store_nodes({"products": [_product("heat-1", dict(incomplete))]})
+            hive._store_nodes({"products": [_degraded()]})
             assert hive.data.products["heat-1"]["state"]["mode"] == "OFF"
+            assert hive.data.products["heat-1"]["props"] == {"online": True}
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            hive._store_nodes({"products": [_product("heat-1", dict(incomplete))]})
+            hive._store_nodes({"products": [_degraded()]})
         assert hive.data.products["heat-1"]["state"] == incomplete
+        assert hive.data.products["heat-1"]["props"] == {"online": False}
         expected = (
             "Hive API state for Hallway (heating heat-1) is still missing mode "
             f"after {MAX_STALE_STATE_POLLS} polls - no longer keeping the last "

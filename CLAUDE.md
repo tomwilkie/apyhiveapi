@@ -357,7 +357,8 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens`,
   through `update_lock`; concurrent callers return `False` instead of waiting.
   `get_devices()` polls now through `_poll()`, which fetches `/nodes/all` (or
   the fixture) and stores products, devices and user. Products that come back
-  without their `REQUIRED_STATE_KEYS` keep the previous state for up to
+  without their `REQUIRED_STATE_KEYS` keep the previous state and `props`
+  (so a degraded reply does not mark them offline) for up to
   `MAX_STALE_STATE_POLLS` polls. There is no entity cache: `_store_nodes()` is
   synchronous, so readers never see a half-updated poll.
 - **Discovery** — `start_session(config)` applies the config (username and
