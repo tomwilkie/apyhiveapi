@@ -34,15 +34,6 @@ _LOGGER = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).parent / "data"
 
-# Consecutive polls for which state keys missing from a response are carried
-# over from the previous poll before the response is accepted as it is.
-MAX_STALE_STATE_POLLS = 5
-
-# State keys Hive always sends for a product that has them. Only these are
-# carried over: other keys (such as ``boost``) are legitimately omitted at
-# times, so keeping their old value would report stale state.
-REQUIRED_STATE_KEYS = frozenset({"mode", "name", "status", "target"})
-
 # Shortest polling interval allowed, to stay within Hive's API rate limits.
 MIN_SCAN_INTERVAL = timedelta(seconds=15)
 
@@ -102,7 +93,6 @@ class Hive:
         self.hub_id: str | None = None
         self.update_lock = asyncio.Lock()
         self._refresh_lock = asyncio.Lock()
-        self._stale_state_polls: dict[str, int] = {}
         self._offline_devices: set[str] = set()
         # The login failure that needs the user, kept so later calls fail fast.
         self._reauth_error: HiveReauthRequired | None = None
@@ -363,7 +353,6 @@ class Hive:
             "Hive returned %d products and %d devices", len(products), len(devices)
         )
         if products:
-            self._keep_missing_state(products)
             self.data.products = products
         if devices:
             self.data.devices = devices
@@ -382,69 +371,6 @@ class Hive:
         self.config.last_update = (
             datetime.now(UTC) - self.config.scan_interval + POLL_RETRY_DELAY
         )
-
-    def _keep_missing_state(self, new_products: dict[str, Any]) -> None:
-        """Carry over required state keys that a poll response has dropped.
-
-        Hive sometimes answers a poll with products whose ``state`` block is
-        missing keys it normally has. Keep the last known value for the keys
-        in ``REQUIRED_STATE_KEYS``, for up to ``MAX_STALE_STATE_POLLS``
-        consecutive polls.
-
-        Args:
-            new_products: Products from the latest response, keyed by ID.
-        """
-        incomplete = []
-        for product_id, product in new_products.items():
-            previous = self.data.products.get(product_id) or {}
-            previous_state = previous.get("state")
-            if not isinstance(previous_state, dict):
-                previous_state = {}
-            new_state = product.get("state")
-            if not isinstance(new_state, dict):
-                new_state = {}
-            missing = sorted(
-                (previous_state.keys() & REQUIRED_STATE_KEYS) - new_state.keys()
-            )
-            if not missing:
-                self._stale_state_polls.pop(product_id, None)
-                continue
-            name = previous_state.get("name", product_id)
-            product_type = product.get("type")
-            _LOGGER.debug(
-                "Hive API state for %s %s arrived with keys: %s",
-                product_type,
-                product_id,
-                ", ".join(sorted(new_state)),
-            )
-            polls = self._stale_state_polls.get(product_id, 0) + 1
-            self._stale_state_polls[product_id] = polls
-            if polls > MAX_STALE_STATE_POLLS:
-                _LOGGER.warning(
-                    "Hive API state for %s (%s %s) is still missing %s after %d "
-                    "polls - no longer keeping the last known values.",
-                    name,
-                    product_type,
-                    product_id,
-                    ", ".join(missing),
-                    MAX_STALE_STATE_POLLS,
-                )
-                continue
-            product["state"] = {
-                **{key: previous_state[key] for key in missing},
-                **new_state,
-            }
-            incomplete.append(
-                f"{name} ({product_type} {product_id}) missing {', '.join(missing)}"
-            )
-        for product_id in self._stale_state_polls.keys() - new_products.keys():
-            del self._stale_state_polls[product_id]
-        if incomplete:
-            _LOGGER.warning(
-                "Hive API returned incomplete state - keeping the last known "
-                "values: %s",
-                "; ".join(sorted(incomplete)),
-            )
 
     # --- Session start and device discovery --------------------------------
 

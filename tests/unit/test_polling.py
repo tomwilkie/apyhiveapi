@@ -3,7 +3,6 @@
 # pylint: disable=protected-access
 
 import asyncio
-import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
@@ -11,7 +10,6 @@ import pytest
 
 from apyhiveapi.exceptions import HiveReauthRequired
 from apyhiveapi.hive import (
-    MAX_STALE_STATE_POLLS,
     MIN_SCAN_INTERVAL,
     POLL_RETRY_DELAY,
     Hive,
@@ -19,7 +17,6 @@ from apyhiveapi.hive import (
 from apyhiveapi.models import DEFAULT_SCAN_INTERVAL
 
 _FAR_PAST = timedelta(days=1)
-_LOGGER_NAME = "apyhiveapi.hive"
 
 
 def _make_hive(*, due=True):
@@ -197,162 +194,3 @@ class TestStoreNodes:
         hive._store_nodes(nodes)
         assert set(hive.data.products) == {"heat-1"}
         assert set(hive.data.devices) == {"hub-1"}
-
-
-class TestKeepMissingState:
-    """Required state keys dropped by a poll are carried over for a while."""
-
-    def _hive(self, state):
-        hive = _make_hive()
-        hive.data.products = {"heat-1": _product("heat-1", dict(state))}
-        return hive
-
-    def test_missing_required_key_keeps_the_previous_value(self, caplog):
-        hive = self._hive({"name": "Hallway", "mode": "OFF", "target": 7})
-        new = {"heat-1": _product("heat-1", {"name": "Hallway", "target": 20})}
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            hive._keep_missing_state(new)
-        assert new["heat-1"]["state"] == {
-            "name": "Hallway",
-            "mode": "OFF",
-            "target": 20,
-        }
-        expected = (
-            "Hive API returned incomplete state - keeping the last known values: "
-            "Hallway (heating heat-1) missing mode"
-        )
-        assert caplog.messages == [expected]
-        assert hive._stale_state_polls == {"heat-1": 1}
-
-    def test_warning_lists_every_product_and_missing_key(self, caplog):
-        hive = self._hive({"mode": "OFF", "target": 7, "boost": None})
-        hive.data.products["hw-1"] = _product("hw-1", {"mode": "OFF"}, "hotwater")
-        new = {
-            "heat-1": _product("heat-1", {"boost": None}),
-            "hw-1": {"id": "hw-1", "type": "hotwater"},
-        }
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            hive._keep_missing_state(new)
-        assert len(caplog.records) == 1
-        assert caplog.messages[0].endswith(
-            "heat-1 (heating heat-1) missing mode, target; "
-            "hw-1 (hotwater hw-1) missing mode"
-        )
-
-    @pytest.mark.parametrize(
-        "new_product",
-        [
-            pytest.param(_product("heat-1", {}), id="empty-state"),
-            pytest.param({"id": "heat-1", "type": "heating"}, id="no-state"),
-            pytest.param(_product("heat-1", "broken"), id="state-not-a-dict"),
-        ],
-    )
-    def test_only_the_required_keys_are_carried_over(self, new_product):
-        hive = self._hive(
-            {
-                "name": "Hall",
-                "mode": "MANUAL",
-                "target": 20,
-                "status": "ON",
-                "boost": 30,
-            }
-        )
-        new = {"heat-1": new_product}
-        hive._keep_missing_state(new)
-        assert new["heat-1"]["state"] == {
-            "name": "Hall",
-            "mode": "MANUAL",
-            "target": 20,
-            "status": "ON",
-        }
-
-    @pytest.mark.parametrize(
-        ("previous_products", "new_state", "expected_state"),
-        [
-            pytest.param(
-                {"heat-1": _product("heat-1", {"mode": "OFF", "boost": 30})},
-                {"mode": "OFF", "boost": None},
-                {"mode": "OFF", "boost": None},
-                id="null-value-is-present",
-            ),
-            pytest.param(
-                {
-                    "heat-1": _product(
-                        "heat-1",
-                        {"mode": "MANUAL", "target": 20, "boost": 30, "hue": 10},
-                    )
-                },
-                {"mode": "MANUAL", "target": 20},
-                {"mode": "MANUAL", "target": 20},
-                id="optional-keys-not-carried",
-            ),
-            pytest.param(
-                {"heat-2": _product("heat-2", {"mode": "OFF"})},
-                {"target": 7},
-                {"target": 7},
-                id="new-product",
-            ),
-            pytest.param(
-                {"heat-1": _product("heat-1", "broken")},
-                {"mode": "OFF"},
-                {"mode": "OFF"},
-                id="previous-state-not-a-dict",
-            ),
-        ],
-    )
-    def test_state_is_accepted_as_is_when_nothing_required_is_missing(
-        self, previous_products, new_state, expected_state, caplog
-    ):
-        hive = _make_hive()
-        hive.data.products = previous_products
-        new = {"heat-1": _product("heat-1", new_state)}
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            hive._keep_missing_state(new)
-        assert new["heat-1"]["state"] == expected_state
-        assert not caplog.records
-        assert not hive._stale_state_polls
-
-    def test_gives_up_after_max_consecutive_incomplete_polls(self, caplog):
-        hive = self._hive({"name": "Hallway", "mode": "OFF", "target": 7})
-        incomplete = {"name": "Hallway", "target": 7}
-        for _ in range(MAX_STALE_STATE_POLLS):
-            hive._store_nodes({"products": [_product("heat-1", dict(incomplete))]})
-            assert hive.data.products["heat-1"]["state"]["mode"] == "OFF"
-        caplog.clear()
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            hive._store_nodes({"products": [_product("heat-1", dict(incomplete))]})
-        assert hive.data.products["heat-1"]["state"] == incomplete
-        expected = (
-            "Hive API state for Hallway (heating heat-1) is still missing mode "
-            f"after {MAX_STALE_STATE_POLLS} polls - no longer keeping the last "
-            "known values."
-        )
-        assert caplog.messages == [expected]
-
-    def test_after_giving_up_the_shorter_state_is_the_baseline(self, caplog):
-        hive = self._hive({"mode": "OFF", "target": 7})
-        for _ in range(MAX_STALE_STATE_POLLS + 1):
-            hive._store_nodes({"products": [_product("heat-1", {"target": 7})]})
-        caplog.clear()
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            hive._store_nodes({"products": [_product("heat-1", {"target": 7})]})
-        assert not caplog.records
-        assert not hive._stale_state_polls
-        assert hive.data.products["heat-1"]["state"] == {"target": 7}
-
-    def test_complete_response_resets_the_count(self):
-        hive = self._hive({"mode": "OFF"})
-        hive._store_nodes({"products": [_product("heat-1", {})]})
-        assert hive._stale_state_polls == {"heat-1": 1}
-        hive._store_nodes({"products": [_product("heat-1", {"mode": "MANUAL"})]})
-        assert not hive._stale_state_polls
-        hive._store_nodes({"products": [_product("heat-1", {})]})
-        assert hive._stale_state_polls == {"heat-1": 1}
-        assert hive.data.products["heat-1"]["state"] == {"mode": "MANUAL"}
-
-    def test_count_is_dropped_for_products_no_longer_returned(self):
-        hive = self._hive({"mode": "OFF"})
-        hive._store_nodes({"products": [_product("heat-1", {})]})
-        assert hive._stale_state_polls == {"heat-1": 1}
-        hive._store_nodes({"products": [_product("heat-2", {"mode": "OFF"})]})
-        assert not hive._stale_state_polls

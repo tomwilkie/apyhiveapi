@@ -181,8 +181,7 @@ The rules that keep it consistent:
   fork can map it to the right `ConfigEntry*` exception.
 - **Read JSON through one accessor.** Handlers read product state with
   `_get_product_state()`; a missing key is data, not an error, and is not
-  logged (the poll-level `_keep_missing_state()` already warns once per poll
-  about incomplete state).
+  logged.
 
 ## Commands
 
@@ -356,9 +355,8 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens`,
   (`update_interval()` sets it, never below `MIN_SCAN_INTERVAL`) and serialised
   through `update_lock`; concurrent callers return `False` instead of waiting.
   `get_devices()` polls now through `_poll()`, which fetches `/nodes/all` (or
-  the fixture) and stores products, devices and user. Products that come back
-  without their `REQUIRED_STATE_KEYS` keep the previous state for up to
-  `MAX_STALE_STATE_POLLS` polls. There is no entity cache: `_store_nodes()` is
+  the fixture) and stores products, devices and user as Hive returned them.
+  There is no entity cache: `_store_nodes()` is
   synchronous, so readers never see a half-updated poll.
 - **Discovery** — `start_session(config)` applies the config (username and
   password, `tokens`, `device_data`, `options.scan_interval`; the username
