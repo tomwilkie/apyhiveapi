@@ -15,9 +15,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-HEATING_PRODUCT_TYPES = frozenset({"heating", "trvcontrol"})
+HEATING_PRODUCT_TYPES = frozenset({"heating"})
 HOT_WATER_PRODUCT_TYPES = frozenset({"hotwater"})
-DEVICE_TYPES = frozenset({"hub", "thermostatui", "boilermodule", "trv"})
+DEVICE_TYPES = frozenset({"hub", "thermostatui", "boilermodule"})
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class User:
 
 @dataclass(frozen=True)
 class HeatingProduct:
-    """A ``heating`` or ``trvcontrol`` product."""
+    """A ``heating`` product."""
 
     id: str
     type: str
@@ -38,7 +38,6 @@ class HeatingProduct:
     model: str | None
     version: str | None
     zone: str | None
-    trvs: tuple[str, ...]
     temperature: float | None
     working: bool | None
     mode: str | None
@@ -70,7 +69,7 @@ type Product = HeatingProduct | HotWaterProduct
 
 @dataclass(frozen=True)
 class Device:
-    """A ``hub``, ``thermostatui``, ``boilermodule`` or ``trv`` device."""
+    """A ``hub``, ``thermostatui`` or ``boilermodule`` device."""
 
     id: str
     type: str
@@ -122,7 +121,6 @@ def _mode(value: object) -> str | bool | None:
 def _heating(node: dict[str, Any]) -> HeatingProduct:
     props, state = _dict(node.get("props")), _dict(node.get("state"))
     previous = _dict(props.get("previous"))
-    trvs = props.get("trvs")
     return HeatingProduct(
         id=node["id"],
         type=node["type"],
@@ -131,9 +129,6 @@ def _heating(node: dict[str, Any]) -> HeatingProduct:
         model=_str(props.get("model")),
         version=_str(props.get("version")),
         zone=_str(props.get("zone")),
-        trvs=tuple(t for t in trvs if isinstance(t, str))
-        if isinstance(trvs, list)
-        else (),
         temperature=_float(props.get("temperature")),
         working=_bool(props.get("working")),
         mode=_str(state.get("mode")),

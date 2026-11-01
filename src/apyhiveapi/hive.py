@@ -252,7 +252,7 @@ class Hive:
     async def set_target_temperature(
         self, product: HeatingProduct, target: float
     ) -> None:
-        """Set a heating or TRV target temperature: ``{"target": target}``.
+        """Set a heating target temperature: ``{"target": target}``.
 
         Raises:
             HiveReauthRequired: The user has to log in again.

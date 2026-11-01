@@ -9,7 +9,7 @@ This is apyhiveapi, the async Python library behind the Hive integration for
 Home Assistant. It is a hard fork of Pyhass/Pyhive, restarted at version
 0.0.1 and published on PyPI as `apyhiveapi` (it was `pyhive-integration`,
 installed from GitHub release wheels, until v0.1.5; upstream owns that name
-on PyPI). It covers Hive heating (thermostats and TRVs) and hot water only. The source is one flat package in
+on PyPI). It covers Hive heating and hot water only. The source is one flat package in
 `src/apyhiveapi/`: no sync package, no mixins, no deprecation shims and no
 camelCase compatibility aliases. The public API is snake_case only.
 
@@ -76,7 +76,7 @@ own API and knows nothing about Home Assistant; the public API is:
 Everything that turns Hive's model into Home Assistant's lives in the fork:
 its `DataUpdateCoordinator` calls `get_nodes()` on its own interval, and the
 fork attaches products to their hardware (heating and hot water to the
-thermostat in their zone, a TRV control to its first TRV), decides
+thermostat in their zone), decides
 availability, reports a `BOOST` mode as the mode it returns to, ends a boost
 by setting its `previous_mode`, validates command arguments and names Hive's
 `Receiver` `Heating`.
@@ -361,15 +361,14 @@ snake_case and Hive's own values, from the node's `props` or `state`:
 | Class | Hive types | Fields |
 |---|---|---|
 | `User` | `user` | `temperature_unit` |
-| `HeatingProduct` | `heating`, `trvcontrol` | `id`, `type`, `name`, `online`, `model`, `version`, `zone`, `trvs`, `temperature`, `working`, `mode` (`SCHEDULE` / `MANUAL` / `OFF` / `BOOST`), `target`, `boost` (minutes), `previous_mode` (a mode or `False`), `previous_target` |
+| `HeatingProduct` | `heating` | `id`, `type`, `name`, `online`, `model`, `version`, `zone`, `temperature`, `working`, `mode` (`SCHEDULE` / `MANUAL` / `OFF` / `BOOST`), `target`, `boost` (minutes), `previous_mode` (a mode or `False`), `previous_target` |
 | `HotWaterProduct` | `hotwater` | `id`, `type`, `name`, `online`, `model`, `version`, `zone`, `mode` (`SCHEDULE` / `MANUAL` / `OFF` / `BOOST`), `status` (`ON` / `OFF`), `boost`, `previous_mode` |
-| `Device` | `hub`, `thermostatui`, `boilermodule`, `trv` | `id`, `type`, `name`, `online`, `model`, `manufacturer`, `version`, `zone`, `battery`, `mac_address` |
+| `Device` | `hub`, `thermostatui`, `boilermodule` | `id`, `type`, `name`, `online`, `model`, `manufacturer`, `version`, `zone`, `battery`, `mac_address` |
 
 `online` is each node's own `props.online`. Hive reports heating and hot water
 products as the receiver that runs them (their `model` is the receiver's,
 `SLR1` / `SLR2`), so a battery thermostat dropping off leaves them online; the
-thermostat's own flag is on its `Device`. A TRV control has no hardware of its
-own: its `trvs` lists the TRV devices it drives.
+thermostat's own flag is on its `Device`.
 
 ### Authentication (`auth.py`)
 

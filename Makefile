@@ -43,7 +43,7 @@ help:
 	@echo "  interval SECONDS          Seconds between polls, from the next wait"
 	@echo "Only in a session started with WRITE=1 (these change real devices):"
 	@echo "  set-mode DEVICE MODE      Set a mode: SCHEDULE, MANUAL or OFF"
-	@echo "  set-temp DEVICE TEMP      Set a heating or TRV target temperature"
+	@echo "  set-temp DEVICE TEMP      Set a heating target temperature"
 	@echo "  boost DEVICE MINS [TEMP]  Start a boost (heating needs TEMP)"
 	@echo ""
 	@echo "Examples"

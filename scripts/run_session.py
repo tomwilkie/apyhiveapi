@@ -356,7 +356,7 @@ class Admin:
         return await self._after_command(ref)
 
     async def set_temp(self, ref: str, target: str) -> dict[str, Any]:
-        """Set a heating or TRV target temperature, then poll."""
+        """Set a heating target temperature, then poll."""
         await self.hive.set_target_temperature(self._heating(ref), float(target))
         return await self._after_command(ref)
 
@@ -377,7 +377,7 @@ class Admin:
         product = self._find(ref)
         if isinstance(product, HeatingProduct):
             return product
-        raise ValueError(f"{ref!r} is not a heating or TRV product")
+        raise ValueError(f"{ref!r} is not a heating product")
 
     async def _after_command(self, ref: str) -> dict[str, Any]:
         await self.refresh()

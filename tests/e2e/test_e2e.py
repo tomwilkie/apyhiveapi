@@ -5,10 +5,8 @@ from apyhiveapi import HeatingProduct, HotWaterProduct
 _HUB_ID = "hub-0000-0000-0000-000000000001"
 _THERMOSTAT_ID = "thermostatui-0000-0000-0000-000000000001"
 _BOILER_MODULE_ID = "boilermodule-0000-0000-0000-000000000001"
-_TRV_ID = "trv-0000-0000-0000-000000000001"
 _HEATING_ID = "heating-0000-0000-0000-000000000001"
 _HOTWATER_ID = "hotwater-0000-0000-0000-000000000001"
-_TRV_CONTROL_ID = "trvcontrol-0000-0000-0000-000000000001"
 
 
 class TestFixture:
@@ -18,29 +16,24 @@ class TestFixture:
         nodes = await file_session.get_nodes()
         assert {(p.type, p.id) for p in nodes.products.values()} == {
             ("heating", _HEATING_ID),
-            ("trvcontrol", _TRV_CONTROL_ID),
             ("hotwater", _HOTWATER_ID),
         }
         assert {(d.type, d.id) for d in nodes.devices.values()} == {
             ("hub", _HUB_ID),
             ("thermostatui", _THERMOSTAT_ID),
             ("boilermodule", _BOILER_MODULE_ID),
-            ("trv", _TRV_ID),
         }
         assert nodes.user.temperature_unit == "C"
 
     async def test_products_link_to_their_hardware(self, file_session):
         # What the fork needs to attach each product to a device: heating and
-        # hot water share the thermostat's zone, a TRV control lists its TRV.
+        # hot water share the thermostat's zone.
         nodes = await file_session.get_nodes()
         heating = nodes.products[_HEATING_ID]
         hot_water = nodes.products[_HOTWATER_ID]
-        trv_control = nodes.products[_TRV_CONTROL_ID]
         assert isinstance(heating, HeatingProduct)
         assert isinstance(hot_water, HotWaterProduct)
-        assert isinstance(trv_control, HeatingProduct)
         assert heating.zone == hot_water.zone == nodes.devices[_THERMOSTAT_ID].zone
-        assert trv_control.trvs == (_TRV_ID,)
         assert nodes.devices[_THERMOSTAT_ID].battery == 80
         assert nodes.devices[_HUB_ID].mac_address is not None
 
