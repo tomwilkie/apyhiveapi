@@ -22,7 +22,7 @@ help:
 	@echo "  status         List the runners that are running"
 	@echo "  stop           Stop the runners"
 	@echo "  call           Run an admin command inside a running session, e.g."
-	@echo "                 CMD=\"mode Hallway\". With no CMD it lists the commands"
+	@echo "                 CMD=\"state Hallway\". With no CMD it lists the commands"
 	@echo "  live-forget    Delete the device credentials run-live saved in the macOS Keychain"
 	@echo ""
 	@echo "Options"
@@ -36,24 +36,19 @@ help:
 	@echo "Admin commands (make call CMD=\"<command>\")"
 	@echo "DEVICE is a name or the 8-character ID shown by 'devices'."
 	@echo "  help                      List the commands and whether writes are allowed"
-	@echo "  devices                   List the devices the other commands can address"
+	@echo "  devices                   List the products the other commands can address"
 	@echo "  poll                      Poll Hive now"
-	@echo "  mode DEVICE               The mode the library reports (heating, hot water)"
-	@echo "  state DEVICE              The state as last received, without its schedule"
-	@echo "  status DEVICE             device.status, online and min/max temp, as the fork reads them"
+	@echo "  state DEVICE              The product as the last poll parsed it"
 	@echo "  debug on | off            Library debug logging"
 	@echo "  interval SECONDS          Seconds between polls, from the next wait"
 	@echo "Only in a session started with WRITE=1 (these change real devices):"
-	@echo "  set-mode DEVICE MODE      Set a heating or hot water mode"
-	@echo "  set-temp DEVICE TEMP      Set a heating target temperature"
-	@echo "  boost DEVICE MINS [TEMP]  Start a boost (heating needs TEMP)"
-	@echo "  boost-off DEVICE          Cancel a boost"
+	@echo "  set DEVICE KEY=VALUE...   Send a product state, e.g. mode=MANUAL target=21"
 	@echo ""
 	@echo "Examples"
 	@echo "  make run-file INTERVAL=2 POLLS=8"
 	@echo "  make logs NAME=file"
 	@echo "  make stop NAME=live"
-	@echo "  make run-live WRITE=1            # then: make call CMD=\"set-mode Hallway OFF\""
+	@echo "  make run-live WRITE=1            # then: make call CMD=\"set Hallway mode=OFF\""
 
 .DEFAULT_GOAL := setup
 
@@ -111,7 +106,7 @@ status:
 stop:
 	@$(RUN_SESSION) --stop $(if $(NAME),--name $(NAME))
 
-# Run an admin command inside a running session: make call CMD="mode Hallway".
+# Run an admin command inside a running session: make call CMD="state Hallway".
 # `make call` alone lists the commands. NAME=<runner> picks the session when
 # more than one is running.
 call:

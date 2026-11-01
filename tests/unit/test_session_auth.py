@@ -1,4 +1,4 @@
-"""Tests for the Hive session: login, tokens, API calls and poll errors."""
+"""Tests for the Hive session: login, tokens and API calls."""
 
 import asyncio
 import logging
@@ -12,17 +12,13 @@ from apyhiveapi.auth import HiveAuth
 from apyhiveapi.exceptions import (
     HiveApiError,
     HiveConnectionError,
-    HiveDeviceOffline,
-    HiveError,
-    HiveInvalid2FACode,
     HiveInvalidPassword,
     HiveInvalidUsername,
     HiveReauthRequired,
 )
-from apyhiveapi.heating import Climate
-from apyhiveapi.hive import POLL_RETRY_DELAY, REFRESH_THRESHOLD, Hive
-from apyhiveapi.hotwater import WaterHeater
-from apyhiveapi.models import SessionData, SessionTokens
+from apyhiveapi.hive import REFRESH_THRESHOLD, Hive
+from apyhiveapi.models import SessionTokens
+from apyhiveapi.nodes import Device, HeatingProduct, Nodes, User
 
 AUTH_RESULT = {
     "AuthenticationResult": {
@@ -77,14 +73,6 @@ def _is_about(moment, expected):
     return abs(moment - expected) < _TOLERANCE
 
 
-def _warnings(caplog):
-    return [
-        record.getMessage()
-        for record in caplog.records
-        if record.name == _LOGGER_NAME and record.levelno == logging.WARNING
-    ]
-
-
 class TestInit:
     def test_builds_the_auth_api_and_session_state(self):
         hive = Hive(username="user@example.com", password="pw")
@@ -98,16 +86,7 @@ class TestInit:
         assert hive.tokens == SessionTokens()
         assert hive.config.username == "user@example.com"
         assert hive.config.file is False
-        assert hive.data == SessionData()
-        assert isinstance(hive.heating, Climate)
-        assert hive.heating.session is hive
-        assert isinstance(hive.hotwater, WaterHeater)
-        assert hive.hotwater.session is hive
-        # update_lock is held while _api_call takes _refresh_lock.
-        assert isinstance(hive.update_lock, asyncio.Lock)
         assert isinstance(hive._refresh_lock, asyncio.Lock)
-        assert hive._refresh_lock is not hive.update_lock
-        assert hive._offline_devices == set()
 
     def test_passes_the_websession_to_auth_and_api(self):
         websession = MagicMock()
@@ -537,7 +516,6 @@ class TestApiCall:
         [
             pytest.param(HiveConnectionError("Hive timed out"), id="connection-error"),
             pytest.param(HiveApiError("Hive refused"), id="api-error"),
-            pytest.param(HiveDeviceOffline("offline"), id="device-offline"),
             pytest.param(ValueError("boom"), id="programming-error"),
         ],
     )
@@ -599,119 +577,55 @@ class TestSetState:
         assert hive.tokens.token_data == NEW_TOKENS
 
 
-class TestPoll:
-    async def test_file_mode_loads_the_bundled_fixture(self):
-        hive = Hive(username="use@file.com", password="")
-        hive.config.file = True
-        hive.api.get_all = AsyncMock()
-        hive.config.last_update = _LAST_POLL
-        await hive._poll()
-        fixture = hive.open_file("data.json")
-        assert hive.data.user == fixture["user"]
-        assert hive.data.products == {p["id"]: p for p in fixture["products"]}
-        assert hive.data.devices == {d["id"]: d for d in fixture["devices"]}
-        hive.api.get_all.assert_not_awaited()
-        assert _is_about(hive.config.last_update, datetime.now(UTC))
-
-    async def test_file_mode_reads_off_the_event_loop(self):
+class TestGetNodes:
+    async def test_file_mode_reads_the_bundled_fixture_off_the_event_loop(self):
         hive = _make_hive()
         hive.config.file = True
         with patch(
             "apyhiveapi.hive.asyncio.to_thread", new=AsyncMock(return_value=_nodes())
         ) as to_thread:
-            await hive._poll()
+            nodes = await hive.get_nodes()
         to_thread.assert_awaited_once_with(hive.open_file, "data.json")
+        hive.api.get_all.assert_not_awaited()
+        assert set(nodes.products) == {"p1"}
 
-    async def test_api_mode_fetches_and_stores_all_nodes(self):
+    async def test_api_mode_fetches_all_nodes_and_parses_them(self):
         hive = _make_hive()
-        hive.config.last_update = _LAST_POLL
         with patch.object(hive, "open_file") as open_file:
-            await hive._poll()
+            nodes = await hive.get_nodes()
         open_file.assert_not_called()
         hive.api.get_all.assert_awaited_once_with()
-        nodes = _nodes()
-        assert hive.data.user == nodes["user"]
-        assert hive.data.products == {"p1": nodes["products"][0]}
-        assert hive.data.devices == {"d1": nodes["devices"][0]}
-        assert _is_about(hive.config.last_update, datetime.now(UTC))
+        assert isinstance(nodes, Nodes)
+        assert nodes.user == User(temperature_unit="C")
+        assert isinstance(nodes.products["p1"], HeatingProduct)
+        assert nodes.products["p1"].name == "Hall"
+        assert isinstance(nodes.devices["d1"], Device)
 
-    async def test_api_mode_logs_in_again_when_the_token_is_rejected(self):
+    async def test_rejected_token_logs_in_again_and_refetches(self):
         hive = _make_hive()
         hive.api.get_all.side_effect = [HiveReauthRequired("HTTP 401"), _nodes()]
         hive.auth.login.return_value = AUTH_RESULT
-        await hive._poll()
+        nodes = await hive.get_nodes()
         hive.auth.login.assert_awaited_once_with()
         assert hive.api.get_all.await_count == 2
         assert hive.tokens.token_data == NEW_TOKENS
-        assert hive.data.user == {"id": "u1", "temperatureUnit": "C"}
-
-
-class TestGetDevices:
-    async def test_returns_true_after_a_successful_poll(self, caplog):
-        hive = _make_hive()
-        hive.config.last_update = _LAST_POLL
-        assert await hive.get_devices() is True
-        hive.api.get_all.assert_awaited_once_with()
-        assert hive.data.user == {"id": "u1", "temperatureUnit": "C"}
-        assert _is_about(hive.config.last_update, datetime.now(UTC))
-        assert _warnings(caplog) == []
+        assert set(nodes.devices) == {"d1"}
 
     @pytest.mark.parametrize(
-        "error",
+        "response",
         [
+            pytest.param({}, id="empty"),
+            pytest.param({"user": {"temperatureUnit": "C"}}, id="user-only"),
             pytest.param(
-                HiveConnectionError("Cannot connect to Hive"), id="connection-error"
+                {"products": _nodes()["products"], "devices": []}, id="no-devices"
             ),
-            pytest.param(HiveApiError("Hive refused the request"), id="api-error"),
-            pytest.param(HiveDeviceOffline("offline"), id="device-offline"),
-            pytest.param(HiveError("something else"), id="other-hive-error"),
+            pytest.param(
+                {"products": [], "devices": _nodes()["devices"]}, id="no-products"
+            ),
         ],
     )
-    async def test_hive_errors_keep_the_last_state_and_schedule_a_retry(
-        self, caplog, error
-    ):
+    async def test_a_reply_without_products_or_devices_is_transient(self, response):
         hive = _make_hive()
-        hive.data.user = {"id": "previous"}
-        hive.config.last_update = _LAST_POLL
-        hive.api.get_all.side_effect = error
-        assert await hive.get_devices() is False
-        assert hive.data.user == {"id": "previous"}
-        assert _warnings(caplog) == [
-            f"Could not poll Hive, keeping the last known state: {error}"
-        ]
-        expected = datetime.now(UTC) - hive.config.scan_interval + POLL_RETRY_DELAY
-        assert _is_about(hive.config.last_update, expected)
-
-    @pytest.mark.parametrize(
-        "error",
-        [
-            pytest.param(
-                HiveReauthRequired("device not trusted"), id="reauth-required"
-            ),
-            pytest.param(HiveInvalidUsername("unknown user"), id="invalid-username"),
-            pytest.param(HiveInvalidPassword("wrong password"), id="invalid-password"),
-            pytest.param(HiveInvalid2FACode("bad code"), id="invalid-2fa-code"),
-        ],
-    )
-    async def test_reauth_required_sets_last_update_and_propagates(self, caplog, error):
-        hive = _make_hive()
-        hive.data.user = {"id": "previous"}
-        hive.config.last_update = _LAST_POLL
-        # Hive rejects the token and the login that follows fails.
-        hive.api.get_all.side_effect = HiveReauthRequired("HTTP 401")
-        hive.auth.login.side_effect = error
-        with pytest.raises(HiveReauthRequired) as excinfo:
-            await hive.get_devices()
-        assert excinfo.value is error
-        assert hive.data.user == {"id": "previous"}
-        assert _is_about(hive.config.last_update, datetime.now(UTC))
-        assert _warnings(caplog) == []
-
-    async def test_unexpected_errors_propagate_untouched(self, caplog):
-        hive = _make_hive()
-        hive.config.last_update = _LAST_POLL
-        hive.api.get_all.side_effect = KeyError("id")
-        with pytest.raises(KeyError):
-            await hive.get_devices()
-        assert hive.config.last_update == _LAST_POLL
-        assert _warnings(caplog) == []
+        hive.api.get_all.return_value = response
+        with pytest.raises(HiveConnectionError, match="no products or no devices"):
+            await hive.get_nodes()

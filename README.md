@@ -13,8 +13,8 @@ An async Python library for the [Hive](https://www.hivehome.com/) smart home pla
 - Async only, built on `aiohttp`
 - AWS Cognito SRP authentication with SMS two-factor authentication support
 - Automatic token refresh at 90% of token lifetime, with a silent re-login when the refresh token is rejected
-- Polling-based device state, rate limited to one poll per scan interval across all entities
-- Full device discovery — returns a ready-to-use device list for the integration's entities
+- Mirrors Hive's own API: `get_nodes()` is `GET /nodes/all` and `set_state()` is `POST /nodes/{type}/{id}`. There is no polling timer and no cached state; the caller decides when to fetch
+- Typed, frozen snapshots of heating and hot water products and devices, using Hive's own field names and values
 - File-based offline mode for development and testing without live credentials
 
 ## Supported Devices
@@ -65,7 +65,7 @@ async def main():
 
     async with ClientSession() as websession:
         hive = Hive(websession)
-        devices = await hive.start_session(
+        hive.start_session(
             {
                 "username": username,
                 "password": password,
@@ -73,9 +73,9 @@ async def main():
                 "device_data": auth.get_device_data(),
             }
         )
-        for climate in devices["climate"]:
-            await hive.heating.get_climate(climate)
-            print(climate.ha_name, climate.status)
+        nodes = await hive.get_nodes()
+        for product in nodes.products.values():
+            print(product.type, product.name, product.mode)
 
 
 asyncio.run(main())
@@ -99,7 +99,7 @@ credentials `get_device_data()` returns, so later sessions can log in without an
 script. The first run asks for your email, password and SMS code, registers the
 machine as a trusted device and saves the device credentials to
 `hive_device.json`. Later runs log in with that file and skip the SMS. Both runs
-list every discovered device.
+list the account's heating and hot water products and devices.
 
 ```bash
 pip install apyhiveapi
@@ -108,28 +108,28 @@ python examples/example_login.py
 
 ---
 
-## Controlling Devices
+## Reading and Controlling Devices
 
-After `start_session`, device modules are available directly on the `Hive` instance.
-Commands return nothing and raise a `HiveError` when the change could not be made;
-readers never raise and report unknown values as `None`.
+`start_session()` only loads the saved credentials; nothing is sent until the
+first call. `get_nodes()` fetches `GET /nodes/all` and returns a `Nodes`
+snapshot: `user`, `products` and `devices`, each keyed by Hive ID. Products are
+`HeatingProduct` (`heating`, `trvcontrol`) or `HotWaterProduct` (`hotwater`);
+devices are `Device` (`hub`, `thermostatui`, `boilermodule`, `trv`). Fields keep
+Hive's names and values: a heating `mode` can be `BOOST`, a `previous_mode` can be
+`False`. A value Hive left out or sent with an unexpected type is `None`.
+
+`set_state(type, id, **state)` sends `POST /nodes/{type}/{id}` with the given
+state. The library does not check the values or work out what to send: that is
+the caller's job.
 
 ```python
-# Heating
-await hive.heating.set_target_temperature(device, 21.0)
-await hive.heating.set_mode(device, "SCHEDULE")
-await hive.heating.set_boost_on(device, 30, 22.0)
-await hive.heating.set_boost_off(device)
+nodes = await hive.get_nodes()
+heating = nodes.products["<heating id>"]
+print(heating.temperature, heating.target, heating.mode, heating.online)
 
-# Hot water
-await hive.hotwater.set_mode(device, "MANUAL")
-await hive.hotwater.set_boost_on(device, 60)
-await hive.hotwater.set_boost_off(device)
-
-# Refresh state (rate limited to the configured scan interval)
-await hive.update_data()
-device = await hive.heating.get_climate(device)
-print(device.status, device.device_data["online"])
+await hive.set_state("heating", heating.id, mode="MANUAL", target=21.0)
+await hive.set_state("heating", heating.id, mode="BOOST", boost=30, target=22.0)
+await hive.set_state("hotwater", "<hot water id>", mode="SCHEDULE")
 ```
 
 ---
@@ -141,15 +141,13 @@ caller should do about it. aiohttp and botocore exceptions never escape the libr
 
 | Exception | Meaning | What to do |
 |---|---|---|
-| `HiveConnectionError` | Hive or Cognito could not be reached, timed out, failed with a 5xx, sent an unreadable response, or returned no devices when the session started | Retry later |
+| `HiveConnectionError` | Hive or Cognito could not be reached, timed out, failed with a 5xx, sent an unreadable response, or returned no products or no devices | Retry later |
 | `HiveApiError` | Hive or Cognito refused the request or answered unexpectedly | Report it; retrying will not help |
-| `HiveDeviceOffline` | A command was sent to a device that is offline or no longer on the account | Report it |
 | `HiveReauthRequired` | The tokens, refresh token or saved device credentials were rejected, there are no tokens, or Hive wants an SMS code. The session then keeps raising it without contacting Hive until it is given new tokens | Log in again |
 | `HiveInvalidUsername`, `HiveInvalidPassword`, `HiveInvalid2FACode` | Subclasses of `HiveReauthRequired` raised by the login flow | Show the user a form error |
 
-Invalid arguments, such as a boost of zero minutes, raise `ValueError`. Polling through
-`update_data` logs transient failures, keeps the last known state and retries after
-30 seconds; only `HiveReauthRequired` propagates from it.
+`get_nodes()` and `set_state()` raise on every failure and keep nothing between
+calls; retrying is up to the caller.
 
 ---
 
@@ -159,7 +157,8 @@ Set `username="use@file.com"` to load device state from the bundled JSON fixture
 
 ```python
 async with Hive(username="use@file.com", password="") as hive:
-    await hive.start_session({})
+    hive.start_session({})
+    nodes = await hive.get_nodes()
 ```
 
 ---

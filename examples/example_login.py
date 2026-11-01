@@ -4,7 +4,7 @@ Run it once: it asks for your Hive email and password, completes the SMS
 two-factor challenge, registers this machine as a trusted device and saves
 the device credentials to ``hive_device.json`` in the working directory.
 Run it again: it logs in with the saved device credentials, no SMS needed,
-and lists the same devices.
+and lists the same products and devices.
 
     pip install apyhiveapi
     python examples/example_login.py
@@ -127,15 +127,18 @@ async def build_config() -> dict[str, Any]:
 
 
 async def main() -> None:
-    """Log in, start a session and list the discovered devices."""
+    """Log in, start a session and list the products and devices."""
     config = await build_config()
     hive = Hive(username=config["username"], password=config["password"])
     async with hive:
-        device_list = await hive.start_session(config)
+        hive.start_session(config)
+        nodes = await hive.get_nodes()
+        print("\nProducts:")
+        for product in nodes.products.values():
+            print(f"  {product.type:12} {product.name}  (mode {product.mode})")
         print("\nDevices:")
-        for entity_type, devices in sorted(device_list.items()):
-            for device in devices:
-                print(f"  {entity_type:14} {device.hive_name}  ({device.hive_type})")
+        for device in nodes.devices.values():
+            print(f"  {device.type:12} {device.name}  ({device.model})")
 
 
 if __name__ == "__main__":

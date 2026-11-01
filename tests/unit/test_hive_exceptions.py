@@ -6,7 +6,6 @@ import apyhiveapi
 from apyhiveapi.exceptions import (
     HiveApiError,
     HiveConnectionError,
-    HiveDeviceOffline,
     HiveError,
     HiveInvalid2FACode,
     HiveInvalidPassword,
@@ -17,7 +16,6 @@ from apyhiveapi.exceptions import (
 LEAF_EXCEPTIONS = (
     HiveConnectionError,
     HiveApiError,
-    HiveDeviceOffline,
     HiveReauthRequired,
     HiveInvalidUsername,
     HiveInvalidPassword,
@@ -31,7 +29,6 @@ class TestHierarchy:
         [
             (HiveConnectionError, HiveError),
             (HiveApiError, HiveError),
-            (HiveDeviceOffline, HiveError),
             (HiveReauthRequired, HiveError),
             (HiveInvalidUsername, HiveReauthRequired),
             (HiveInvalidPassword, HiveReauthRequired),
@@ -39,9 +36,9 @@ class TestHierarchy:
         ],
     )
     def test_direct_parent(self, exc_type, parent):
-        # The fork's except ordering relies on the four categories under
-        # HiveError being disjoint (retry later, give up, device offline,
-        # log in again) and on the credential errors being reauth errors.
+        # The fork's except ordering relies on the three categories under
+        # HiveError being disjoint (retry later, give up, log in again) and
+        # on the credential errors being reauth errors.
         assert exc_type.__bases__ == (parent,)
 
 
