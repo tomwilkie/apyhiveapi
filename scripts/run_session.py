@@ -34,7 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -67,8 +67,6 @@ class Settings:
 
     interval: float
     allow_writes: bool = False
-    drop_keys: list[str] = field(default_factory=list)
-    drop_on: bool = False
 
 
 def _keychain_available() -> bool:
@@ -209,32 +207,6 @@ async def live_config() -> dict[str, Any]:
     return config
 
 
-def install_drop(hive: Hive, settings: Settings) -> None:
-    """Strip ``settings.drop_keys`` from product state while ``drop_on`` is set.
-
-    Simulates the incomplete responses Hive occasionally returns.
-    """
-
-    def _strip(response: dict[str, Any]) -> dict[str, Any]:
-        if settings.drop_on and isinstance(response, dict):
-            for product in response.get("products", []):
-                state = product.get("state")
-                if isinstance(state, dict):
-                    for key in settings.drop_keys:
-                        state.pop(key, None)
-        return response
-
-    # Fixture sessions read through open_file, live sessions through get_all.
-    open_file = hive.open_file
-    get_all = hive.api.get_all
-
-    async def _get_all() -> dict[str, Any]:
-        return _strip(await get_all())
-
-    hive.open_file = lambda file: _strip(open_file(file))  # type: ignore[method-assign]
-    hive.api.get_all = _get_all  # type: ignore[method-assign]
-
-
 def log_summary(hive: Hive, label: str) -> None:
     """Log one line per product: type, short ID, mode and state key names."""
     LOG.info("--- %s: %d products ---", label, len(hive.data.products))
@@ -273,7 +245,6 @@ class Admin:
             "mode": (self.mode, False, "DEVICE", "mode the library reports"),
             "state": (self.state, False, "DEVICE", "state as last received"),
             "status": (self.status, False, "DEVICE", "status the fork reads"),
-            "drop": (self.drop, False, "KEY... | off", "strip state keys from polls"),
             "debug": (self.debug, False, "on | off", "library debug logging"),
             "interval": (self.interval, False, "SECONDS", "seconds between polls"),
             "set-mode": (self.set_mode, True, "DEVICE MODE", "set heating/hot water"),
@@ -376,15 +347,6 @@ class Admin:
             result["max_temp"] = device.max_temp
         return result
 
-    async def drop(self, *keys: str) -> dict[str, list[str]]:
-        """Strip *keys* from every later poll, or stop with ``off``."""
-        if not keys:
-            raise ValueError(self._usage("drop"))
-        self.settings.drop_on = keys != ("off",)
-        if self.settings.drop_on:
-            self.settings.drop_keys[:] = keys
-        return {"dropping": self.settings.drop_keys if self.settings.drop_on else []}
-
     async def debug(self, switch: str) -> dict[str, str]:
         """Turn the library's debug logging on or off."""
         if switch not in ("on", "off"):
@@ -473,18 +435,13 @@ async def run(args: argparse.Namespace, config: dict[str, Any]) -> None:
     settings = Settings(
         interval=args.interval,
         allow_writes=args.allow_writes,
-        drop_keys=list(args.drop),
     )
     async with hive:
-        install_drop(hive, settings)
         device_list = await hive.start_session(config)
         entities = ", ".join(f"{k}={len(v)}" for k, v in sorted(device_list.items()))
         LOG.info("Session started. Entities: %s", entities)
         log_summary(hive, "poll 1")
 
-        if args.drop:
-            settings.drop_on = True
-            LOG.info("Dropping state keys from later polls: %s", ", ".join(args.drop))
         if settings.allow_writes:
             LOG.warning("Admin commands that change devices are ENABLED.")
         socket_path = _socket_file(args.worker)
@@ -604,8 +561,6 @@ def launch(args: argparse.Namespace, name: str) -> None:
     LOG_DIR.mkdir(exist_ok=True)
     command = [sys.executable, __file__, "--worker", name]
     command += ["--polls", str(args.polls), "--interval", str(args.interval)]
-    for key in args.drop:
-        command += ["--drop", key]
     if args.debug:
         command.append("--debug")
     if args.allow_writes:
@@ -693,13 +648,6 @@ def main() -> None:
     parser.add_argument(
         "--interval", type=float, default=120, help="seconds between polls"
     )
-    parser.add_argument(
-        "--drop",
-        action="append",
-        default=[],
-        metavar="KEY",
-        help="state key to strip from polls after the first (repeatable)",
-    )
     parser.add_argument("--debug", action="store_true", help="library debug logging")
     parser.add_argument(
         "--allow-writes",
@@ -720,7 +668,7 @@ def main() -> None:
         work(args)
     else:
         source = "live" if args.live else "file"
-        launch(args, args.name or (f"simulate-{source}" if args.drop else source))
+        launch(args, args.name or source)
 
 
 if __name__ == "__main__":
