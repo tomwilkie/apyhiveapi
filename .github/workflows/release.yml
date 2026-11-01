@@ -6,9 +6,12 @@ name: Release
 # and only then pushes the commit and tag to main and publishes a GitHub
 # Release with both files attached. A second job uploads the same files to
 # PyPI as `apyhiveapi` through Trusted Publishing (OpenID Connect, no API
-# token). For a minor or major release, run the workflow by hand (Actions →
-# Release → Run workflow) and pick the part to bump. The Home Assistant fork
-# pins a release in its manifest.json. See docs/workflows/README.md.
+# token). A pull request that sets a new version in pyproject.toml (for a
+# minor or major release) is released at that version without a bump: on a
+# push, a version with no v<version> tag yet is tagged as it is. The workflow
+# can also be run by hand (Actions → Release → Run workflow) to bump a chosen
+# part. The Home Assistant fork pins a release in its manifest.json. See
+# docs/workflows/README.md.
 #
 # This cannot loop: the job skips a push whose commit was authored by
 # github-actions[bot] (the bump commit), and a push made with GITHUB_TOKEN
@@ -66,11 +69,18 @@ jobs:
         id: version
         env:
           PART: ${{ inputs.part || 'patch' }}
+          EVENT: ${{ github.event_name }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          bump-my-version bump "$PART"
           version=$(bump-my-version show current_version)
+          if [ "$EVENT" = push ] && ! git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            # The merged pull request set a new version: release it as it is.
+            git tag -a "v$version" -m "Release v$version"
+          else
+            bump-my-version bump "$PART"
+            version=$(bump-my-version show current_version)
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
