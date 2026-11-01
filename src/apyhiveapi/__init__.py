@@ -5,27 +5,38 @@ from apyhiveapi.const import SMS_REQUIRED
 from apyhiveapi.exceptions import (
     HiveApiError,
     HiveConnectionError,
-    HiveDeviceOffline,
     HiveError,
     HiveInvalid2FACode,
     HiveInvalidPassword,
     HiveInvalidUsername,
     HiveReauthRequired,
 )
-from apyhiveapi.hive import Hive
-from apyhiveapi.models import Device
+from apyhiveapi.hive import Hive, Mode
+from apyhiveapi.nodes import (
+    Device,
+    HeatingProduct,
+    HotWaterProduct,
+    Nodes,
+    Product,
+    User,
+)
 
 __all__ = [
     "SMS_REQUIRED",
     "Auth",
     "Device",
+    "HeatingProduct",
     "Hive",
     "HiveApiError",
     "HiveConnectionError",
-    "HiveDeviceOffline",
     "HiveError",
     "HiveInvalid2FACode",
     "HiveInvalidPassword",
     "HiveInvalidUsername",
     "HiveReauthRequired",
+    "HotWaterProduct",
+    "Mode",
+    "Nodes",
+    "Product",
+    "User",
 ]

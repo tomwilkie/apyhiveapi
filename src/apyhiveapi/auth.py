@@ -397,7 +397,7 @@ class HiveAuth:
 
         Returns:
             ``(device_group_key, device_key, device_password)``, to pass as
-            ``device_data`` in the ``start_session`` config.
+            ``device_data`` in the ``new_session`` config.
         """
         return (self.device_group_key, self.device_key, self.device_password)
 

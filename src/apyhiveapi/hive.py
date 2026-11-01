@@ -1,4 +1,4 @@
-"""The Hive session: login, token refresh, polling and device discovery."""
+"""The Hive session: login, token refresh and the Hive API calls."""
 
 from __future__ import annotations
 
@@ -7,21 +7,18 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from apyhiveapi.api import HiveApi
 from apyhiveapi.auth import HiveAuth
-from apyhiveapi.const import PRODUCT_ENTITY_TYPES, THERMOSTAT_DEVICE_TYPES
 from apyhiveapi.exceptions import (
     HiveApiError,
     HiveConnectionError,
-    HiveError,
     HiveReauthRequired,
 )
-from apyhiveapi.heating import Climate
 from apyhiveapi.helpers import sanitize_payload
-from apyhiveapi.hotwater import WaterHeater
-from apyhiveapi.models import Device, SessionConfig, SessionData, SessionTokens
+from apyhiveapi.models import SessionConfig, SessionTokens
+from apyhiveapi.nodes import Nodes, parse_nodes
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -29,45 +26,31 @@ if TYPE_CHECKING:
     from aiohttp import ClientSession
 
     from apyhiveapi.api import JsonValue
+    from apyhiveapi.nodes import HeatingProduct, HotWaterProduct, Product
 
 _LOGGER = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).parent / "data"
 
-# Consecutive polls for which state keys missing from a response are carried
-# over from the previous poll before the response is accepted as it is.
-MAX_STALE_STATE_POLLS = 5
-
-# State keys Hive always sends for a product that has them. Only these are
-# carried over: other keys (such as ``boost``) are legitimately omitted at
-# times, so keeping their old value would report stale state.
-REQUIRED_STATE_KEYS = frozenset({"mode", "name", "status", "target"})
-
-# Shortest polling interval allowed, to stay within Hive's API rate limits.
-MIN_SCAN_INTERVAL = timedelta(seconds=15)
+# The modes a product can be set to. Hive's MANUAL is "on" for hot water.
+type Mode = Literal["SCHEDULE", "MANUAL", "OFF"]
 
 # Tokens are refreshed once this share of their lifetime has passed.
 REFRESH_THRESHOLD = 0.90
-
-# How long after a failed poll the next attempt may run.
-POLL_RETRY_DELAY = timedelta(seconds=30)
 
 # device_data holds device_group_key, device_key and device_password. Entries
 # saved by older versions add the token issue time, which is ignored.
 _DEVICE_DATA_FIELDS = 3
 
 
-def _display_name(name: str) -> str:
-    """Return the name to show; Hive calls a heating-only thermostat "Receiver"."""
-    return "Heating" if name == "Receiver" else name
-
-
 class Hive:
     """A Hive account session.
 
-    Create one per account, call :meth:`start_session` with the saved
-    tokens and device credentials, then poll with :meth:`update_data` and
-    read entity state through :attr:`heating` and :attr:`hotwater`.
+    Create one per account and call :meth:`new_session` with the saved
+    tokens and device credentials. Then :meth:`get_nodes` fetches Hive's
+    ``GET /nodes/all``, and the ``set_*`` commands each send one
+    ``POST /nodes/{type}/{id}``. The session keeps no device state and has no
+    timer: the caller decides when to poll.
 
     Every error raised is a :class:`~apyhiveapi.exceptions.HiveError`:
     :class:`~apyhiveapi.exceptions.HiveReauthRequired` when the user has to
@@ -97,17 +80,9 @@ class Hive:
         self.api = HiveApi(self, websession)
         self.tokens = SessionTokens()
         self.config = SessionConfig(username=username)
-        self.data = SessionData()
-        self.device_list: dict[str, list[Device]] = {}
-        self.hub_id: str | None = None
-        self.update_lock = asyncio.Lock()
         self._refresh_lock = asyncio.Lock()
-        self._stale_state_polls: dict[str, int] = {}
-        self._offline_devices: set[str] = set()
         # The login failure that needs the user, kept so later calls fail fast.
         self._reauth_error: HiveReauthRequired | None = None
-        self.heating = Climate(self)
-        self.hotwater = WaterHeater(self)
 
     async def close(self) -> None:
         """Close the aiohttp session if this object created it."""
@@ -259,194 +234,97 @@ class Hive:
                     await self.login()
             return await call()
 
-    async def set_state(
-        self, product_type: str, product_id: str, **state: JsonValue
-    ) -> None:
-        """Change a product's state on Hive. Nothing is sent in file mode.
+    # --- Commands ----------------------------------------------------------
+
+    async def set_mode(self, product: Product, mode: Mode) -> None:
+        """Set a product's mode: ``{"mode": mode}``.
+
+        Ending a boost is setting the mode it returns to, which Hive reports
+        as the product's ``previous_mode``.
 
         Raises:
             HiveReauthRequired: The user has to log in again.
             HiveConnectionError: Hive could not be reached.
             HiveApiError: Hive refused the change.
         """
-        if self.config.file:
-            return
-        await self._api_call(
-            lambda: self.api.set_state(product_type, product_id, **state)
-        )
+        await self._set_state(product, mode=mode)
 
-    # --- Polling -----------------------------------------------------------
-
-    def update_interval(self, new_interval: float | timedelta) -> None:
-        """Set the polling interval.
-
-        Args:
-            new_interval: Seconds, or a timedelta. Values below
-                ``MIN_SCAN_INTERVAL`` are raised to it.
-        """
-        if not isinstance(new_interval, timedelta):
-            new_interval = timedelta(seconds=new_interval)
-        self.config.scan_interval = max(new_interval, MIN_SCAN_INTERVAL)
-
-    def _poll_is_due(self) -> bool:
-        """Return True once the scan interval has passed since the last poll."""
-        return datetime.now(UTC) >= self.config.last_update + self.config.scan_interval
-
-    async def update_data(self) -> bool:
-        """Poll Hive if the scan interval has passed since the last poll.
-
-        Home Assistant calls this from every entity's update, so the poll runs
-        at most once per interval across all entities and never concurrently.
-
-        Returns:
-            True if a poll ran and stored new data.
-
-        Raises:
-            HiveReauthRequired: The user has to log in again.
-        """
-        if not self._poll_is_due() or self.update_lock.locked():
-            return False
-        async with self.update_lock:
-            return await self.get_devices()
-
-    async def get_devices(self) -> bool:
-        """Poll Hive now and store the latest products and devices.
-
-        A failed poll keeps the last known state, is logged, and is retried
-        after ``POLL_RETRY_DELAY`` rather than a full scan interval.
-
-        Returns:
-            True if new data was stored.
-
-        Raises:
-            HiveReauthRequired: The user has to log in again.
-        """
-        try:
-            await self._poll()
-        except HiveReauthRequired:
-            self.config.last_update = datetime.now(UTC)
-            raise
-        except HiveError as err:
-            _LOGGER.warning(
-                "Could not poll Hive, keeping the last known state: %s", err
-            )
-            self._schedule_poll_retry()
-            return False
-        return True
-
-    async def _poll(self) -> None:
-        """Fetch and store the latest products and devices.
+    async def set_target_temperature(
+        self, product: HeatingProduct, target: float
+    ) -> None:
+        """Set a heating or TRV target temperature: ``{"target": target}``.
 
         Raises:
             HiveReauthRequired: The user has to log in again.
             HiveConnectionError: Hive could not be reached.
+            HiveApiError: Hive refused the change.
+        """
+        await self._set_state(product, target=target)
+
+    async def set_heating_boost(
+        self, product: HeatingProduct, minutes: int, target: float
+    ) -> None:
+        """Boost heating to *target* for *minutes*.
+
+        Sends ``{"mode": "BOOST", "boost": minutes, "target": target}``.
+
+        Raises:
+            HiveReauthRequired: The user has to log in again.
+            HiveConnectionError: Hive could not be reached.
+            HiveApiError: Hive refused the change.
+        """
+        await self._set_state(product, mode="BOOST", boost=minutes, target=target)
+
+    async def set_hot_water_boost(self, product: HotWaterProduct, minutes: int) -> None:
+        """Boost the hot water for *minutes*: ``{"mode": "BOOST", "boost": minutes}``.
+
+        Raises:
+            HiveReauthRequired: The user has to log in again.
+            HiveConnectionError: Hive could not be reached.
+            HiveApiError: Hive refused the change.
+        """
+        await self._set_state(product, mode="BOOST", boost=minutes)
+
+    async def _set_state(self, product: Product, **state: JsonValue) -> None:
+        """Post a product's new state to Hive. Nothing is sent in file mode."""
+        if self.config.file:
+            return
+        await self._api_call(
+            lambda: self.api.set_state(product.type, product.id, **state)
+        )
+
+    # --- Nodes -------------------------------------------------------------
+
+    async def get_nodes(self) -> Nodes:
+        """Fetch every product and device: Hive's ``GET /nodes/all``.
+
+        In file mode the bundled fixture is read instead.
+
+        Returns:
+            The snapshot, with only the node types this library supports.
+
+        Raises:
+            HiveReauthRequired: The user has to log in again.
+            HiveConnectionError: Hive could not be reached, or returned no
+                products or no devices.
             HiveApiError: Hive refused the request.
         """
         if self.config.file:
-            nodes = await asyncio.to_thread(self.open_file, "data.json")
+            response = await asyncio.to_thread(self.open_file, "data.json")
         else:
-            nodes = await self._api_call(self.api.get_all)
-        self._store_nodes(nodes)
-        self.config.last_update = datetime.now(UTC)
-
-    def _store_nodes(self, nodes: dict[str, Any]) -> None:
-        """Store the user, products and devices from a poll.
-
-        Args:
-            nodes: The parsed JSON body of the all-nodes response.
-        """
-        if "user" in nodes:
-            self.data.user = nodes["user"]
-        products = self._by_id(nodes.get("products", []))
-        devices = self._by_id(nodes.get("devices", []))
+            response = await self._api_call(self.api.get_all)
+        products, devices = response.get("products"), response.get("devices")
+        if not products or not devices:
+            # Every account has at least its hub, so an empty answer is a
+            # fault on Hive's side, not an account without devices.
+            raise HiveConnectionError("Hive returned no products or no devices")
+        nodes = parse_nodes(response)
         _LOGGER.debug(
-            "Hive returned %d products and %d devices", len(products), len(devices)
+            "Hive returned %d products and %d devices",
+            len(nodes.products),
+            len(nodes.devices),
         )
-        if products:
-            self._keep_missing_state(products)
-            self.data.products = products
-        if devices:
-            self.data.devices = devices
-
-    @staticmethod
-    def _by_id(items: list[Any]) -> dict[str, Any]:
-        """Key Hive nodes by ID, dropping anything that is not a node with an ID."""
-        return {
-            item["id"]: item
-            for item in items
-            if isinstance(item, dict) and "id" in item
-        }
-
-    def _schedule_poll_retry(self) -> None:
-        """Allow the next poll after a short delay instead of a full interval."""
-        self.config.last_update = (
-            datetime.now(UTC) - self.config.scan_interval + POLL_RETRY_DELAY
-        )
-
-    def _keep_missing_state(self, new_products: dict[str, Any]) -> None:
-        """Carry over required state keys that a poll response has dropped.
-
-        Hive sometimes answers a poll with products whose ``state`` block is
-        missing keys it normally has. Keep the last known value for the keys
-        in ``REQUIRED_STATE_KEYS``, for up to ``MAX_STALE_STATE_POLLS``
-        consecutive polls.
-
-        Args:
-            new_products: Products from the latest response, keyed by ID.
-        """
-        incomplete = []
-        for product_id, product in new_products.items():
-            previous = self.data.products.get(product_id) or {}
-            previous_state = previous.get("state")
-            if not isinstance(previous_state, dict):
-                previous_state = {}
-            new_state = product.get("state")
-            if not isinstance(new_state, dict):
-                new_state = {}
-            missing = sorted(
-                (previous_state.keys() & REQUIRED_STATE_KEYS) - new_state.keys()
-            )
-            if not missing:
-                self._stale_state_polls.pop(product_id, None)
-                continue
-            name = previous_state.get("name", product_id)
-            product_type = product.get("type")
-            _LOGGER.debug(
-                "Hive API state for %s %s arrived with keys: %s",
-                product_type,
-                product_id,
-                ", ".join(sorted(new_state)),
-            )
-            polls = self._stale_state_polls.get(product_id, 0) + 1
-            self._stale_state_polls[product_id] = polls
-            if polls > MAX_STALE_STATE_POLLS:
-                _LOGGER.warning(
-                    "Hive API state for %s (%s %s) is still missing %s after %d "
-                    "polls - no longer keeping the last known values.",
-                    name,
-                    product_type,
-                    product_id,
-                    ", ".join(missing),
-                    MAX_STALE_STATE_POLLS,
-                )
-                continue
-            product["state"] = {
-                **{key: previous_state[key] for key in missing},
-                **new_state,
-            }
-            incomplete.append(
-                f"{name} ({product_type} {product_id}) missing {', '.join(missing)}"
-            )
-        for product_id in self._stale_state_polls.keys() - new_products.keys():
-            del self._stale_state_polls[product_id]
-        if incomplete:
-            _LOGGER.warning(
-                "Hive API returned incomplete state - keeping the last known "
-                "values: %s",
-                "; ".join(sorted(incomplete)),
-            )
-
-    # --- Session start and device discovery --------------------------------
+        return nodes
 
     def open_file(self, file: str) -> dict[str, Any]:
         """Load a JSON fixture file from the package data directory.
@@ -461,6 +339,8 @@ class Hive:
             (_DATA_DIR / file).read_text(encoding="utf-8")
         )
         return result
+
+    # --- New session -------------------------------------------------------
 
     def _configure_file_mode(self, username: str | None) -> None:
         """Switch to the bundled fixture data for the magic testing username."""
@@ -485,48 +365,24 @@ class Hive:
         self.auth.device_key = device_data[1]
         self.auth.device_password = device_data[2]
 
-    async def start_session(
-        self, config: dict[str, Any] | None = None
-    ) -> dict[str, list[Device]]:
-        """Load the config, poll Hive once and build the device list.
-
-        Args:
-            config: ``username``, ``password``, ``tokens``, ``device_data`` and
-                ``options.scan_interval`` from the Home Assistant config entry.
-
-        Returns:
-            Devices by Home Assistant entity type.
-
-        Raises:
-            HiveReauthRequired: The config has no tokens, or the user has to
-                log in again.
-            HiveConnectionError: Hive could not be reached or returned no
-                products or devices.
-            HiveApiError: Hive refused the request.
-        """
-        config = config or {}
-        _LOGGER.debug("start_session - Config: %s", sanitize_payload(config))
-        self._configure_file_mode(config.get("username", self.config.username))
-        scan_interval = (config.get("options") or {}).get("scan_interval")
-        if scan_interval is not None:
-            self.update_interval(scan_interval)
-        if not self.config.file:
-            self._apply_config(config)
-        await self._poll()
-        if not self.data.devices or not self.data.products:
-            # The library already treats gaps in a poll as transient, so an
-            # empty answer is retried rather than failing the setup for good.
-            raise HiveConnectionError(
-                "Hive returned no products or devices for this account"
-            )
-        return self.create_devices()
-
-    def _apply_config(self, config: dict[str, Any]) -> None:
+    def new_session(self, config: dict[str, Any] | None = None) -> None:
         """Load the credentials, tokens and device data from a config entry.
 
+        Nothing is sent to Hive or Cognito; the first :meth:`get_nodes` is.
+
+        Args:
+            config: ``username``, ``password``, ``tokens`` and ``device_data``
+                from the Home Assistant config entry.
+
         Raises:
-            HiveReauthRequired: The config has no tokens.
+            HiveReauthRequired: The config has no tokens, or its device data
+                is incomplete.
         """
+        config = config or {}
+        _LOGGER.debug("new_session - Config: %s", sanitize_payload(config))
+        self._configure_file_mode(config.get("username", self.config.username))
+        if self.config.file:
+            return
         if "tokens" not in config:
             raise HiveReauthRequired("The config has no tokens")
         self.update_tokens(config["tokens"], update_expiry_time=False)
@@ -536,158 +392,3 @@ class Hive:
             self.auth.password = config["password"]
         if "device_data" in config:
             self._apply_device_data(config["device_data"])
-
-    def create_devices(self) -> dict[str, list[Device]]:
-        """Build the device list from the stored products and devices.
-
-        Returns:
-            ``parent`` (the hub), ``climate`` and ``water_heater`` lists.
-        """
-        self.device_list = {"parent": [], "climate": [], "water_heater": []}
-        self.hub_id = None
-
-        hub = next(
-            (
-                (device_id, device)
-                for device_id, device in self.data.devices.items()
-                if device.get("type") == "hub"
-            ),
-            None,
-        )
-        if hub is None:
-            _LOGGER.warning("No hub found among the Hive devices")
-        else:
-            # Products point at the hub only when it made it into the list.
-            hub_device = self._add_device("parent", hub[1])
-            if hub_device is not None:
-                self.hub_id = hub_device.device_id
-
-        temperature_unit = self.data.user.get("temperatureUnit")
-        for product_id, product in self.data.products.items():
-            if "error" in product:
-                _LOGGER.warning(
-                    "Skipping product %s due to error: %s", product_id, product["error"]
-                )
-                continue
-            product_type = product.get("type", "Unknown")
-            entity_type = PRODUCT_ENTITY_TYPES.get(product_type)
-            if entity_type is None:
-                _LOGGER.debug(
-                    "Skipping unsupported product %s (type: %s)",
-                    product_id,
-                    product_type,
-                )
-                continue
-            if product.get("isGroup", False) and entity_type != "climate":
-                _LOGGER.debug(
-                    "Skipping group product %s (type: %s)", product_id, product_type
-                )
-                continue
-            self._add_device(
-                entity_type,
-                product,
-                temperature_unit=temperature_unit if entity_type == "climate" else None,
-            )
-
-        _LOGGER.info(
-            "Device discovery completed: %d parent, %d climate, %d water_heater",
-            len(self.device_list["parent"]),
-            len(self.device_list["climate"]),
-            len(self.device_list["water_heater"]),
-        )
-        return self.device_list
-
-    def _add_device(
-        self,
-        entity_type: str,
-        data: dict[str, Any],
-        temperature_unit: str | None = None,
-    ) -> Device | None:
-        """Create a Device for a product or the hub and add it to the device list.
-
-        Args:
-            entity_type: ``parent``, ``climate`` or ``water_heater``.
-            data: Raw product or device data from the Hive API.
-            temperature_unit: The account's temperature unit, for climate entities.
-
-        Returns:
-            The created device, or None when the data is incomplete.
-        """
-        try:
-            device_data = self._device_for_product(data)
-            # The entity is named after the product (the heating zone, the hot
-            # water); the device after the hardware that carries it.
-            device_name = _display_name(device_data["state"]["name"])
-            name = _display_name((data.get("state") or {}).get("name") or device_name)
-            device = Device(
-                hive_id=data.get("id", ""),
-                hive_name=name,
-                hive_type=data.get("type", ""),
-                ha_type=entity_type,
-                device_id=device_data["id"],
-                device_name=device_name,
-                device_data=device_data.get("props", data.get("props", {})),
-                parent_device=self.hub_id,
-                ha_name=name,
-                temperature_unit=temperature_unit,
-            )
-        except (AttributeError, IndexError, KeyError, TypeError) as error:
-            _LOGGER.warning(
-                "Skipping %s %s: %r",
-                data.get("type", "unknown"),
-                data.get("id", "?"),
-                error,
-            )
-            return None
-        self.device_list[entity_type].append(device)
-        return device
-
-    def _device_for_product(self, product: dict[str, Any]) -> dict[str, Any]:
-        """Return the Hive device that carries a product's hardware details.
-
-        Heating and hot water products belong to the thermostat in their zone;
-        TRV controls belong to their first TRV. Anything else, including the
-        hub itself, is its own device.
-
-        Raises:
-            IndexError: A TRV control has no TRVs.
-            KeyError: The product's device is missing from the data.
-            AttributeError, TypeError: The product or a device is malformed.
-        """
-        product_type = product["type"]
-        if product_type in ("heating", "hotwater"):
-            product_zone = product.get("props", {}).get("zone")
-            return next(
-                (
-                    candidate
-                    for candidate in self.data.devices.values()
-                    if candidate["type"] in THERMOSTAT_DEVICE_TYPES
-                    and product_zone
-                    and candidate.get("props", {}).get("zone") == product_zone
-                ),
-                product,
-            )
-        if product_type == "trvcontrol":
-            return self.data.devices[product["props"]["trvs"][0]]
-        return self.data.devices[product["id"]]
-
-    # --- Device bookkeeping ------------------------------------------------
-
-    def device_recovered(self, device_id: str) -> None:
-        """Forget that a device was offline."""
-        self._offline_devices.discard(device_id)
-
-    def report_device_offline(self, device_id: str) -> None:
-        """Log once that a device is offline, until it recovers."""
-        if device_id in self._offline_devices:
-            return
-        self._offline_devices.add(device_id)
-        _LOGGER.warning("%s is offline", self._device_name(device_id))
-
-    def _device_name(self, device_id: str) -> str:
-        """Return the product or device name for an ID, or the ID itself."""
-        for nodes in (self.data.products, self.data.devices):
-            name = ((nodes.get(device_id) or {}).get("state") or {}).get("name")
-            if name:
-                return str(name)
-        return device_id

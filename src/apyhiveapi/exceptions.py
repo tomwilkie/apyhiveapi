@@ -2,7 +2,7 @@
 
 Each class names what the caller should do about it: retry later
 (:class:`HiveConnectionError`), give up on this request
-(:class:`HiveApiError`, :class:`HiveDeviceOffline`) or have the user log in
+(:class:`HiveApiError`) or have the user log in
 again (:class:`HiveReauthRequired` and its subclasses). Errors from aiohttp
 and botocore never escape the library: they are translated where they occur
 and chained as ``__cause__``.
@@ -27,10 +27,6 @@ class HiveApiError(HiveError):
     Retrying will not help: the request itself, the account or the response
     is the problem.
     """
-
-
-class HiveDeviceOffline(HiveError):
-    """The device is offline or no longer on the account, so it cannot be controlled."""
 
 
 class HiveReauthRequired(HiveError):

@@ -9,7 +9,7 @@ release.
 ## Branching model
 
 ```text
-feature/* ──PR──▶ main ──patch bump──▶ tag vX.Y.Z + GitHub Release
+feature/* ──PR──▶ main ──patch bump (or the PR's new version)──▶ tag vX.Y.Z + GitHub Release
 ```
 
 - Work happens on feature branches; pull requests target `main`.
@@ -25,7 +25,7 @@ feature/* ──PR──▶ main ──patch bump──▶ tag vX.Y.Z + GitHub R
 | `ci.yml` (Lint) | pull requests and pushes to `main` that touch code or lint config | Runs every pre-commit hook: ruff, pylint, mypy, bandit, codespell, yamllint, detect-secrets and the PII check on fixture data. |
 | `tests.yml` (Tests, Coverage, Packaging) | every pull request and push to `main` | Tests on Python 3.13 and 3.14, the 99% coverage gate, and a wheel built and imported in a clean venv. The jobs always report, so they can be required checks. |
 | `claude.yml` | pull requests and `@claude` mentions | Claude reviews the change against `CLAUDE.md` and the Home Assistant fork. |
-| `release.yml` | every push to `main`, and by hand for a minor or major release | Bumps the version with `bump-my-version`, builds the sdist and wheel, verifies the wheel imports, pushes the bump commit and its `v<version>` tag to `main`, publishes a GitHub Release with both files attached, then uploads them to PyPI as `apyhiveapi` through Trusted Publishing. |
+| `release.yml` | every push to `main`, and by hand | Bumps the version with `bump-my-version` (or keeps a new version the pull request set), builds the sdist and wheel, verifies the wheel imports, pushes the bump commit and its `v<version>` tag to `main`, publishes a GitHub Release with both files attached, then uploads them to PyPI as `apyhiveapi` through Trusted Publishing. |
 
 Dependabot (`.github/dependabot.yml`) opens weekly pull requests for pip
 dependencies and GitHub Actions. Pre-commit hook revisions are updated with
@@ -35,7 +35,7 @@ dependencies and GitHub Actions. Pre-commit hook revisions are updated with
 
 ## Releasing
 
-Merging a pull request is releasing. Pull requests leave `version` in
+Merging a pull request is releasing. Most pull requests leave `version` in
 `pyproject.toml` alone. On every push to `main`, `release.yml` checks out the
 tip of `main` and runs `bump-my-version bump patch`, which rewrites `version`
 (`0.1.4` → `0.1.5`), commits it as `github-actions[bot]` with the message
@@ -46,9 +46,12 @@ generated notes and both files attached. Nothing lands on `main` unless the
 wheel built. A second job then uploads the same files to PyPI as
 [`apyhiveapi`](https://pypi.org/project/apyhiveapi/).
 
-For a **minor or major release**, run the workflow by hand: Actions →
-Release → Run workflow, and pick `minor` or `major` as the part to bump. The
-same job runs with that part.
+For a **minor or major release**, set `version` in `pyproject.toml` to the new
+version in the pull request that needs it (`0.1.5` → `0.2.0`). On the push to
+`main`, `release.yml` sees that `v0.2.0` has no tag yet, so it skips the bump,
+tags the merged commit `v0.2.0` and releases it. The workflow can also be run
+by hand (Actions → Release → Run workflow) to bump `minor` or `major` with no
+pull request; a manual run always bumps.
 
 `bump-my-version` is configured in `[tool.bumpversion]` in `pyproject.toml`
 and reads the current version from `project.version`, so the version is

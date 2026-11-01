@@ -15,9 +15,8 @@ credentials are saved in the macOS Keychain so later runs skip the SMS.
 Live mode logs in in the foreground, then hands the session to the background
 process over a pipe, so nothing sensitive is put on a command line.
 
-The summary shows product types, shortened IDs, the mode and state key names
-only. Library log lines are printed as the library emits them and can include
-device names.
+The summary shows product types, shortened IDs and modes only. Library log
+lines are printed as the library emits them and can include device names.
 """
 
 from __future__ import annotations
@@ -34,18 +33,24 @@ import shutil
 import signal
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from apyhiveapi import SMS_REQUIRED, Auth, Hive, HiveError, HiveReauthRequired
+from apyhiveapi import (
+    SMS_REQUIRED,
+    Auth,
+    HeatingProduct,
+    Hive,
+    HiveError,
+    HiveReauthRequired,
+    HotWaterProduct,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from apyhiveapi import Device
-    from apyhiveapi.heating import Climate
-    from apyhiveapi.hotwater import WaterHeater
+    from apyhiveapi import Mode, Nodes, Product
 
 FILE_USERNAME = "use@file.com"
 KEYCHAIN_SERVICE = "pyhive-dev"
@@ -56,7 +61,6 @@ LOG_MAX_BYTES = 5_000_000
 LOG_BACKUPS = 2
 
 CALL_TIMEOUT = 60
-MODE_TYPES = ("climate", "water_heater")
 
 LOG = logging.getLogger("run_session")
 
@@ -67,8 +71,6 @@ class Settings:
 
     interval: float
     allow_writes: bool = False
-    drop_keys: list[str] = field(default_factory=list)
-    drop_on: bool = False
 
 
 def _keychain_available() -> bool:
@@ -169,7 +171,7 @@ async def _stored_login(
 
 
 async def live_config() -> dict[str, Any]:
-    """Log in to a real Hive account and return the start_session config."""
+    """Log in to a real Hive account and return the new_session config."""
     stored = load_stored()
     username = stored.get("username") or input("Hive email: ").strip()
     password = getpass.getpass("Hive password (hidden, not stored): ")
@@ -209,46 +211,18 @@ async def live_config() -> dict[str, Any]:
     return config
 
 
-def install_drop(hive: Hive, settings: Settings) -> None:
-    """Strip ``settings.drop_keys`` from product state while ``drop_on`` is set.
-
-    Simulates the incomplete responses Hive occasionally returns.
-    """
-
-    def _strip(response: dict[str, Any]) -> dict[str, Any]:
-        if settings.drop_on and isinstance(response, dict):
-            for product in response.get("products", []):
-                state = product.get("state")
-                if isinstance(state, dict):
-                    for key in settings.drop_keys:
-                        state.pop(key, None)
-        return response
-
-    # Fixture sessions read through open_file, live sessions through get_all.
-    open_file = hive.open_file
-    get_all = hive.api.get_all
-
-    async def _get_all() -> dict[str, Any]:
-        return _strip(await get_all())
-
-    hive.open_file = lambda file: _strip(open_file(file))  # type: ignore[method-assign]
-    hive.api.get_all = _get_all  # type: ignore[method-assign]
-
-
-def log_summary(hive: Hive, label: str) -> None:
-    """Log one line per product: type, short ID, mode and state key names."""
-    LOG.info("--- %s: %d products ---", label, len(hive.data.products))
-    rows = sorted(
-        hive.data.products.items(), key=lambda item: (str(item[1].get("type")), item[0])
-    )
-    for product_id, product in rows:
-        state = product.get("state") if isinstance(product.get("state"), dict) else {}
+def log_summary(nodes: Nodes | None, label: str) -> None:
+    """Log one line per product: type, short ID and mode."""
+    if nodes is None:
+        LOG.info("--- %s: no data ---", label)
+        return
+    LOG.info("--- %s: %d products ---", label, len(nodes.products))
+    for product in sorted(nodes.products.values(), key=lambda p: (p.type, p.id)):
         LOG.info(
-            "%-20s %-9s mode=%-9s keys=%s",
-            product.get("type"),
-            product_id[-SHORT_ID_LENGTH:],
-            state.get("mode"),
-            ", ".join(sorted(state)),
+            "%-12s %-9s mode=%s",
+            product.type,
+            product.id[-SHORT_ID_LENGTH:],
+            product.mode,
         )
 
 
@@ -263,46 +237,39 @@ class Admin:
         """Bind the commands to a started session."""
         self.hive = hive
         self.settings = settings
+        self.nodes: Nodes | None = None
         # name: (handler, changes a device, arguments, description)
         self.commands: dict[
             str, tuple[Callable[..., Awaitable[object]], bool, str, str]
         ] = {
             "help": (self.help, False, "", "list the commands"),
-            "devices": (self.devices, False, "", "list the controllable devices"),
+            "devices": (self.devices, False, "", "list the products"),
             "poll": (self.poll, False, "", "poll Hive now"),
-            "mode": (self.mode, False, "DEVICE", "mode the library reports"),
-            "state": (self.state, False, "DEVICE", "state as last received"),
-            "status": (self.status, False, "DEVICE", "status the fork reads"),
-            "drop": (self.drop, False, "KEY... | off", "strip state keys from polls"),
+            "state": (self.state, False, "DEVICE", "product as last received"),
             "debug": (self.debug, False, "on | off", "library debug logging"),
             "interval": (self.interval, False, "SECONDS", "seconds between polls"),
-            "set-mode": (self.set_mode, True, "DEVICE MODE", "set heating/hot water"),
-            "set-temp": (self.set_temp, True, "DEVICE TEMP", "set target temperature"),
-            "boost": (self.boost, True, "DEVICE MINS [TEMP]", "start a boost"),
-            "boost-off": (self.boost_off, True, "DEVICE", "cancel a boost"),
+            "set-mode": (self.set_mode, True, "DEVICE MODE", "set a mode"),
+            "set-temp": (
+                self.set_temp,
+                True,
+                "DEVICE TEMP",
+                "set a target temperature",
+            ),
+            "boost": (self.boost, True, "DEVICE MINS [TEMP]", "boost (heating: TEMP)"),
         }
 
-    def _find(self, ref: str, types: tuple[str, ...]) -> Device:
-        """Return the one device of *types* matching a name or ID suffix."""
+    def _find(self, ref: str) -> Product:
+        """Return the one product matching a name or ID suffix."""
+        products = self.nodes.products.values() if self.nodes else []
         matches = [
-            device
-            for ha_type in types
-            for device in self.hive.device_list.get(ha_type, [])
-            if device.ha_name.lower() == ref.lower() or device.hive_id.endswith(ref)
+            product
+            for product in products
+            if (product.name or "").lower() == ref.lower() or product.id.endswith(ref)
         ]
         if len(matches) != 1:
             found = "no" if not matches else f"{len(matches)}"
-            raise ValueError(
-                f"{found} {'/'.join(types)} device matches {ref!r} - see `devices`"
-            )
+            raise ValueError(f"{found} product matches {ref!r} - see `devices`")
         return matches[0]
-
-    def _module(self, device: Device) -> Climate | WaterHeater:
-        handlers: dict[str, Climate | WaterHeater] = {
-            "climate": self.hive.heating,
-            "water_heater": self.hive.hotwater,
-        }
-        return handlers[device.ha_type]
 
     async def run(self, name: str, args: list[str]) -> object:
         """Run one command and return its JSON-serialisable result."""
@@ -336,54 +303,33 @@ class Admin:
         }
 
     async def devices(self) -> list[str]:
-        """List the devices the other commands can address."""
+        """List the products the other commands can address."""
+        products = self.nodes.products.values() if self.nodes else []
         return [
-            f"{device.ha_type:<13}{device.hive_id[-SHORT_ID_LENGTH:]}  {device.ha_name}"
-            for ha_type in MODE_TYPES
-            for device in self.hive.device_list.get(ha_type, [])
+            f"{product.type:<12}{product.id[-SHORT_ID_LENGTH:]}  {product.name}"
+            for product in sorted(products, key=lambda p: (p.type, p.id))
         ]
 
     async def poll(self) -> bool:
-        """Poll now; False means it failed or one was already running."""
-        ok = await poll_now(self.hive)
-        log_summary(self.hive, f"admin poll{'' if ok else ' (FAILED)'}")
+        """Poll now; False means the poll failed."""
+        ok = await self.refresh()
+        log_summary(self.nodes, f"admin poll{'' if ok else ' (FAILED)'}")
         return ok
 
-    async def mode(self, ref: str) -> str | None:
-        """Return what get_mode reports for a heating or hot water device."""
-        device = self._find(ref, MODE_TYPES)
-        return await self._module(device).get_mode(device)
+    async def refresh(self) -> bool:
+        """Fetch the nodes, keeping the last ones when the poll fails."""
+        try:
+            self.nodes = await self.hive.get_nodes()
+        except HiveReauthRequired:
+            raise
+        except HiveError as error:
+            LOG.warning("Poll failed: %s", error)
+            return False
+        return True
 
     async def state(self, ref: str) -> dict[str, Any]:
-        """Return a device's state block, without its schedule."""
-        device = self._find(ref, MODE_TYPES)
-        state = self.hive.data.products.get(device.hive_id, {}).get("state") or {}
-        return {key: value for key, value in state.items() if key != "schedule"}
-
-    async def status(self, ref: str) -> dict[str, Any]:
-        """Return what get_climate / get_water_heater give the fork."""
-        device = self._find(ref, MODE_TYPES)
-        if device.ha_type == "climate":
-            await self.hive.heating.get_climate(device)
-        else:
-            await self.hive.hotwater.get_water_heater(device)
-        result: dict[str, Any] = {
-            "online": device.device_data.get("online"),
-            "status": device.status,
-        }
-        if device.ha_type == "climate":
-            result["min_temp"] = device.min_temp
-            result["max_temp"] = device.max_temp
-        return result
-
-    async def drop(self, *keys: str) -> dict[str, list[str]]:
-        """Strip *keys* from every later poll, or stop with ``off``."""
-        if not keys:
-            raise ValueError(self._usage("drop"))
-        self.settings.drop_on = keys != ("off",)
-        if self.settings.drop_on:
-            self.settings.drop_keys[:] = keys
-        return {"dropping": self.settings.drop_keys if self.settings.drop_on else []}
+        """Return a product as the last poll parsed it."""
+        return asdict(self._find(ref))
 
     async def debug(self, switch: str) -> dict[str, str]:
         """Turn the library's debug logging on or off."""
@@ -401,37 +347,40 @@ class Admin:
         self.settings.interval = value
         return {"interval": value, "applies": "after the current wait"}
 
-    async def set_mode(self, ref: str, new_mode: str) -> dict[str, Any]:
-        """Set a heating or hot water mode and return the new state."""
-        device = self._find(ref, MODE_TYPES)
-        await self._module(device).set_mode(device, new_mode.upper())
-        return await self.state(ref)
+    async def set_mode(self, ref: str, mode: str) -> dict[str, Any]:
+        """Set a product's mode (SCHEDULE, MANUAL or OFF), then poll."""
+        mode = mode.upper()
+        if mode not in ("SCHEDULE", "MANUAL", "OFF"):
+            raise ValueError("mode must be SCHEDULE, MANUAL or OFF")
+        await self.hive.set_mode(self._find(ref), cast("Mode", mode))
+        return await self._after_command(ref)
 
-    async def set_temp(self, ref: str, temp: str) -> dict[str, Any]:
-        """Set a heating target temperature and return the new state."""
-        device = self._find(ref, ("climate",))
-        await self.hive.heating.set_target_temperature(device, float(temp))
-        return await self.state(ref)
+    async def set_temp(self, ref: str, target: str) -> dict[str, Any]:
+        """Set a heating or TRV target temperature, then poll."""
+        await self.hive.set_target_temperature(self._heating(ref), float(target))
+        return await self._after_command(ref)
 
     async def boost(
-        self, ref: str, mins: str, temp: str | None = None
+        self, ref: str, minutes: str, target: str | None = None
     ) -> dict[str, Any]:
-        """Start a heating (needs TEMP) or hot water boost and return the new state."""
-        device = self._find(ref, MODE_TYPES)
-        if device.ha_type == "water_heater":
-            await self.hive.hotwater.set_boost_on(device, int(mins))
-        elif temp is None:
-            raise ValueError(
-                "a heating boost needs a temperature: boost DEVICE MINS TEMP"
-            )
+        """Boost heating (needs TARGET) or hot water for MINS, then poll."""
+        product = self._find(ref)
+        if isinstance(product, HotWaterProduct):
+            await self.hive.set_hot_water_boost(product, int(minutes))
+        elif target is None:
+            raise ValueError("a heating boost needs a target: boost DEVICE MINS TEMP")
         else:
-            await self.hive.heating.set_boost_on(device, int(mins), float(temp))
-        return await self.state(ref)
+            await self.hive.set_heating_boost(product, int(minutes), float(target))
+        return await self._after_command(ref)
 
-    async def boost_off(self, ref: str) -> dict[str, Any]:
-        """Cancel a boost and return the new state."""
-        device = self._find(ref, MODE_TYPES)
-        await self._module(device).set_boost_off(device)
+    def _heating(self, ref: str) -> HeatingProduct:
+        product = self._find(ref)
+        if isinstance(product, HeatingProduct):
+            return product
+        raise ValueError(f"{ref!r} is not a heating or TRV product")
+
+    async def _after_command(self, ref: str) -> dict[str, Any]:
+        await self.refresh()
         return await self.state(ref)
 
     async def serve(
@@ -456,50 +405,33 @@ class Admin:
             writer.close()
 
 
-async def poll_now(hive: Hive) -> bool:
-    """Poll Hive immediately, bypassing the scan interval.
-
-    Returns False when a poll is already running or the poll failed.
-    """
-    if hive.update_lock.locked():
-        return False
-    async with hive.update_lock:
-        return await hive.get_devices()
-
-
 async def run(args: argparse.Namespace, config: dict[str, Any]) -> None:
     """Start the session, then poll and log a summary until stopped."""
     hive = Hive(username=config["username"], password=config.get("password", ""))
     settings = Settings(
         interval=args.interval,
         allow_writes=args.allow_writes,
-        drop_keys=list(args.drop),
     )
     async with hive:
-        install_drop(hive, settings)
-        device_list = await hive.start_session(config)
-        entities = ", ".join(f"{k}={len(v)}" for k, v in sorted(device_list.items()))
-        LOG.info("Session started. Entities: %s", entities)
-        log_summary(hive, "poll 1")
+        hive.new_session(config)
+        admin = Admin(hive, settings)
+        ok = await admin.refresh()
+        LOG.info("Session started.")
+        log_summary(admin.nodes, f"poll 1{'' if ok else ' (FAILED)'}")
 
-        if args.drop:
-            settings.drop_on = True
-            LOG.info("Dropping state keys from later polls: %s", ", ".join(args.drop))
         if settings.allow_writes:
             LOG.warning("Admin commands that change devices are ENABLED.")
         socket_path = _socket_file(args.worker)
         socket_path.unlink(missing_ok=True)
-        server = await asyncio.start_unix_server(
-            Admin(hive, settings).serve, path=str(socket_path)
-        )
+        server = await asyncio.start_unix_server(admin.serve, path=str(socket_path))
         socket_path.chmod(0o600)
         async with server:
             poll = 1
             while args.polls == 0 or poll < args.polls:
                 poll += 1
                 await asyncio.sleep(settings.interval)
-                ok = await poll_now(hive)
-                log_summary(hive, f"poll {poll}{'' if ok else ' (FAILED)'}")
+                ok = await admin.refresh()
+                log_summary(admin.nodes, f"poll {poll}{'' if ok else ' (FAILED)'}")
 
 
 def _pid_file(name: str) -> Path:
@@ -604,8 +536,6 @@ def launch(args: argparse.Namespace, name: str) -> None:
     LOG_DIR.mkdir(exist_ok=True)
     command = [sys.executable, __file__, "--worker", name]
     command += ["--polls", str(args.polls), "--interval", str(args.interval)]
-    for key in args.drop:
-        command += ["--drop", key]
     if args.debug:
         command.append("--debug")
     if args.allow_writes:
@@ -693,13 +623,6 @@ def main() -> None:
     parser.add_argument(
         "--interval", type=float, default=120, help="seconds between polls"
     )
-    parser.add_argument(
-        "--drop",
-        action="append",
-        default=[],
-        metavar="KEY",
-        help="state key to strip from polls after the first (repeatable)",
-    )
     parser.add_argument("--debug", action="store_true", help="library debug logging")
     parser.add_argument(
         "--allow-writes",
@@ -720,7 +643,7 @@ def main() -> None:
         work(args)
     else:
         source = "live" if args.live else "file"
-        launch(args, args.name or (f"simulate-{source}" if args.drop else source))
+        launch(args, args.name or source)
 
 
 if __name__ == "__main__":
