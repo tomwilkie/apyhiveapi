@@ -24,12 +24,6 @@ _HEATING = {
     },
     "state": {"name": "Receiver", "mode": "BOOST", "target": 21.5, "boost": 30},
 }
-_TRVCONTROL = {
-    "id": "trvc-1",
-    "type": "trvcontrol",
-    "props": {"online": True, "trvs": ["trv-1"], "temperature": 17},
-    "state": {"name": "Bedroom", "mode": "SCHEDULE", "target": 7},
-}
 _HOTWATER = {
     "id": "hw-1",
     "type": "hotwater",
@@ -70,7 +64,7 @@ def _parse(products=(), devices=(), user=None):
 
 class TestParseNodes:
     def test_products_keep_hives_own_names_and_values(self):
-        nodes = _parse([_HEATING, _TRVCONTROL, _HOTWATER])
+        nodes = _parse([_HEATING, _HOTWATER])
         assert nodes.products == {
             "heat-1": HeatingProduct(
                 id="heat-1",
@@ -80,7 +74,6 @@ class TestParseNodes:
                 model="SLR1",
                 version="1009",
                 zone="zone-A",
-                trvs=(),
                 temperature=19.2,
                 working=False,
                 mode="BOOST",
@@ -88,23 +81,6 @@ class TestParseNodes:
                 boost=30,
                 previous_mode="SCHEDULE",
                 previous_target=18.0,
-            ),
-            "trvc-1": HeatingProduct(
-                id="trvc-1",
-                type="trvcontrol",
-                name="Bedroom",
-                online=True,
-                model=None,
-                version=None,
-                zone=None,
-                trvs=("trv-1",),
-                temperature=17.0,
-                working=None,
-                mode="SCHEDULE",
-                target=7.0,
-                boost=None,
-                previous_mode=None,
-                previous_target=None,
             ),
             "hw-1": HotWaterProduct(
                 id="hw-1",
@@ -167,7 +143,6 @@ class TestParseNodes:
                         "online": "yes",
                         "temperature": "19.2",
                         "working": 1,
-                        "trvs": "trv-1",
                         "previous": {"mode": 0, "target": True},
                     },
                     "state": {"name": 5, "mode": None, "target": False, "boost": True},
@@ -186,7 +161,6 @@ class TestParseNodes:
             model=None,
             version=None,
             zone=None,
-            trvs=(),
             temperature=None,
             working=None,
             mode=None,
@@ -195,10 +169,6 @@ class TestParseNodes:
             previous_mode=None,
             previous_target=None,
         )
-
-    def test_non_string_trv_ids_are_dropped(self):
-        product = {"id": "trvc-1", "type": "trvcontrol", "props": {"trvs": [1, "t"]}}
-        assert _parse([product]).products["trvc-1"].trvs == ("t",)
 
     @pytest.mark.parametrize(
         "response",

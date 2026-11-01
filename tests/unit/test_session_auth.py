@@ -550,7 +550,6 @@ _PRODUCTS = parse_nodes(
     {
         "products": [
             {"id": "p1", "type": "heating"},
-            {"id": "t1", "type": "trvcontrol"},
             {"id": "w1", "type": "hotwater"},
         ]
     }
@@ -567,8 +566,8 @@ class TestCommands:
                 id="set-mode",
             ),
             pytest.param(
-                lambda hive: hive.set_target_temperature(_PRODUCTS["t1"], 20.5),
-                call("trvcontrol", "t1", target=20.5),
+                lambda hive: hive.set_target_temperature(_PRODUCTS["p1"], 20.5),
+                call("heating", "p1", target=20.5),
                 id="set-target-temperature",
             ),
             pytest.param(
