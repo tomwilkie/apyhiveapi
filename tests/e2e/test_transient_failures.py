@@ -5,7 +5,7 @@ answers each request with a scripted outcome: the fixture data, a hang past
 the request timeout, a dropped connection, an HTTP 5xx, a truncated body or
 a refusal from Hive's API gateway. The session is driven the way the Home
 Assistant fork's coordinator drives it: ``get_nodes()`` on every refresh and
-``set_state()`` for a command, each raising when the request fails.
+a ``set_*`` call for a command, each raising when the request fails.
 """
 
 # pylint: disable=redefined-outer-name
@@ -22,12 +22,15 @@ from aiohttp.test_utils import TestServer
 
 from apyhiveapi import Hive
 from apyhiveapi.exceptions import HiveConnectionError
+from apyhiveapi.nodes import parse_nodes
 
 _DATA = json.loads(
     (Path(__file__).parents[2] / "src/apyhiveapi/data/data.json").read_text()
 )
 _HEATING_ID = "heating-0000-0000-0000-000000000001"
 _HOTWATER_ID = "hotwater-0000-0000-0000-000000000001"
+# The products commands are sent to, parsed without a request.
+_PRODUCTS = parse_nodes(_DATA).products
 # Short enough to keep the suite fast, long enough not to trip on a slow CI box.
 _TEST_TIMEOUT = ClientTimeout(total=0.5, connect=0.5)
 _COGNITO_RESULT = {
@@ -220,7 +223,7 @@ class TestDroppedConnection:
     async def test_a_command_is_not_resent(self, session, fake_hive):
         fake_hive.command_outcomes = ["disconnect"]
         with pytest.raises(HiveConnectionError):
-            await session.set_state("heating", _HEATING_ID, target=21.0)
+            await session.set_target_temperature(_PRODUCTS[_HEATING_ID], 21.0)
         assert fake_hive.commands == [{"target": 21.0}]
 
 
@@ -234,7 +237,7 @@ class TestCommandFailures:
         # The fork turns any HiveError from a command into HomeAssistantError.
         fake_hive.command_outcomes = list(fault)
         with pytest.raises(HiveConnectionError):
-            await session.set_state("heating", _HEATING_ID, target=21.0)
+            await session.set_target_temperature(_PRODUCTS[_HEATING_ID], 21.0)
         assert fake_hive.polls == 0
         session.login.assert_not_awaited()
 
@@ -246,12 +249,12 @@ class TestCommandFailures:
         with pytest.raises(
             HiveConnectionError, match=r"HTTP 403 \(ForbiddenException\)"
         ):
-            await session.set_state("hotwater", _HOTWATER_ID, mode="MANUAL")
+            await session.set_mode(_PRODUCTS[_HOTWATER_ID], "MANUAL")
         assert fake_hive.commands == [{"mode": "MANUAL"}]
         session.login.assert_not_awaited()
 
     async def test_a_rejected_token_logs_in_once_and_resends(self, session, fake_hive):
         fake_hive.command_outcomes = ["unauthorized"]
-        await session.set_state("hotwater", _HOTWATER_ID, mode="MANUAL")
+        await session.set_mode(_PRODUCTS[_HOTWATER_ID], "MANUAL")
         session.login.assert_awaited_once()
         assert fake_hive.commands == [{"mode": "MANUAL"}, {"mode": "MANUAL"}]

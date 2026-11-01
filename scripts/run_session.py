@@ -35,14 +35,22 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from apyhiveapi import SMS_REQUIRED, Auth, Hive, HiveError, HiveReauthRequired
+from apyhiveapi import (
+    SMS_REQUIRED,
+    Auth,
+    HeatingProduct,
+    Hive,
+    HiveError,
+    HiveReauthRequired,
+    HotWaterProduct,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from apyhiveapi import Nodes, Product
+    from apyhiveapi import Mode, Nodes, Product
 
 FILE_USERNAME = "use@file.com"
 KEYCHAIN_SERVICE = "pyhive-dev"
@@ -240,7 +248,14 @@ class Admin:
             "state": (self.state, False, "DEVICE", "product as last received"),
             "debug": (self.debug, False, "on | off", "library debug logging"),
             "interval": (self.interval, False, "SECONDS", "seconds between polls"),
-            "set": (self.set, True, "DEVICE KEY=VALUE...", "send a product state"),
+            "set-mode": (self.set_mode, True, "DEVICE MODE", "set a mode"),
+            "set-temp": (
+                self.set_temp,
+                True,
+                "DEVICE TEMP",
+                "set a target temperature",
+            ),
+            "boost": (self.boost, True, "DEVICE MINS [TEMP]", "boost (heating: TEMP)"),
         }
 
     def _find(self, ref: str) -> Product:
@@ -332,23 +347,39 @@ class Admin:
         self.settings.interval = value
         return {"interval": value, "applies": "after the current wait"}
 
-    async def set(self, ref: str, *pairs: str) -> dict[str, Any]:
-        """Send KEY=VALUE pairs as the product's new state, then poll.
+    async def set_mode(self, ref: str, mode: str) -> dict[str, Any]:
+        """Set a product's mode (SCHEDULE, MANUAL or OFF), then poll."""
+        mode = mode.upper()
+        if mode not in ("SCHEDULE", "MANUAL", "OFF"):
+            raise ValueError("mode must be SCHEDULE, MANUAL or OFF")
+        await self.hive.set_mode(self._find(ref), cast("Mode", mode))
+        return await self._after_command(ref)
 
-        Each value is read as JSON when it parses (21.5, true, null) and as a
-        string otherwise (MANUAL).
-        """
-        if not pairs or any("=" not in pair for pair in pairs):
-            raise ValueError(self._usage("set"))
-        state: dict[str, Any] = {}
-        for pair in pairs:
-            key, raw = pair.split("=", 1)
-            try:
-                state[key] = json.loads(raw)
-            except json.JSONDecodeError:
-                state[key] = raw
+    async def set_temp(self, ref: str, target: str) -> dict[str, Any]:
+        """Set a heating or TRV target temperature, then poll."""
+        await self.hive.set_target_temperature(self._heating(ref), float(target))
+        return await self._after_command(ref)
+
+    async def boost(
+        self, ref: str, minutes: str, target: str | None = None
+    ) -> dict[str, Any]:
+        """Boost heating (needs TARGET) or hot water for MINS, then poll."""
         product = self._find(ref)
-        await self.hive.set_state(product.type, product.id, **state)
+        if isinstance(product, HotWaterProduct):
+            await self.hive.set_hot_water_boost(product, int(minutes))
+        elif target is None:
+            raise ValueError("a heating boost needs a target: boost DEVICE MINS TEMP")
+        else:
+            await self.hive.set_heating_boost(product, int(minutes), float(target))
+        return await self._after_command(ref)
+
+    def _heating(self, ref: str) -> HeatingProduct:
+        product = self._find(ref)
+        if isinstance(product, HeatingProduct):
+            return product
+        raise ValueError(f"{ref!r} is not a heating or TRV product")
+
+    async def _after_command(self, ref: str) -> dict[str, Any]:
         await self.refresh()
         return await self.state(ref)
 

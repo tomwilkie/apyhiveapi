@@ -18,7 +18,7 @@ from apyhiveapi.exceptions import (
 )
 from apyhiveapi.hive import REFRESH_THRESHOLD, Hive
 from apyhiveapi.models import SessionTokens
-from apyhiveapi.nodes import Device, HeatingProduct, Nodes, User
+from apyhiveapi.nodes import Device, HeatingProduct, Nodes, User, parse_nodes
 
 AUTH_RESULT = {
     "AuthenticationResult": {
@@ -546,29 +546,61 @@ class TestApiCall:
         assert first.await_count == second.await_count == 2
 
 
-class TestSetState:
+_PRODUCTS = parse_nodes(
+    {
+        "products": [
+            {"id": "p1", "type": "heating"},
+            {"id": "t1", "type": "trvcontrol"},
+            {"id": "w1", "type": "hotwater"},
+        ]
+    }
+).products
+
+
+class TestCommands:
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            pytest.param(
+                lambda hive: hive.set_mode(_PRODUCTS["w1"], "MANUAL"),
+                call("hotwater", "w1", mode="MANUAL"),
+                id="set-mode",
+            ),
+            pytest.param(
+                lambda hive: hive.set_target_temperature(_PRODUCTS["t1"], 20.5),
+                call("trvcontrol", "t1", target=20.5),
+                id="set-target-temperature",
+            ),
+            pytest.param(
+                lambda hive: hive.set_heating_boost(_PRODUCTS["p1"], 30, 22.0),
+                call("heating", "p1", mode="BOOST", boost=30, target=22.0),
+                id="set-heating-boost",
+            ),
+            pytest.param(
+                lambda hive: hive.set_hot_water_boost(_PRODUCTS["w1"], 60),
+                call("hotwater", "w1", mode="BOOST", boost=60),
+                id="set-hot-water-boost",
+            ),
+        ],
+    )
+    async def test_each_command_posts_its_state_to_the_product(self, command, expected):
+        hive = _make_hive()
+        await command(hive)
+        assert hive.api.set_state.await_args_list == [expected]
+
     async def test_file_mode_sends_nothing(self):
         hive = _make_hive()
         hive.config.file = True
         _expire_tokens(hive)
-        assert await hive.set_state("heating", "p1", target=20.5) is None
+        await hive.set_target_temperature(_PRODUCTS["p1"], 20.5)
         hive.api.set_state.assert_not_awaited()
-        hive.auth.refresh_token.assert_not_awaited()
-
-    async def test_sends_the_state_to_the_api(self):
-        hive = _make_hive()
-        result = await hive.set_state("heating", "p1", target=20.5, mode="MANUAL")
-        assert result is None
-        hive.api.set_state.assert_awaited_once_with(
-            "heating", "p1", target=20.5, mode="MANUAL"
-        )
         hive.auth.refresh_token.assert_not_awaited()
 
     async def test_rejected_token_logs_in_and_retries(self):
         hive = _make_hive()
         hive.api.set_state.side_effect = [HiveReauthRequired("HTTP 401"), None]
         hive.auth.login.return_value = AUTH_RESULT
-        await hive.set_state("heating", "p1", target=21.0)
+        await hive.set_target_temperature(_PRODUCTS["p1"], 21.0)
         hive.auth.login.assert_awaited_once_with()
         assert hive.api.set_state.await_args_list == [
             call("heating", "p1", target=21.0),

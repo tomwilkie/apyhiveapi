@@ -11,7 +11,7 @@ from apyhiveapi.exceptions import (
     HiveInvalidUsername,
     HiveReauthRequired,
 )
-from apyhiveapi.hive import Hive
+from apyhiveapi.hive import Hive, Mode
 from apyhiveapi.nodes import (
     Device,
     HeatingProduct,
@@ -35,6 +35,7 @@ __all__ = [
     "HiveInvalidUsername",
     "HiveReauthRequired",
     "HotWaterProduct",
+    "Mode",
     "Nodes",
     "Product",
     "User",

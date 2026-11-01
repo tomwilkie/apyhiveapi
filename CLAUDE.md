@@ -59,8 +59,10 @@ own API and knows nothing about Home Assistant; the public API is:
 
 - `Hive(websession)` with `start_session` (sync: loads the config entry's
   tokens and device credentials, sends nothing), `get_nodes` (Hive's
-  `GET /nodes/all`), `set_state` (Hive's `POST /nodes/{type}/{id}`) and
-  `close`
+  `GET /nodes/all`), the commands `set_mode`, `set_target_temperature`,
+  `set_heating_boost` and `set_hot_water_boost` (each one
+  `POST /nodes/{type}/{id}` for a product from the snapshot), and `close`;
+  plus the `Mode` type
 - `Auth(username=, password=)` (the `HiveAuth` class) with `login`, `sms_2fa`,
   `is_device_registered`, `device_registration`, `get_device_data` (sync; the
   fork stores whatever it returns as `device_data`) and `forget_device`, plus
@@ -75,10 +77,9 @@ Everything that turns Hive's model into Home Assistant's lives in the fork:
 its `DataUpdateCoordinator` calls `get_nodes()` on its own interval, and the
 fork attaches products to their hardware (heating and hot water to the
 thermostat in their zone, a TRV control to its first TRV), decides
-availability, reports a `BOOST` mode as the mode it returns to, builds the
-`set_state` body for each command (including restoring the mode when a boost
-is cancelled), validates command arguments and names Hive's `Receiver`
-`Heating`.
+availability, reports a `BOOST` mode as the mode it returns to, ends a boost
+by setting its `previous_mode`, validates command arguments and names Hive's
+`Receiver` `Heating`.
 
 The fork's `main` pins `apyhiveapi==0.1.5`, the last release with the old
 entity-style API (`start_session` returning `device_list`, `update_data`,
@@ -154,7 +155,7 @@ The rules that keep it consistent:
   right outcome for a bug. Hive's data is not a programming error: parsing
   never raises (see "Parse JSON in one place").
 - **Retry only a rejected token.** There is no retry helper and no polling
-  timer: `get_nodes()` and `set_state()` raise and the fork's coordinator
+  timer: `get_nodes()` and the commands raise and the fork's coordinator
   decides when to try again. The one retry is a single re-login through
   `Hive._api_call()` after Hive rejects the token. "Reauth required" is raised only when
   Hive or Cognito actually rejected the credentials or asked for an SMS code,
@@ -168,8 +169,8 @@ The rules that keep it consistent:
   attempts. Home Assistant does the rest of the retrying: setup backoff after
   `ConfigEntryNotReady`, the next poll interval, and the user for commands.
 - **Calls to Hive raise; the data they return does not.** `get_nodes()`
-  returns a snapshot or raises; `set_state()` returns nothing or raises. Both
-  let every `HiveError` propagate. `start_session()` sends nothing and raises
+  returns a snapshot or raises; the `set_*` commands return nothing or
+  raise. All let every `HiveError` propagate. `start_session()` sends nothing and raises
   only `HiveReauthRequired`, for a config with no tokens or incomplete device
   data. The library does not check command values: the fork does.
 - **Parse JSON in one place.** `nodes.parse_nodes()` turns a `/nodes/all`
@@ -222,7 +223,7 @@ committing.
 - `scripts/run_session.py` (`make run-file`, `make run-live`, `make call ...`)
   runs a polling session in the background against the fixture or a real
   account and takes admin commands over a local socket (`state DEVICE` shows
-  a parsed product, `set DEVICE KEY=VALUE...` sends a state). Read-only unless
+  a parsed product; `set-mode`, `set-temp` and `boost` send commands). Read-only unless
   started with `WRITE=1`.
 - `scripts/verify_dist.py` installs the built wheel in a throwaway venv and
   imports every module (`make verify-dist`).
@@ -261,9 +262,9 @@ test, and in review.
   case; do not write a sibling. Tests that differ only in their input belong
   in one `@pytest.mark.parametrize` with descriptive `ids`.
 - **Test at the layer that owns the logic.** `get_all`, `HiveApi.set_state`,
-  `Hive.set_state` and `get_nodes` are thin delegations. Their error
-  propagation is pinned once, where the handling lives: aiohttp translation in
-  `TestFetch`, botocore translation in `TestCognito`, login-and-retry in
+  the `set_*` commands and `get_nodes` are thin delegations; each command's
+  body is pinned once in `TestCommands`. Their error propagation is pinned
+  once, where the handling lives: aiohttp translation in `TestFetch`, botocore translation in `TestCognito`, login-and-retry in
   `TestApiCall`, value parsing in `test_nodes.py`. A wrapper gets one test
   that it calls through, not a copy of the wrapped class's error table. The
   same goes for cross-layer repeats: `tests/e2e` exists for what only a real
@@ -304,7 +305,7 @@ same PR.
 src/apyhiveapi/
 ├── __init__.py         ← public exports: Hive, Auth, the node dataclasses, SMS_REQUIRED, the exceptions
 ├── hive.py             ← Hive — the session: login and token refresh, start_session,
-│                         get_nodes and set_state
+│                         get_nodes and the set_* commands
 ├── auth.py             ← HiveAuth (exported as Auth) — Cognito SRP login, SMS 2FA,
 │                         token refresh, trusted devices; _cognito() translates botocore errors
 ├── api.py              ← HiveApi — HTTP calls to beekeeper.hivehome.com, and get_login_info()
@@ -342,8 +343,10 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens` and
 - **Hive's endpoints** — `get_nodes()` fetches `/nodes/all` (or the fixture),
   raises `HiveConnectionError` for a reply with no products or no devices and
   returns `parse_nodes()` of the body. Discovery and polling are the same
-  call. `set_state(type, id, **state)` posts the state as given, a no-op in
-  file mode.
+  call. `set_mode`, `set_target_temperature`, `set_heating_boost` and
+  `set_hot_water_boost` each post a fixed body for the product they are given
+  through `_set_state()`, a no-op in file mode. There is no boost-off call:
+  ending a boost is `set_mode` with the product's `previous_mode`.
 
 `Hive` creates its own `aiohttp.ClientSession` when none is passed and closes
 it in `close()` / `__aexit__`. The fork always passes Home Assistant's shared

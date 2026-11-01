@@ -48,6 +48,12 @@ class TestFixture:
         self, file_session
     ):
         before = await file_session.get_nodes()
-        await file_session.set_state("heating", _HEATING_ID, target=21)
-        await file_session.set_state("hotwater", _HOTWATER_ID, mode="MANUAL")
+        heating = before.products[_HEATING_ID]
+        hot_water = before.products[_HOTWATER_ID]
+        assert isinstance(heating, HeatingProduct)
+        assert isinstance(hot_water, HotWaterProduct)
+        await file_session.set_target_temperature(heating, 21)
+        await file_session.set_heating_boost(heating, 30, 22)
+        await file_session.set_mode(hot_water, "MANUAL")
+        await file_session.set_hot_water_boost(hot_water, 60)
         assert await file_session.get_nodes() == before

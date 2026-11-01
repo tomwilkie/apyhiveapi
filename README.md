@@ -13,7 +13,7 @@ An async Python library for the [Hive](https://www.hivehome.com/) smart home pla
 - Async only, built on `aiohttp`
 - AWS Cognito SRP authentication with SMS two-factor authentication support
 - Automatic token refresh at 90% of token lifetime, with a silent re-login when the refresh token is rejected
-- Mirrors Hive's own API: `get_nodes()` is `GET /nodes/all` and `set_state()` is `POST /nodes/{type}/{id}`. There is no polling timer and no cached state; the caller decides when to fetch
+- Mirrors Hive's own API: `get_nodes()` is `GET /nodes/all`, and each command (`set_mode`, `set_target_temperature`, `set_heating_boost`, `set_hot_water_boost`) is one `POST /nodes/{type}/{id}`. There is no polling timer and no cached state; the caller decides when to fetch
 - Typed, frozen snapshots of heating and hot water products and devices, using Hive's own field names and values
 - File-based offline mode for development and testing without live credentials
 
@@ -118,18 +118,28 @@ devices are `Device` (`hub`, `thermostatui`, `boilermodule`, `trv`). Fields keep
 Hive's names and values: a heating `mode` can be `BOOST`, a `previous_mode` can be
 `False`. A value Hive left out or sent with an unexpected type is `None`.
 
-`set_state(type, id, **state)` sends `POST /nodes/{type}/{id}` with the given
-state. The library does not check the values or work out what to send: that is
-the caller's job.
+Each command takes a product from the snapshot and sends one
+`POST /nodes/{type}/{id}`:
+
+| Command | Products | Body |
+|---|---|---|
+| `set_mode(product, mode)` | any | `{"mode": mode}`; `SCHEDULE`, `MANUAL` or `OFF` (`MANUAL` is "on" for hot water) |
+| `set_target_temperature(product, target)` | `HeatingProduct` | `{"target": target}` |
+| `set_heating_boost(product, minutes, target)` | `HeatingProduct` | `{"mode": "BOOST", "boost": minutes, "target": target}` |
+| `set_hot_water_boost(product, minutes)` | `HotWaterProduct` | `{"mode": "BOOST", "boost": minutes}` |
+
+There is no boost-off call: end a boost with `set_mode` and the mode it returns
+to (the product's `previous_mode`, where `False` means `OFF`). The library does
+not check argument values; Hive does.
 
 ```python
 nodes = await hive.get_nodes()
 heating = nodes.products["<heating id>"]
 print(heating.temperature, heating.target, heating.mode, heating.online)
 
-await hive.set_state("heating", heating.id, mode="MANUAL", target=21.0)
-await hive.set_state("heating", heating.id, mode="BOOST", boost=30, target=22.0)
-await hive.set_state("hotwater", "<hot water id>", mode="SCHEDULE")
+await hive.set_target_temperature(heating, 21.0)
+await hive.set_heating_boost(heating, 30, 22.0)
+await hive.set_mode(heating, "SCHEDULE")
 ```
 
 ---
@@ -146,7 +156,7 @@ caller should do about it. aiohttp and botocore exceptions never escape the libr
 | `HiveReauthRequired` | The tokens, refresh token or saved device credentials were rejected, there are no tokens, or Hive wants an SMS code. The session then keeps raising it without contacting Hive until it is given new tokens | Log in again |
 | `HiveInvalidUsername`, `HiveInvalidPassword`, `HiveInvalid2FACode` | Subclasses of `HiveReauthRequired` raised by the login flow | Show the user a form error |
 
-`get_nodes()` and `set_state()` raise on every failure and keep nothing between
+`get_nodes()` and the commands raise on every failure and keep nothing between
 calls; retrying is up to the caller.
 
 ---

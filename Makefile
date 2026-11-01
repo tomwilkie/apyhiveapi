@@ -42,13 +42,15 @@ help:
 	@echo "  debug on | off            Library debug logging"
 	@echo "  interval SECONDS          Seconds between polls, from the next wait"
 	@echo "Only in a session started with WRITE=1 (these change real devices):"
-	@echo "  set DEVICE KEY=VALUE...   Send a product state, e.g. mode=MANUAL target=21"
+	@echo "  set-mode DEVICE MODE      Set a mode: SCHEDULE, MANUAL or OFF"
+	@echo "  set-temp DEVICE TEMP      Set a heating or TRV target temperature"
+	@echo "  boost DEVICE MINS [TEMP]  Start a boost (heating needs TEMP)"
 	@echo ""
 	@echo "Examples"
 	@echo "  make run-file INTERVAL=2 POLLS=8"
 	@echo "  make logs NAME=file"
 	@echo "  make stop NAME=live"
-	@echo "  make run-live WRITE=1            # then: make call CMD=\"set Hallway mode=OFF\""
+	@echo "  make run-live WRITE=1            # then: make call CMD=\"set-mode Hallway OFF\""
 
 .DEFAULT_GOAL := setup
 

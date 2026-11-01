@@ -7,7 +7,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from apyhiveapi.api import HiveApi
 from apyhiveapi.auth import HiveAuth
@@ -26,10 +26,14 @@ if TYPE_CHECKING:
     from aiohttp import ClientSession
 
     from apyhiveapi.api import JsonValue
+    from apyhiveapi.nodes import HeatingProduct, HotWaterProduct, Product
 
 _LOGGER = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).parent / "data"
+
+# The modes a product can be set to. Hive's MANUAL is "on" for hot water.
+type Mode = Literal["SCHEDULE", "MANUAL", "OFF"]
 
 # Tokens are refreshed once this share of their lifetime has passed.
 REFRESH_THRESHOLD = 0.90
@@ -44,7 +48,7 @@ class Hive:
 
     Create one per account and call :meth:`start_session` with the saved
     tokens and device credentials. Then :meth:`get_nodes` fetches Hive's
-    ``GET /nodes/all`` and :meth:`set_state` sends its
+    ``GET /nodes/all``, and the ``set_*`` commands each send one
     ``POST /nodes/{type}/{id}``. The session keeps no device state and has no
     timer: the caller decides when to poll.
 
@@ -230,20 +234,63 @@ class Hive:
                     await self.login()
             return await call()
 
-    async def set_state(
-        self, product_type: str, product_id: str, **state: JsonValue
-    ) -> None:
-        """Change a product's state on Hive. Nothing is sent in file mode.
+    # --- Commands ----------------------------------------------------------
+
+    async def set_mode(self, product: Product, mode: Mode) -> None:
+        """Set a product's mode: ``{"mode": mode}``.
+
+        Ending a boost is setting the mode it returns to, which Hive reports
+        as the product's ``previous_mode``.
 
         Raises:
             HiveReauthRequired: The user has to log in again.
             HiveConnectionError: Hive could not be reached.
             HiveApiError: Hive refused the change.
         """
+        await self._set_state(product, mode=mode)
+
+    async def set_target_temperature(
+        self, product: HeatingProduct, target: float
+    ) -> None:
+        """Set a heating or TRV target temperature: ``{"target": target}``.
+
+        Raises:
+            HiveReauthRequired: The user has to log in again.
+            HiveConnectionError: Hive could not be reached.
+            HiveApiError: Hive refused the change.
+        """
+        await self._set_state(product, target=target)
+
+    async def set_heating_boost(
+        self, product: HeatingProduct, minutes: int, target: float
+    ) -> None:
+        """Boost heating to *target* for *minutes*.
+
+        Sends ``{"mode": "BOOST", "boost": minutes, "target": target}``.
+
+        Raises:
+            HiveReauthRequired: The user has to log in again.
+            HiveConnectionError: Hive could not be reached.
+            HiveApiError: Hive refused the change.
+        """
+        await self._set_state(product, mode="BOOST", boost=minutes, target=target)
+
+    async def set_hot_water_boost(self, product: HotWaterProduct, minutes: int) -> None:
+        """Boost the hot water for *minutes*: ``{"mode": "BOOST", "boost": minutes}``.
+
+        Raises:
+            HiveReauthRequired: The user has to log in again.
+            HiveConnectionError: Hive could not be reached.
+            HiveApiError: Hive refused the change.
+        """
+        await self._set_state(product, mode="BOOST", boost=minutes)
+
+    async def _set_state(self, product: Product, **state: JsonValue) -> None:
+        """Post a product's new state to Hive. Nothing is sent in file mode."""
         if self.config.file:
             return
         await self._api_call(
-            lambda: self.api.set_state(product_type, product_id, **state)
+            lambda: self.api.set_state(product.type, product.id, **state)
         )
 
     # --- Nodes -------------------------------------------------------------
