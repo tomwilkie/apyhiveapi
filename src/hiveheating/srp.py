@@ -85,3 +85,21 @@ def compute_hkdf(ikm: bytes | bytearray, salt: bytes | bytearray) -> bytes:
     info_bits_update = INFO_BITS + bytearray(chr(1), "utf-8")
     hmac_hash = hmac.new(prk, info_bits_update, hashlib.sha256).digest()
     return hmac_hash[:16]
+
+
+BIG_N = hex_to_long(N_HEX)
+G = hex_to_long(G_HEX)
+K = hex_to_long(hex_hash(pad_hex(N_HEX) + pad_hex(G_HEX)))
+
+
+def generate_small_a() -> int:
+    """Generate the random SRP client secret ``a``."""
+    return get_random(128) % BIG_N
+
+
+def calculate_a(small_a: int) -> int:
+    """Calculate the client's public SRP value ``A`` from its secret ``a``."""
+    big_a = pow(G, small_a, BIG_N)
+    if (big_a % BIG_N) == 0:
+        raise ValueError("Safety check for A failed")
+    return big_a

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hiveheating.exceptions import HiveReauthRequired
-from hiveheating.hive import Hive
+from hiveheating.hive import Hive, _load_fixture
 
 _LOGGER_NAME = "hiveheating.hive"
 _EPOCH = datetime.min.replace(tzinfo=UTC)
@@ -28,11 +28,11 @@ def _make_hive():
     return hive
 
 
-class TestOpenFile:
-    """Tests for Hive.open_file."""
+class TestLoadFixture:
+    """Tests for _load_fixture."""
 
     def test_returns_the_parsed_fixture(self):
-        nodes = Hive().open_file("data.json")
+        nodes = _load_fixture()
         assert set(nodes) == {"user", "products", "devices"}
         assert isinstance(nodes["products"], list)
         assert isinstance(nodes["devices"], list)

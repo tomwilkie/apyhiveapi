@@ -1,5 +1,7 @@
 """AWS Cognito authentication for Hive: SRP login, SMS 2FA and trusted devices.
 
+The Cognito pool details come from Hive's SSO login page, fetched through
+:func:`hiveheating.api._fetch`, which translates its aiohttp errors.
 Cognito's refusals and connection failures are translated in
 :meth:`HiveAuth._cognito`, so callers only ever see
 :class:`~hiveheating.exceptions.HiveError` subclasses. A botocore
@@ -22,9 +24,10 @@ from typing import TYPE_CHECKING, Any
 
 import boto3
 import botocore.exceptions
+from aiohttp import ClientSession
 from botocore.config import Config
 
-from hiveheating.api import get_login_info
+from hiveheating.api import _fetch
 from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
@@ -35,10 +38,13 @@ from hiveheating.exceptions import (
     HiveReauthRequired,
 )
 from hiveheating.srp import (
-    G_HEX,
-    N_HEX,
+    BIG_N,
+    G,
+    K,
+    calculate_a,
     calculate_u,
     compute_hkdf,
+    generate_small_a,
     get_random,
     hash_sha256,
     hex_hash,
@@ -50,9 +56,13 @@ from hiveheating.srp import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from aiohttp import ClientSession
-
 _LOGGER = logging.getLogger(__name__)
+
+# The ChallengeName of a login that needs the user's SMS code.
+SMS_REQUIRED = "SMS_MFA"
+
+# The username that switches to the bundled fixture instead of Hive.
+FILE_USERNAME = "use@file.com"
 
 # Cognito error codes and the exception each one becomes.
 type CodeMap = Mapping[str, type[HiveError]]
@@ -69,6 +79,20 @@ _COGNITO_CONFIG = Config(
     retries={"max_attempts": 2, "mode": "standard"},
 )
 
+_SSO_URL = "https://sso.hivehome.com/"
+
+# The SSO bootstrap page embeds its Cognito config in its first <script>
+# block as `window.<key> = <value>` assignments. The value quoting changed
+# from double to single quotes on 2026-10-20, so accept either (and require
+# the closing quote to match).
+_FIRST_SCRIPT = re.compile(r"<script[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
+_SSO_ASSIGNMENT = re.compile(r"""window\.(\w+)\s*=\s*(["'])(.*?)\2""")
+_SSO_KEYS = {
+    "UPID": "HiveSSOPoolId",
+    "CLIID": "HiveSSOPublicCognitoClientId",
+    "REGION": "HiveSSOPoolId",
+}
+
 # Cognito error codes that mean the saved device is no longer trusted.
 _DEVICE_REJECTED: CodeMap = {
     "NotAuthorizedException": HiveReauthRequired,
@@ -76,11 +100,42 @@ _DEVICE_REJECTED: CodeMap = {
 }
 
 
+async def get_login_info(websession: ClientSession | None = None) -> dict[str, str]:
+    """Fetch the Cognito pool details embedded in the Hive SSO login page.
+
+    Args:
+        websession: aiohttp session to use. A short-lived one is created when
+            none is given.
+
+    Returns:
+        ``UPID``, ``CLIID`` and ``REGION``.
+
+    Raises:
+        HiveConnectionError: The page could not be fetched.
+        HiveApiError: The page does not contain the Cognito details.
+    """
+    if websession is None:
+        async with ClientSession() as own_session:
+            page = await _fetch(own_session, "get", _SSO_URL)
+    else:
+        page = await _fetch(websession, "get", _SSO_URL)
+    script = _FIRST_SCRIPT.search(page)
+    values = {
+        key: value
+        for key, _quote, value in _SSO_ASSIGNMENT.findall(
+            script.group(1) if script else ""
+        )
+    }
+    try:
+        return {name: values[source] for name, source in _SSO_KEYS.items()}
+    except KeyError as err:
+        raise HiveApiError(f"The Hive login page did not include {err}") from err
+
+
 class HiveAuth:
     """Log in to a Hive account through AWS Cognito and manage trusted devices."""
 
     PASSWORD_VERIFIER_CHALLENGE = "PASSWORD_VERIFIER"  # noqa: S105 - challenge name
-    SMS_MFA_CHALLENGE = "SMS_MFA"
     DEVICE_VERIFIER_CHALLENGE = "DEVICE_SRP_AUTH"
     DEVICE_PASSWORD_CHALLENGE = "DEVICE_PASSWORD_VERIFIER"  # noqa: S105 - challenge name
 
@@ -113,12 +168,9 @@ class HiveAuth:
         self.access_token: str | None = None
         # Cognito's own ID for the user, learnt from the PASSWORD_VERIFIER challenge.
         self.user_id = username
-        self.big_n: int = hex_to_long(N_HEX)
-        self.g_value: int = hex_to_long(G_HEX)
-        self.k: int = hex_to_long(hex_hash(pad_hex(N_HEX) + pad_hex(G_HEX)))
-        self.small_a_value: int = self.generate_random_small_a()
-        self.large_a_value: int = self.calculate_a()
-        self.use_file = self.username == "use@file.com"
+        self.small_a_value: int = generate_small_a()
+        self.large_a_value: int = calculate_a(self.small_a_value)
+        self.use_file = self.username == FILE_USERNAME
         self.file_response: dict[str, Any] = {
             "AuthenticationResult": {"AccessToken": "file"}
         }
@@ -301,7 +353,7 @@ class HiveAuth:
                 "NotAuthorizedException": HiveInvalid2FACode,
             },
             ClientId=self._client_id,
-            ChallengeName=self.SMS_MFA_CHALLENGE,
+            ChallengeName=SMS_REQUIRED,
             Session=session,
             ChallengeResponses={
                 "SMS_MFA_CODE": str(entered_code),
@@ -469,25 +521,14 @@ class HiveAuth:
             datetime.now(UTC).strftime("%a %b %d %H:%M:%S UTC %Y"),
         )
 
-    def generate_random_small_a(self) -> int:
-        """Generate the random SRP client secret ``a``."""
-        return get_random(128) % self.big_n
-
-    def calculate_a(self) -> int:
-        """Calculate the client's public SRP value ``A`` from ``a``."""
-        big_a = pow(self.g_value, self.small_a_value, self.big_n)
-        if (big_a % self.big_n) == 0:
-            raise ValueError("Safety check for A failed")
-        return big_a
-
     def _new_srp_ephemeral(self) -> None:
         """Generate a fresh SRP client ephemeral (a, A) pair.
 
         SRP ephemerals must not be reused across handshakes, so this is
         called at the start of every authentication attempt.
         """
-        self.small_a_value = self.generate_random_small_a()
-        self.large_a_value = self.calculate_a()
+        self.small_a_value = generate_small_a()
+        self.large_a_value = calculate_a(self.small_a_value)
 
     def _auth_params(self, device_key: str | None = None) -> dict[str, str]:
         """Return the parameters that start an SRP handshake."""
@@ -519,8 +560,8 @@ class HiveAuth:
             raise ValueError("U cannot be zero")
         identity_hash = hash_sha256(f"{identity}:{secret}".encode())
         x_value = hex_to_long(hex_hash(pad_hex(salt) + identity_hash))
-        base = (server_b - self.k * pow(self.g_value, x_value, self.big_n)) % self.big_n
-        s_value = pow(base, self.small_a_value + u_value * x_value, self.big_n)
+        base = (server_b - K * pow(G, x_value, BIG_N)) % BIG_N
+        s_value = pow(base, self.small_a_value + u_value * x_value, BIG_N)
         return compute_hkdf(
             bytearray.fromhex(pad_hex(s_value)),
             bytearray.fromhex(pad_hex(long_to_hex(u_value))),
@@ -598,7 +639,7 @@ class HiveAuth:
         )
         salt = pad_hex(get_random(16))
         x_value = hex_to_long(hex_hash(salt + combined_hash))
-        verifier = pad_hex(pow(self.g_value, x_value, self.big_n))
+        verifier = pad_hex(pow(G, x_value, BIG_N))
         config = {
             "PasswordVerifier": base64.standard_b64encode(
                 bytearray.fromhex(verifier)

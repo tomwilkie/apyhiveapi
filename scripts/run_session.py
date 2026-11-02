@@ -46,13 +46,13 @@ from hiveheating import (
     HiveReauthRequired,
     HotWaterProduct,
 )
+from hiveheating.auth import FILE_USERNAME
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from hiveheating import Mode, Nodes, Product
 
-FILE_USERNAME = "use@file.com"
 KEYCHAIN_SERVICE = "pyhive-dev"
 KEYCHAIN_ACCOUNT = "live-session"
 SHORT_ID_LENGTH = 8

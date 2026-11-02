@@ -1,4 +1,4 @@
-"""Unit tests for hiveheating.api: _fetch, get_login_info and HiveApi."""
+"""Unit tests for hiveheating.api: _fetch and HiveApi."""
 
 import json
 import logging
@@ -7,30 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from hiveheating.api import (
-    _HEADERS,
-    _SSO_URL,
-    _TIMEOUT,
-    HiveApi,
-    _fetch,
-    get_login_info,
-)
+from hiveheating.api import _HEADERS, _TIMEOUT, HiveApi, _fetch
 from hiveheating.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
 
 _TOKEN = "test-token"
 _URL = "https://beekeeper.hivehome.com/1.0/nodes/heating/node-1"
 _AUTH_HEADERS = {**_HEADERS, "Authorization": _TOKEN}
-_SSO_PAGE = (
-    "<html><head><script>"
-    'window.HiveSSOPoolId="eu-west-1_abc",'
-    'window.HiveSSOPublicCognitoClientId="client123"'
-    "</script></head></html>"
-)
-_LOGIN_INFO = {
-    "UPID": "eu-west-1_abc",
-    "CLIID": "client123",
-    "REGION": "eu-west-1_abc",
-}
 
 
 def _make_response(status=200, body="", headers=None):
@@ -343,148 +325,6 @@ class TestFetchLogging:
         messages = _api_messages(caplog)
         assert len(messages) == 1
         assert messages[0].startswith(f"GET {_URL} answered HTTP 503 in ")
-
-
-# Tests for get_login_info
-
-
-class TestGetLoginInfo:
-    @pytest.mark.parametrize(
-        ("html", "expected"),
-        [
-            pytest.param(_SSO_PAGE, _LOGIN_INFO, id="double-quoted"),
-            pytest.param(
-                "<script>\n"
-                "        window.HiveSSOPoolId = 'eu-west-1_abc'\n"
-                "        window.HiveSSOCognitoClientId = 'private123'\n"
-                "        window.HiveSSOPublicCognitoClientId = 'client123'\n"
-                "        window.HiveSSOState = '%%STATE%%'\n"
-                "    </script>",
-                _LOGIN_INFO,
-                id="single-quoted-with-spaces",
-            ),
-            pytest.param(
-                '<SCRIPT type="text/javascript">'
-                'window.HiveSSOPoolId = "eu-west-1_abc"; '
-                'window.HiveSSOPublicCognitoClientId = "client123";'
-                "</SCRIPT>",
-                _LOGIN_INFO,
-                id="script-tag-attributes-and-uppercase",
-            ),
-            pytest.param(
-                "<script>"
-                'window.HiveSSOPoolId = "it\'s"; '
-                "window.HiveSSOPublicCognitoClientId = 'say \"hi\"'"
-                "</script>",
-                {"UPID": "it's", "CLIID": 'say "hi"', "REGION": "it's"},
-                id="value-contains-other-quote",
-            ),
-        ],
-    )
-    async def test_parses_the_cognito_config_from_the_first_script(
-        self, html, expected
-    ):
-        websession = _make_websession(body=html)
-
-        assert await get_login_info(websession) == expected
-
-    async def test_fetches_the_sso_page_with_the_given_session(self):
-        websession = _make_websession(body=_SSO_PAGE)
-
-        with patch("hiveheating.api.ClientSession") as session_cls:
-            await get_login_info(websession)
-
-        websession.request.assert_called_once_with(
-            "get",
-            "https://sso.hivehome.com/",
-            headers=None,
-            data=None,
-            timeout=_TIMEOUT,
-        )
-        session_cls.assert_not_called()
-        websession.close.assert_not_called()
-
-    @pytest.mark.parametrize(
-        ("html", "missing_key"),
-        [
-            pytest.param(
-                "<script>window.Unrelated = 'x'</script>"
-                "<script>window.HiveSSOPoolId = 'p' "
-                "window.HiveSSOPublicCognitoClientId = 'c'</script>",
-                "HiveSSOPoolId",
-                id="config-in-second-script",
-            ),
-            pytest.param(
-                "<script>window.HiveSSOPoolId = 'eu-west-1_abc\"</script>",
-                "HiveSSOPoolId",
-                id="mismatched-quotes",
-            ),
-            pytest.param(
-                "<script>window.HiveSSOPoolId = 'eu-west-1_abc'</script>",
-                "HiveSSOPublicCognitoClientId",
-                id="pool-id-only",
-            ),
-            pytest.param(
-                "<script>window.SomeOtherKey = 'value'</script>",
-                "HiveSSOPoolId",
-                id="unrelated-key",
-            ),
-            pytest.param("", "HiveSSOPoolId", id="empty-page"),
-            pytest.param(
-                "<html><body>Down for maintenance</body></html>",
-                "HiveSSOPoolId",
-                id="no-script",
-            ),
-        ],
-    )
-    async def test_page_without_the_config_raises_api_error(self, html, missing_key):
-        websession = _make_websession(body=html)
-
-        with pytest.raises(HiveApiError) as exc_info:
-            await get_login_info(websession)
-
-        assert str(exc_info.value) == (
-            f"The Hive login page did not include '{missing_key}'"
-        )
-        assert isinstance(exc_info.value.__cause__, KeyError)
-        assert exc_info.value.__cause__.args == (missing_key,)
-
-    @pytest.mark.parametrize(
-        ("status", "exc"),
-        [
-            # The login page gets no token, so a 401/403 is not a token problem.
-            (401, HiveApiError),
-            (403, HiveApiError),
-            (404, HiveApiError),
-            (500, HiveConnectionError),
-            (503, HiveConnectionError),
-        ],
-    )
-    async def test_http_errors_propagate(self, status, exc):
-        websession = _make_websession(status, "blocked")
-
-        with pytest.raises(exc) as exc_info:
-            await get_login_info(websession)
-
-        assert f"HTTP {status} calling https://sso.hivehome.com/: blocked" in str(
-            exc_info.value
-        )
-
-    async def test_opens_and_closes_a_temporary_session_when_none_is_given(self):
-        temp = _make_websession(body=_SSO_PAGE)
-        temp.__aenter__ = AsyncMock(return_value=temp)
-        temp.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("hiveheating.api.ClientSession", return_value=temp) as session_cls:
-            result = await get_login_info()
-
-        assert result == _LOGIN_INFO
-        session_cls.assert_called_once_with()
-        temp.__aenter__.assert_awaited_once()
-        temp.request.assert_called_once_with(
-            "get", _SSO_URL, headers=None, data=None, timeout=_TIMEOUT
-        )
-        temp.__aexit__.assert_awaited_once()
 
 
 # Tests for HiveApi construction and its websession

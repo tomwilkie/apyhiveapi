@@ -10,7 +10,7 @@ Only the node types this library supports are kept; the rest are dropped.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 HEATING_PRODUCT_TYPES = frozenset({"heating"})
 HOT_WATER_PRODUCT_TYPES = frozenset({"hotwater"})
 DEVICE_TYPES = frozenset({"hub", "thermostatui", "boilermodule"})
+
+# The modes a product can be set to. Hive's MANUAL is "on" for hot water.
+type Mode = Literal["SCHEDULE", "MANUAL", "OFF"]
 
 
 @dataclass(frozen=True)

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from hiveheating.api import HiveApi
-from hiveheating.auth import HiveAuth
+from hiveheating.auth import SMS_REQUIRED, HiveAuth
 from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
@@ -16,8 +16,7 @@ from hiveheating.exceptions import (
     HiveInvalidUsername,
     HiveReauthRequired,
 )
-from hiveheating.hive import REFRESH_THRESHOLD, Hive
-from hiveheating.models import SessionTokens
+from hiveheating.hive import _REFRESH_THRESHOLD, Hive, SessionTokens, _load_fixture
 from hiveheating.nodes import Device, HeatingProduct, Nodes, User, parse_nodes
 
 AUTH_RESULT = {
@@ -34,7 +33,7 @@ NEW_TOKENS = {
     "accessToken": "access-token-0001",
 }
 OLD_TOKENS = {"token": "id-tok", "refreshToken": "rt", "accessToken": "acc-tok"}
-SMS_CHALLENGE = {"ChallengeName": HiveAuth.SMS_MFA_CHALLENGE}
+SMS_CHALLENGE = {"ChallengeName": SMS_REQUIRED}
 DEVICE_CHALLENGE = {"ChallengeName": HiveAuth.DEVICE_VERIFIER_CHALLENGE}
 _LOGGER_NAME = "hiveheating.hive"
 _LAST_POLL = datetime(2024, 1, 1, tzinfo=UTC)
@@ -342,10 +341,9 @@ class TestReauthLatch:
 
 class TestRefreshDue:
     def test_due_once_the_threshold_share_of_the_lifetime_has_passed(self):
-        assert REFRESH_THRESHOLD == 0.90
         hive = _make_hive()
         hive.tokens.token_expiry = timedelta(seconds=1000)
-        threshold = timedelta(seconds=1000 * REFRESH_THRESHOLD)
+        threshold = timedelta(seconds=1000 * _REFRESH_THRESHOLD)
         hive.tokens.token_created = datetime.now(UTC) - threshold + _TOLERANCE
         assert hive._refresh_due() is False
         hive.tokens.token_created = datetime.now(UTC) - threshold - _TOLERANCE
@@ -616,15 +614,15 @@ class TestGetNodes:
             "hiveheating.hive.asyncio.to_thread", new=AsyncMock(return_value=_nodes())
         ) as to_thread:
             nodes = await hive.get_nodes()
-        to_thread.assert_awaited_once_with(hive.open_file, "data.json")
+        to_thread.assert_awaited_once_with(_load_fixture)
         hive.api.get_all.assert_not_awaited()
         assert set(nodes.products) == {"p1"}
 
     async def test_api_mode_fetches_all_nodes_and_parses_them(self):
         hive = _make_hive()
-        with patch.object(hive, "open_file") as open_file:
+        with patch("hiveheating.hive._load_fixture") as load_fixture:
             nodes = await hive.get_nodes()
-        open_file.assert_not_called()
+        load_fixture.assert_not_called()
         hive.api.get_all.assert_awaited_once_with()
         assert isinstance(nodes, Nodes)
         assert nodes.user == User(temperature_unit="C")

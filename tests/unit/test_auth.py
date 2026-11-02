@@ -12,7 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import botocore.exceptions
 import pytest
 
-from hiveheating.auth import _COGNITO_CONFIG, HiveAuth
+from hiveheating.api import _TIMEOUT
+from hiveheating.auth import (
+    _COGNITO_CONFIG,
+    _SSO_URL,
+    HiveAuth,
+    get_login_info,
+)
 from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
@@ -22,8 +28,13 @@ from hiveheating.exceptions import (
     HiveReauthRequired,
 )
 from hiveheating.srp import (
+    BIG_N,
+    G,
+    K,
+    calculate_a,
     calculate_u,
     compute_hkdf,
+    generate_small_a,
     hash_sha256,
     hex_hash,
     hex_to_long,
@@ -137,20 +148,186 @@ def cognito_server_key(auth, identity, secret, salt, server_secret):
     x_value = hex_to_long(
         hex_hash(pad_hex(salt) + hash_sha256(f"{identity}:{secret}".encode()))
     )
-    verifier = pow(auth.g_value, x_value, auth.big_n)
-    srp_b = (auth.k * verifier + pow(auth.g_value, server_secret, auth.big_n)) % (
-        auth.big_n
-    )
+    verifier = pow(G, x_value, BIG_N)
+    srp_b = (K * verifier + pow(G, server_secret, BIG_N)) % (BIG_N)
     u_value = calculate_u(auth.large_a_value, srp_b)
     shared = pow(
-        auth.large_a_value * pow(verifier, u_value, auth.big_n),
+        auth.large_a_value * pow(verifier, u_value, BIG_N),
         server_secret,
-        auth.big_n,
+        BIG_N,
     )
     return srp_b, compute_hkdf(
         bytearray.fromhex(pad_hex(shared)),
         bytearray.fromhex(pad_hex(long_to_hex(u_value))),
     )
+
+
+_SSO_PAGE = (
+    "<html><head><script>"
+    'window.HiveSSOPoolId="eu-west-1_abc",'
+    'window.HiveSSOPublicCognitoClientId="client123"'
+    "</script></head></html>"
+)
+_LOGIN_INFO = {
+    "UPID": "eu-west-1_abc",
+    "CLIID": "client123",
+    "REGION": "eu-west-1_abc",
+}
+
+
+def _make_websession(status=200, body=""):
+    """Return a mock ClientSession whose request() yields one response."""
+    resp = MagicMock()
+    resp.status = status
+    resp.headers = {}
+    resp.text = AsyncMock(return_value=body)
+    resp.__aenter__ = AsyncMock(return_value=resp)
+    resp.__aexit__ = AsyncMock(return_value=False)
+    websession = MagicMock()
+    websession.request.return_value = resp
+    return websession
+
+
+# Tests for get_login_info
+
+
+class TestGetLoginInfo:
+    @pytest.mark.parametrize(
+        ("html", "expected"),
+        [
+            pytest.param(_SSO_PAGE, _LOGIN_INFO, id="double-quoted"),
+            pytest.param(
+                "<script>\n"
+                "        window.HiveSSOPoolId = 'eu-west-1_abc'\n"
+                "        window.HiveSSOCognitoClientId = 'private123'\n"
+                "        window.HiveSSOPublicCognitoClientId = 'client123'\n"
+                "        window.HiveSSOState = '%%STATE%%'\n"
+                "    </script>",
+                _LOGIN_INFO,
+                id="single-quoted-with-spaces",
+            ),
+            pytest.param(
+                '<SCRIPT type="text/javascript">'
+                'window.HiveSSOPoolId = "eu-west-1_abc"; '
+                'window.HiveSSOPublicCognitoClientId = "client123";'
+                "</SCRIPT>",
+                _LOGIN_INFO,
+                id="script-tag-attributes-and-uppercase",
+            ),
+            pytest.param(
+                "<script>"
+                'window.HiveSSOPoolId = "it\'s"; '
+                "window.HiveSSOPublicCognitoClientId = 'say \"hi\"'"
+                "</script>",
+                {"UPID": "it's", "CLIID": 'say "hi"', "REGION": "it's"},
+                id="value-contains-other-quote",
+            ),
+        ],
+    )
+    async def test_parses_the_cognito_config_from_the_first_script(
+        self, html, expected
+    ):
+        websession = _make_websession(body=html)
+
+        assert await get_login_info(websession) == expected
+
+    async def test_fetches_the_sso_page_with_the_given_session(self):
+        websession = _make_websession(body=_SSO_PAGE)
+
+        with patch("hiveheating.auth.ClientSession") as session_cls:
+            await get_login_info(websession)
+
+        websession.request.assert_called_once_with(
+            "get",
+            "https://sso.hivehome.com/",
+            headers=None,
+            data=None,
+            timeout=_TIMEOUT,
+        )
+        session_cls.assert_not_called()
+        websession.close.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("html", "missing_key"),
+        [
+            pytest.param(
+                "<script>window.Unrelated = 'x'</script>"
+                "<script>window.HiveSSOPoolId = 'p' "
+                "window.HiveSSOPublicCognitoClientId = 'c'</script>",
+                "HiveSSOPoolId",
+                id="config-in-second-script",
+            ),
+            pytest.param(
+                "<script>window.HiveSSOPoolId = 'eu-west-1_abc\"</script>",
+                "HiveSSOPoolId",
+                id="mismatched-quotes",
+            ),
+            pytest.param(
+                "<script>window.HiveSSOPoolId = 'eu-west-1_abc'</script>",
+                "HiveSSOPublicCognitoClientId",
+                id="pool-id-only",
+            ),
+            pytest.param(
+                "<script>window.SomeOtherKey = 'value'</script>",
+                "HiveSSOPoolId",
+                id="unrelated-key",
+            ),
+            pytest.param("", "HiveSSOPoolId", id="empty-page"),
+            pytest.param(
+                "<html><body>Down for maintenance</body></html>",
+                "HiveSSOPoolId",
+                id="no-script",
+            ),
+        ],
+    )
+    async def test_page_without_the_config_raises_api_error(self, html, missing_key):
+        websession = _make_websession(body=html)
+
+        with pytest.raises(HiveApiError) as exc_info:
+            await get_login_info(websession)
+
+        assert str(exc_info.value) == (
+            f"The Hive login page did not include '{missing_key}'"
+        )
+        assert isinstance(exc_info.value.__cause__, KeyError)
+        assert exc_info.value.__cause__.args == (missing_key,)
+
+    @pytest.mark.parametrize(
+        ("status", "exc"),
+        [
+            # The login page gets no token, so a 401/403 is not a token problem.
+            (401, HiveApiError),
+            (403, HiveApiError),
+            (404, HiveApiError),
+            (500, HiveConnectionError),
+            (503, HiveConnectionError),
+        ],
+    )
+    async def test_http_errors_propagate(self, status, exc):
+        websession = _make_websession(status, "blocked")
+
+        with pytest.raises(exc) as exc_info:
+            await get_login_info(websession)
+
+        assert f"HTTP {status} calling https://sso.hivehome.com/: blocked" in str(
+            exc_info.value
+        )
+
+    async def test_opens_and_closes_a_temporary_session_when_none_is_given(self):
+        temp = _make_websession(body=_SSO_PAGE)
+        temp.__aenter__ = AsyncMock(return_value=temp)
+        temp.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("hiveheating.auth.ClientSession", return_value=temp) as session_cls:
+            result = await get_login_info()
+
+        assert result == _LOGIN_INFO
+        session_cls.assert_called_once_with()
+        temp.__aenter__.assert_awaited_once()
+        temp.request.assert_called_once_with(
+            "get", _SSO_URL, headers=None, data=None, timeout=_TIMEOUT
+        )
+        temp.__aexit__.assert_awaited_once()
 
 
 # Tests for the constructor
@@ -479,7 +656,7 @@ class TestLogin:
         await auth.login()
         third_a = auth.large_a_value
         assert len({initial_a, second_a, third_a}) == 3
-        assert auth.large_a_value == pow(auth.g_value, auth.small_a_value, auth.big_n)
+        assert auth.large_a_value == pow(G, auth.small_a_value, BIG_N)
         sent = [
             kwargs["AuthParameters"]["SRP_A"]
             for _name, _args, kwargs in auth.client.initiate_auth.mock_calls
@@ -889,7 +1066,7 @@ class TestDeviceVerifier:
         x_value = hex_to_long(
             hex_hash(salt + hash_sha256(f"grp-keydev-key:{password}".encode()))
         )
-        verifier = pad_hex(pow(auth.g_value, x_value, auth.big_n))
+        verifier = pad_hex(pow(G, x_value, BIG_N))
         decoded = base64.standard_b64decode(config["PasswordVerifier"])
         assert decoded == bytes.fromhex(verifier)
         # Every call makes a new password, with a new salt and verifier.
@@ -925,7 +1102,7 @@ class TestConfirmDevice:
         x_value = hex_to_long(
             hex_hash(salt + hash_sha256(f"grp-keydev-key:{password}".encode()))
         )
-        verifier = pad_hex(pow(auth.g_value, x_value, auth.big_n))
+        verifier = pad_hex(pow(G, x_value, BIG_N))
         decoded = base64.standard_b64decode(config["PasswordVerifier"])
         assert decoded == bytes.fromhex(verifier)
 
@@ -1181,26 +1358,20 @@ class TestPoolName:
 
 class TestSrpEphemeral:
     def test_small_a_is_random_and_below_n(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        values = {auth.generate_random_small_a() for _ in range(5)}
+        values = {generate_small_a() for _ in range(5)}
         assert len(values) == 5
-        assert all(0 <= value < auth.big_n for value in values)
+        assert all(0 <= value < BIG_N for value in values)
 
     def test_calculate_a_is_g_to_the_power_of_a(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        auth.small_a_value = 12345
-        assert auth.calculate_a() == pow(2, 12345, auth.big_n)
+        assert calculate_a(12345) == pow(2, 12345, BIG_N)
 
     @pytest.mark.parametrize("multiple", [0, 1, 2])
     def test_calculate_a_rejects_a_multiple_of_n(self, multiple):
-        auth = HiveAuth(USERNAME, PASSWORD)
         with (
-            patch(
-                "hiveheating.auth.pow", create=True, return_value=multiple * auth.big_n
-            ),
+            patch("hiveheating.srp.pow", create=True, return_value=multiple * BIG_N),
             pytest.raises(ValueError, match="Safety check for A failed"),
         ):
-            auth.calculate_a()
+            calculate_a(12345)
 
     def test_new_srp_ephemeral_replaces_both_values(self):
         auth = HiveAuth(USERNAME, PASSWORD)
@@ -1208,7 +1379,7 @@ class TestSrpEphemeral:
         auth._new_srp_ephemeral()
         assert auth.small_a_value != initial[0]
         assert auth.large_a_value != initial[1]
-        assert auth.large_a_value == pow(auth.g_value, auth.small_a_value, auth.big_n)
+        assert auth.large_a_value == pow(G, auth.small_a_value, BIG_N)
 
     def test_auth_params(self):
         auth = HiveAuth(USERNAME, PASSWORD)
@@ -1243,7 +1414,7 @@ class TestSrpKey:
         # server-side tests above verify independently.
         auth = HiveAuth(USERNAME, PASSWORD)
         auth.small_a_value = 12345
-        auth.large_a_value = auth.calculate_a()
+        auth.large_a_value = calculate_a(12345)
         key = auth._srp_key("pooluser", "pass", "ccddee", "aabbccdd")
         assert key.hex() == "f61d3eda114bbcdcd35c229bad30c781"
 

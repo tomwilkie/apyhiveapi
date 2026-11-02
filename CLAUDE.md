@@ -311,15 +311,14 @@ same PR.
 src/hiveheating/
 ├── __init__.py         ← public exports: Hive, Auth, the node dataclasses, SMS_REQUIRED, the exceptions
 ├── hive.py             ← Hive — the session: login and token refresh, new_session,
-│                         get_nodes and the set_* commands
+│                         get_nodes and the set_* commands; SessionTokens, SessionConfig
 ├── auth.py             ← HiveAuth (exported as Auth) — Cognito SRP login, SMS 2FA,
-│                         token refresh, trusted devices; _cognito() translates botocore errors
-├── api.py              ← HiveApi — HTTP calls to beekeeper.hivehome.com, and get_login_info()
-│                         for the SSO login page; _fetch() translates aiohttp errors
-├── nodes.py            ← Nodes, User, HeatingProduct, HotWaterProduct, Device and parse_nodes()
-├── srp.py              ← pure SRP/HKDF crypto functions and constants
-├── models.py           ← SessionTokens, SessionConfig dataclasses
-├── const.py            ← SMS_REQUIRED
+│                         token refresh, trusted devices, SMS_REQUIRED, and get_login_info()
+│                         for the SSO login page; _cognito() translates botocore errors
+├── api.py              ← HiveApi — HTTP calls to beekeeper.hivehome.com; _fetch()
+│                         translates aiohttp errors
+├── nodes.py            ← Nodes, User, HeatingProduct, HotWaterProduct, Device, Mode and parse_nodes()
+├── srp.py              ← pure SRP/HKDF crypto: functions, constants and the client ephemeral
 ├── exceptions.py       ← the HiveError hierarchy
 ├── helpers.py          ← sanitize_payload for logging
 ├── py.typed            ← PEP 561 marker: the annotations are the public contract
@@ -339,7 +338,7 @@ It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens` and
   `hive_refresh_tokens()` raise it again straight away until
   `update_tokens()` stores new tokens. `update_tokens()` stores a
   Cognito response or a saved config entry. `hive_refresh_tokens()` refreshes
-  at 90% of the token lifetime (`REFRESH_THRESHOLD`) and falls back to
+  at 90% of the token lifetime (`_REFRESH_THRESHOLD`) and falls back to
   `login()` when the refresh token is rejected. `_api_call()` wraps every API
   call: refresh first, and on `HiveReauthRequired` (HTTP 401) log in once
   and retry.
