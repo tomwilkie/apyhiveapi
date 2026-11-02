@@ -20,12 +20,12 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, web
 from aiohttp.test_utils import TestServer
 
-from apyhiveapi import Hive
-from apyhiveapi.exceptions import HiveConnectionError
-from apyhiveapi.nodes import parse_nodes
+from hiveheating import Hive
+from hiveheating.exceptions import HiveConnectionError
+from hiveheating.nodes import parse_nodes
 
 _DATA = json.loads(
-    (Path(__file__).parents[2] / "src/apyhiveapi/data/data.json").read_text()
+    (Path(__file__).parents[2] / "src/hiveheating/data/data.json").read_text()
 )
 _HEATING_ID = "heating-0000-0000-0000-000000000001"
 _HOTWATER_ID = "hotwater-0000-0000-0000-000000000001"
@@ -127,9 +127,9 @@ async def fake_hive(monkeypatch):
     server = _FakeHive()
     await server.server.start_server()
     base = str(server.server.make_url("/1.0"))
-    monkeypatch.setattr("apyhiveapi.api._BASE_URL", base)
-    monkeypatch.setattr("apyhiveapi.api._ALL_NODES_URL", f"{base}/nodes/all")
-    monkeypatch.setattr("apyhiveapi.api._TIMEOUT", _TEST_TIMEOUT)
+    monkeypatch.setattr("hiveheating.api._BASE_URL", base)
+    monkeypatch.setattr("hiveheating.api._ALL_NODES_URL", f"{base}/nodes/all")
+    monkeypatch.setattr("hiveheating.api._TIMEOUT", _TEST_TIMEOUT)
     yield server
     await server.close()
 

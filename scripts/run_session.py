@@ -37,7 +37,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from apyhiveapi import (
+from hiveheating import (
     SMS_REQUIRED,
     Auth,
     HeatingProduct,
@@ -50,7 +50,7 @@ from apyhiveapi import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from apyhiveapi import Mode, Nodes, Product
+    from hiveheating import Mode, Nodes, Product
 
 FILE_USERNAME = "use@file.com"
 KEYCHAIN_SERVICE = "pyhive-dev"
@@ -336,7 +336,7 @@ class Admin:
         if switch not in ("on", "off"):
             raise ValueError(self._usage("debug"))
         level = logging.DEBUG if switch == "on" else logging.WARNING
-        logging.getLogger("apyhiveapi").setLevel(level)
+        logging.getLogger("hiveheating").setLevel(level)
         return {"debug": switch}
 
     async def interval(self, seconds: str) -> dict[str, float | str]:
@@ -574,7 +574,7 @@ def work(args: argparse.Namespace) -> None:
     )
     logging.getLogger().addHandler(handler)
     LOG.setLevel(logging.INFO)
-    logging.getLogger("apyhiveapi").setLevel(
+    logging.getLogger("hiveheating").setLevel(
         logging.DEBUG if args.debug else logging.WARNING
     )
     signal.signal(signal.SIGTERM, signal.default_int_handler)

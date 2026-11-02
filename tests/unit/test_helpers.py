@@ -2,7 +2,7 @@
 
 import pytest
 
-from apyhiveapi.helpers import sanitize_payload
+from hiveheating.helpers import sanitize_payload
 
 
 class TestSanitizePayload:

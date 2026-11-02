@@ -131,9 +131,9 @@ env:
        it and what goes wrong. If you can't describe a trigger, it's
        not a bug report — leave it out or mark it as a question.
     2. Security: secrets or real credentials in code, tokens or PII in
-       log output (log payloads via `apyhiveapi.helpers.sanitize_payload`),
+       log output (log payloads via `hiveheating.helpers.sanitize_payload`),
        unsafe HTTP or Cognito usage, un-anonymised data in
-       `src/apyhiveapi/data/*.json`.
+       `src/hiveheating/data/*.json`.
     3. Project rules: anything that breaks the "Project rules" section of
        `CLAUDE.md`. The placeholder AWS credential strings it mentions are
        not leaked secrets; do not flag them.

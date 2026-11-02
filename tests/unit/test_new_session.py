@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from apyhiveapi.exceptions import HiveReauthRequired
-from apyhiveapi.hive import Hive
+from hiveheating.exceptions import HiveReauthRequired
+from hiveheating.hive import Hive
 
-_LOGGER_NAME = "apyhiveapi.hive"
+_LOGGER_NAME = "hiveheating.hive"
 _EPOCH = datetime.min.replace(tzinfo=UTC)
 _TOKENS = {
     "token": "id-token",

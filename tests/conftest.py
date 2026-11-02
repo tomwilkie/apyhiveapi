@@ -2,7 +2,7 @@
 
 import pytest
 
-from apyhiveapi import Hive
+from hiveheating import Hive
 
 
 @pytest.fixture

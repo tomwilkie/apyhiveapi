@@ -4,7 +4,7 @@
 
 An async Python library for the [Hive](https://www.hivehome.com/) smart home platform. It exists to power [tomwilkie/ha-hive](https://github.com/tomwilkie/ha-hive), a fork of the Hive integration for [Home Assistant](https://www.home-assistant.io/), and exposes exactly what that integration needs: Hive heating and hot water.
 
-> This library is a hard fork of [Pyhass/Pyhive](https://github.com/Pyhass/Pyhive), cut down to what the ha-hive integration needs and restarted at version 0.0.1. It was called `pyhive-integration` until v0.1.5; that name on PyPI belongs to the upstream project, so this one is published as `apyhiveapi`, which is also the import name.
+> This library is a hard fork of [Pyhass/Pyhive](https://github.com/Pyhass/Pyhive), cut down to what the ha-hive integration needs and restarted at version 0.0.1. It was called `pyhive-integration` until v0.1.5; that name on PyPI belongs to the upstream project, so this one is published as `apyhiveapi`. Since v0.3.0 the import name is `hiveheating`: upstream's `pyhive-integration`, which Home Assistant ships for its built-in Hive integration, installs its own `apyhiveapi` and `pyhiveapi` packages, and sharing a folder with them broke imports.
 
 ---
 
@@ -50,7 +50,7 @@ import asyncio
 import getpass
 
 from aiohttp import ClientSession
-from apyhiveapi import SMS_REQUIRED, Auth, Hive
+from hiveheating import SMS_REQUIRED, Auth, Hive
 
 
 async def main():
@@ -163,7 +163,7 @@ calls; retrying is up to the caller.
 
 ## Offline / File-Based Testing
 
-Set `username="use@file.com"` to load device state from the bundled JSON fixture in `src/apyhiveapi/data/` instead of making live API calls. Useful for development without real Hive credentials.
+Set `username="use@file.com"` to load device state from the bundled JSON fixture in `src/hiveheating/data/` instead of making live API calls. Useful for development without real Hive credentials.
 
 ```python
 async with Hive(username="use@file.com", password="") as hive:

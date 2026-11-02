@@ -8,7 +8,7 @@
 ## Setup
 
 ```bash
-git clone https://github.com/tomwilkie/apyhiveapi.git
+git clone https://github.com/tomwilkie/hiveheating.git
 cd apyhiveapi
 make setup
 ```

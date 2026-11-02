@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apyhiveapi"
-version = "0.2.1"
+version = "0.3.0"
 description = "An async Python library to interface with the Hive API"
 readme = "README.md"
 license = "MIT"
@@ -53,10 +53,10 @@ dev = [
 
 [tool.setuptools]
 # Listed explicitly so the data directory (no __init__.py) ships too. Keep in
-# sync with the directories under src/apyhiveapi/.
+# sync with the directories under src/hiveheating/.
 packages = [
-    "apyhiveapi",
-    "apyhiveapi.data",
+    "hiveheating",
+    "hiveheating.data",
 ]
 
 [tool.setuptools.package-dir]
@@ -64,8 +64,8 @@ packages = [
 
 [tool.setuptools.package-data]
 # py.typed lets the Home Assistant fork type-check against this package.
-"apyhiveapi" = ["py.typed"]
-"apyhiveapi.data" = ["*.json"]
+"hiveheating" = ["py.typed"]
+"hiveheating.data" = ["*.json"]
 
 [tool.ruff]
 line-length = 88

@@ -1,4 +1,4 @@
-"""Pre-commit hook: block PII patterns in src/apyhiveapi/data/*.json files."""
+"""Pre-commit hook: block PII patterns in src/hiveheating/data/*.json files."""
 
 import json
 import re

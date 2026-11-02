@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from apyhiveapi import SMS_REQUIRED, Auth, Hive, HiveReauthRequired
+from hiveheating import SMS_REQUIRED, Auth, Hive, HiveReauthRequired
 
 DEVICE_FILE = Path("hive_device.json")
 

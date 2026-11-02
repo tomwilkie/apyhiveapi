@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import botocore.exceptions
 import pytest
 
-from apyhiveapi.auth import _COGNITO_CONFIG, HiveAuth
-from apyhiveapi.exceptions import (
+from hiveheating.auth import _COGNITO_CONFIG, HiveAuth
+from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
     HiveInvalid2FACode,
@@ -21,7 +21,7 @@ from apyhiveapi.exceptions import (
     HiveInvalidUsername,
     HiveReauthRequired,
 )
-from apyhiveapi.srp import (
+from hiveheating.srp import (
     calculate_u,
     compute_hkdf,
     hash_sha256,
@@ -193,10 +193,10 @@ class TestAsyncInit:
         info = {"UPID": "eu-west-1_abc", "CLIID": CLIENT_ID, "REGION": "eu-west-1_abc"}
         with (
             patch(
-                "apyhiveapi.auth.get_login_info", new=AsyncMock(return_value=info)
+                "hiveheating.auth.get_login_info", new=AsyncMock(return_value=info)
             ) as get_login_info,
             patch(
-                "apyhiveapi.auth.boto3.client", return_value=boto_client
+                "hiveheating.auth.boto3.client", return_value=boto_client
             ) as boto3_client,
         ):
             await auth.async_init()
@@ -225,10 +225,10 @@ class TestAsyncInit:
         auth = HiveAuth(USERNAME, PASSWORD)
         with (
             patch(
-                "apyhiveapi.auth.get_login_info",
+                "hiveheating.auth.get_login_info",
                 new=AsyncMock(side_effect=error("login page")),
             ),
-            patch("apyhiveapi.auth.boto3.client") as boto3_client,
+            patch("hiveheating.auth.boto3.client") as boto3_client,
             pytest.raises(error, match="login page"),
         ):
             await auth.async_init()
@@ -242,10 +242,10 @@ class TestEnsureClient:
         auth = HiveAuth(USERNAME, PASSWORD)
         with (
             patch(
-                "apyhiveapi.auth.get_login_info",
+                "hiveheating.auth.get_login_info",
                 new=AsyncMock(return_value=LOGIN_INFO),
             ) as get_login_info,
-            patch("apyhiveapi.auth.boto3.client") as boto3_client,
+            patch("hiveheating.auth.boto3.client") as boto3_client,
         ):
             await auth._ensure_client()
             first_client = auth.client
@@ -459,7 +459,9 @@ class TestCognito:
 class TestLogin:
     async def test_file_mode_answers_from_the_fixture_without_cognito(self):
         auth = HiveAuth("use@file.com", "")
-        with patch("apyhiveapi.auth.get_login_info", new=AsyncMock()) as get_login_info:
+        with patch(
+            "hiveheating.auth.get_login_info", new=AsyncMock()
+        ) as get_login_info:
             result = await auth.login()
         assert result is auth.file_response
         assert result == {"AuthenticationResult": {"AccessToken": "file"}}
@@ -901,7 +903,7 @@ class TestConfirmDevice:
     async def test_confirms_the_device_with_a_verifier_for_the_new_password(self):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
         auth.client.confirm_device.return_value = {"UserConfirmationNecessary": False}
-        with patch("apyhiveapi.auth.socket.gethostname", return_value="my-host"):
+        with patch("hiveheating.auth.socket.gethostname", return_value="my-host"):
             result = await auth.confirm_device()
         assert result == {"UserConfirmationNecessary": False}
         auth.client.confirm_device.assert_called_once()
@@ -962,7 +964,7 @@ class TestDeviceRegistration:
     )
     async def test_confirms_then_remembers_the_device(self, device_name, expected_name):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
-        with patch("apyhiveapi.auth.socket.gethostname", return_value="my-host"):
+        with patch("hiveheating.auth.socket.gethostname", return_value="my-host"):
             assert await auth.device_registration(device_name) is None
         names = [name for name, _args, _kwargs in auth.client.method_calls]
         assert names == ["confirm_device", "update_device_status"]
@@ -1095,7 +1097,7 @@ class TestIsDeviceRegistered:
         auth.client.get_device.side_effect = client_error(
             code, "Device does not exist.", "GetDevice"
         )
-        with caplog.at_level(logging.DEBUG, logger="apyhiveapi.auth"):
+        with caplog.at_level(logging.DEBUG, logger="hiveheating.auth"):
             assert await auth.is_device_registered() is False
         assert len(caplog.records) == 1
         assert caplog.records[0].levelno == logging.DEBUG
@@ -1158,7 +1160,7 @@ class TestCognitoTimestamp:
         ],
     )
     def test_strips_the_leading_zero_from_the_day(self, now, expected):
-        with patch("apyhiveapi.auth.datetime") as mock_datetime:
+        with patch("hiveheating.auth.datetime") as mock_datetime:
             mock_datetime.now.return_value = now
             assert HiveAuth._cognito_timestamp() == expected
         mock_datetime.now.assert_called_once_with(UTC)
@@ -1194,7 +1196,7 @@ class TestSrpEphemeral:
         auth = HiveAuth(USERNAME, PASSWORD)
         with (
             patch(
-                "apyhiveapi.auth.pow", create=True, return_value=multiple * auth.big_n
+                "hiveheating.auth.pow", create=True, return_value=multiple * auth.big_n
             ),
             pytest.raises(ValueError, match="Safety check for A failed"),
         ):
@@ -1231,7 +1233,7 @@ class TestSrpKey:
     def test_rejects_a_zero_u_value(self):
         auth = HiveAuth(USERNAME, PASSWORD)
         with (
-            patch("apyhiveapi.auth.calculate_u", return_value=0),
+            patch("hiveheating.auth.calculate_u", return_value=0),
             pytest.raises(ValueError, match="U cannot be zero"),
         ):
             auth._srp_key("pooluuid-user", PASSWORD, "ccddee", "aabbccdd")
@@ -1249,7 +1251,7 @@ class TestSrpKey:
 class TestAnswerSrpChallenge:
     async def test_signs_the_challenge(self):
         auth = HiveAuth(USERNAME, PASSWORD)
-        with patch("apyhiveapi.auth.datetime") as mock_datetime:
+        with patch("hiveheating.auth.datetime") as mock_datetime:
             mock_datetime.now.return_value = FROZEN_NOW
             answer = await auth._answer_srp_challenge(
                 PASSWORD_CHALLENGE["ChallengeParameters"],
