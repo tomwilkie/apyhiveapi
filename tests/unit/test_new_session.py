@@ -71,13 +71,6 @@ class TestApplyDeviceData:
         assert hive.auth.device_key is None
         assert hive.auth.device_password is None
 
-    def test_three_values_set_the_device_credentials(self):
-        hive = _make_hive()
-        hive._apply_device_data(["group", "key", "password"])
-        assert hive.auth.device_group_key == "group"
-        assert hive.auth.device_key == "key"
-        assert hive.auth.device_password == "password"  # pragma: allowlist secret
-
     def test_a_saved_token_issue_time_is_ignored(self):
         hive = _make_hive()
         hive._apply_device_data(

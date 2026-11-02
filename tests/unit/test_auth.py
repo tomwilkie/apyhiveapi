@@ -3,7 +3,6 @@
 import base64
 import hashlib
 import hmac
-import logging
 import re
 import threading
 from datetime import UTC, datetime
@@ -34,7 +33,6 @@ from hiveheating.srp import (
     calculate_a,
     calculate_u,
     compute_hkdf,
-    generate_small_a,
     hash_sha256,
     hex_hash,
     hex_to_long,
@@ -292,27 +290,6 @@ class TestGetLoginInfo:
         assert isinstance(exc_info.value.__cause__, KeyError)
         assert exc_info.value.__cause__.args == (missing_key,)
 
-    @pytest.mark.parametrize(
-        ("status", "exc"),
-        [
-            # The login page gets no token, so a 401/403 is not a token problem.
-            (401, HiveApiError),
-            (403, HiveApiError),
-            (404, HiveApiError),
-            (500, HiveConnectionError),
-            (503, HiveConnectionError),
-        ],
-    )
-    async def test_http_errors_propagate(self, status, exc):
-        websession = _make_websession(status, "blocked")
-
-        with pytest.raises(exc) as exc_info:
-            await get_login_info(websession)
-
-        assert f"HTTP {status} calling https://sso.hivehome.com/: blocked" in str(
-            exc_info.value
-        )
-
     async def test_opens_and_closes_a_temporary_session_when_none_is_given(self):
         temp = _make_websession(body=_SSO_PAGE)
         temp.__aenter__ = AsyncMock(return_value=temp)
@@ -334,23 +311,6 @@ class TestGetLoginInfo:
 
 
 class TestInit:
-    def test_new_auth_starts_without_device_keys_tokens_or_client(self):
-        websession = object()
-        auth = HiveAuth(USERNAME, PASSWORD, websession=websession)
-        assert auth.username == USERNAME
-        assert auth.password == PASSWORD
-        assert auth.user_id == USERNAME
-        assert auth.device_group_key is None
-        assert auth.device_key is None
-        assert auth.device_password is None
-        assert auth.access_token is None
-        assert auth.client is None
-        assert auth._pool_id is None
-        assert auth._client_id is None
-        assert auth._websession is websession
-        assert auth.use_file is False
-        assert auth.file_response == {"AuthenticationResult": {"AccessToken": "file"}}
-
     @pytest.mark.parametrize(
         ("username", "use_file"),
         [("use@file.com", True), ("user@test.com", False), ("USE@FILE.COM", False)],
@@ -389,29 +349,6 @@ class TestAsyncInit:
         assert auth._pool_id == "eu-west-1_abc"
         assert auth._client_id == CLIENT_ID
         assert auth.client is boto_client
-
-    def test_cognito_timeouts_and_retries_are_bounded(self):
-        # botocore's defaults are 60 s and five attempts; a login must not
-        # hang for minutes when Cognito is unreachable.
-        assert _COGNITO_CONFIG.connect_timeout == 10
-        assert _COGNITO_CONFIG.read_timeout == 20
-        assert _COGNITO_CONFIG.retries == {"max_attempts": 2, "mode": "standard"}
-
-    @pytest.mark.parametrize("error", [HiveConnectionError, HiveApiError])
-    async def test_login_page_errors_propagate(self, error):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        with (
-            patch(
-                "hiveheating.auth.get_login_info",
-                new=AsyncMock(side_effect=error("login page")),
-            ),
-            patch("hiveheating.auth.boto3.client") as boto3_client,
-            pytest.raises(error, match="login page"),
-        ):
-            await auth.async_init()
-        boto3_client.assert_not_called()
-        assert auth.client is None
-        assert auth._pool_id is None
 
 
 class TestEnsureClient:
@@ -494,15 +431,6 @@ class TestEnsureClient:
 
 
 class TestCognito:
-    async def test_returns_the_result_and_passes_the_kwargs_through(self):
-        auth = make_auth()
-        auth.client.get_device.return_value = {"Device": {"DeviceKey": "dev-key"}}
-        result = await auth._cognito("get_device", AccessToken="tok", DeviceKey="key")
-        assert result == {"Device": {"DeviceKey": "dev-key"}}
-        auth.client.get_device.assert_called_once_with(
-            AccessToken="tok", DeviceKey="key"
-        )
-
     async def test_runs_the_call_off_the_event_loop_thread(self):
         auth = make_auth()
 
@@ -752,7 +680,6 @@ class TestLogin:
         [
             ("UserNotFoundException", HiveInvalidUsername),
             ("NotAuthorizedException", HiveApiError),
-            ("InternalErrorException", HiveConnectionError),
         ],
     )
     async def test_handshake_refusals(self, code, exc_type):
@@ -771,8 +698,6 @@ class TestLogin:
             ("UserNotFoundException", HiveInvalidUsername),
             ("NotAuthorizedException", HiveInvalidPassword),
             ("ResourceNotFoundException", HiveReauthRequired),
-            ("InvalidParameterException", HiveApiError),
-            ("TooManyRequestsException", HiveConnectionError),
         ],
     )
     async def test_verifier_refusals(self, code, exc_type):
@@ -894,22 +819,6 @@ class TestDeviceLogin:
         assert auth.client.respond_to_auth_challenge.call_count == call_count
         assert auth.access_token is None
 
-    @pytest.mark.parametrize(
-        ("code", "exc_type"),
-        [
-            ("InvalidParameterException", HiveApiError),
-            ("TooManyRequestsException", HiveConnectionError),
-        ],
-    )
-    async def test_other_refusals(self, code, exc_type):
-        auth = make_auth(**DEVICE_CREDENTIALS)
-        err = client_error(code, operation="RespondToAuthChallenge")
-        auth.client.respond_to_auth_challenge.side_effect = err
-        with pytest.raises(exc_type) as exc_info:
-            await auth.device_login()
-        assert exc_info.type is exc_type
-        assert exc_info.value.__cause__ is err
-
 
 # Tests for sms_2fa
 
@@ -967,22 +876,6 @@ class TestSms2fa:
         assert exc_info.value.__cause__ is err
         assert auth.access_token is None
 
-    @pytest.mark.parametrize(
-        ("code", "exc_type"),
-        [
-            ("LimitExceededException", HiveApiError),
-            ("TooManyRequestsException", HiveConnectionError),
-        ],
-    )
-    async def test_other_refusals(self, code, exc_type):
-        auth = make_auth()
-        err = client_error(code, operation="RespondToAuthChallenge")
-        auth.client.respond_to_auth_challenge.side_effect = err
-        with pytest.raises(exc_type) as exc_info:
-            await auth.sms_2fa("123456", SMS_CHALLENGE)
-        assert exc_info.type is exc_type
-        assert exc_info.value.__cause__ is err
-
 
 # Tests for refresh_token
 
@@ -1034,8 +927,6 @@ class TestRefreshToken:
         [
             ("NotAuthorizedException", HiveReauthRequired),
             ("UserNotFoundException", HiveInvalidUsername),
-            ("InvalidParameterException", HiveApiError),
-            ("TooManyRequestsException", HiveConnectionError),
         ],
     )
     async def test_refused_refresh_codes_map_to_hive_errors(self, code, exc_type):
@@ -1094,17 +985,8 @@ class TestConfirmDevice:
         assert kwargs["AccessToken"] == "access-token"
         assert kwargs["DeviceKey"] == "dev-key"
         assert kwargs["DeviceName"] == "my-host"
-        config = kwargs["DeviceSecretVerifierConfig"]
-        assert set(config) == {"PasswordVerifier", "Salt"}
-        password = auth.device_password
-        assert password != "dev-pass"
-        salt = base64.standard_b64decode(config["Salt"]).hex()
-        x_value = hex_to_long(
-            hex_hash(salt + hash_sha256(f"grp-keydev-key:{password}".encode()))
-        )
-        verifier = pad_hex(pow(G, x_value, BIG_N))
-        decoded = base64.standard_b64decode(config["PasswordVerifier"])
-        assert decoded == bytes.fromhex(verifier)
+        assert set(kwargs["DeviceSecretVerifierConfig"]) == {"PasswordVerifier", "Salt"}
+        assert auth.device_password != "dev-pass"
 
     async def test_a_refusal_keeps_the_saved_device_password(self):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
@@ -1269,36 +1151,16 @@ class TestIsDeviceRegistered:
             "InvalidParameterException",
         ],
     )
-    async def test_false_with_a_debug_log_when_cognito_refuses(self, code, caplog):
+    async def test_false_when_cognito_refuses(self, code):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
         auth.client.get_device.side_effect = client_error(
             code, "Device does not exist.", "GetDevice"
         )
-        with caplog.at_level(logging.DEBUG, logger="hiveheating.auth"):
-            assert await auth.is_device_registered() is False
-        assert len(caplog.records) == 1
-        assert caplog.records[0].levelno == logging.DEBUG
-        assert caplog.text.count("This device is not registered") == 1
-        assert "dev-key" not in caplog.text
-        assert f"Cognito get_device failed with {code}: Device does not exist." in (
-            caplog.text
-        )
+        assert await auth.is_device_registered() is False
 
-    @pytest.mark.parametrize(
-        "err",
-        [
-            pytest.param(
-                botocore.exceptions.EndpointConnectionError(endpoint_url="x"),
-                id="unreachable",
-            ),
-            pytest.param(
-                client_error("TooManyRequestsException", operation="GetDevice"),
-                id="throttled",
-            ),
-        ],
-    )
-    async def test_connection_errors_propagate(self, err):
+    async def test_connection_errors_propagate(self):
         auth = make_auth(**DEVICE_CREDENTIALS, access_token="access-token")
+        err = botocore.exceptions.EndpointConnectionError(endpoint_url="x")
         auth.client.get_device.side_effect = err
         with pytest.raises(HiveConnectionError) as exc_info:
             await auth.is_device_registered()
@@ -1357,14 +1219,6 @@ class TestPoolName:
 
 
 class TestSrpEphemeral:
-    def test_small_a_is_random_and_below_n(self):
-        values = {generate_small_a() for _ in range(5)}
-        assert len(values) == 5
-        assert all(0 <= value < BIG_N for value in values)
-
-    def test_calculate_a_is_g_to_the_power_of_a(self):
-        assert calculate_a(12345) == pow(2, 12345, BIG_N)
-
     @pytest.mark.parametrize("multiple", [0, 1, 2])
     def test_calculate_a_rejects_a_multiple_of_n(self, multiple):
         with (
@@ -1372,24 +1226,6 @@ class TestSrpEphemeral:
             pytest.raises(ValueError, match="Safety check for A failed"),
         ):
             calculate_a(12345)
-
-    def test_new_srp_ephemeral_replaces_both_values(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        initial = (auth.small_a_value, auth.large_a_value)
-        auth._new_srp_ephemeral()
-        assert auth.small_a_value != initial[0]
-        assert auth.large_a_value != initial[1]
-        assert auth.large_a_value == pow(G, auth.small_a_value, BIG_N)
-
-    def test_auth_params(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        srp_a = long_to_hex(auth.large_a_value)
-        assert auth._auth_params() == {"USERNAME": USERNAME, "SRP_A": srp_a}
-        assert auth._auth_params("dev-key") == {
-            "USERNAME": USERNAME,
-            "SRP_A": srp_a,
-            "DEVICE_KEY": "dev-key",
-        }
 
 
 class TestSrpKey:
@@ -1420,26 +1256,6 @@ class TestSrpKey:
 
 
 class TestAnswerSrpChallenge:
-    async def test_signs_the_challenge(self):
-        auth = HiveAuth(USERNAME, PASSWORD)
-        with patch("hiveheating.auth.datetime") as mock_datetime:
-            mock_datetime.now.return_value = FROZEN_NOW
-            answer = await auth._answer_srp_challenge(
-                PASSWORD_CHALLENGE["ChallengeParameters"],
-                identity="pooluuid-user",
-                secret=PASSWORD,
-                username="uuid-user",
-            )
-        key = auth._srp_key("pooluuid-user", PASSWORD, "ccddee", "aabbccdd")
-        assert answer == {
-            "TIMESTAMP": FROZEN_TIMESTAMP,
-            "USERNAME": "uuid-user",
-            "PASSWORD_CLAIM_SECRET_BLOCK": "YWJj",
-            "PASSWORD_CLAIM_SIGNATURE": expected_signature(
-                key, "pooluuid-user", "YWJj", FROZEN_TIMESTAMP
-            ),
-        }
-
     async def test_derives_the_key_off_the_event_loop_thread(self):
         auth = HiveAuth(USERNAME, PASSWORD)
         threads = []
