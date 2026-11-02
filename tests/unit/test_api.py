@@ -1,16 +1,17 @@
-"""Unit tests for hiveheating.api: _fetch and HiveApi."""
+"""Unit tests for hiveheating.api: _fetch and request."""
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
 
-from hiveheating.api import _HEADERS, _TIMEOUT, HiveApi, _fetch
+from hiveheating.api import _HEADERS, _TIMEOUT, _fetch, request
 from hiveheating.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
 
 _TOKEN = "test-token"
-_URL = "https://beekeeper.hivehome.com/1.0/nodes/heating/node-1"
+_PATH = "/nodes/heating/node-1"
+_URL = f"https://beekeeper.hivehome.com/1.0{_PATH}"
 _AUTH_HEADERS = {**_HEADERS, "Authorization": _TOKEN}
 
 
@@ -30,13 +31,6 @@ def _make_websession(status=200, body="", headers=None):
     websession = MagicMock()
     websession.request.return_value = _make_response(status, body, headers)
     return websession
-
-
-def _make_api(status=200, body="", token=_TOKEN):
-    """Return a HiveApi over a mock Hive session and a mock websession."""
-    session = MagicMock()
-    session.tokens.token_data = {"token": token}
-    return HiveApi(session, websession=_make_websession(status, body))
 
 
 # Tests for _fetch
@@ -269,37 +263,25 @@ class TestFetchGatewayErrorType:
         )
 
 
-# Tests for HiveApi construction and its websession
-
-
-class TestHiveApiWebsession:
-    async def test_requests_share_the_lazily_created_session(self):
-        websession = _make_websession(200, '{"ok": true}')
-        session = MagicMock()
-        session.tokens.token_data = {"token": _TOKEN}
-        api = HiveApi(session)
-
-        with patch(
-            "hiveheating.api.ClientSession", return_value=websession
-        ) as session_cls:
-            first = await api.request("get", _URL)
-            second = await api.request("get", _URL)
-
-        assert first == {"ok": True}
-        assert second == {"ok": True}
-        session_cls.assert_called_once_with()
-        assert websession.request.call_count == 2
-        assert api.websession is websession
-
-
-# Tests for HiveApi.request
+# Tests for request
 
 
 class TestRequest:
-    async def test_returns_the_decoded_json_object(self):
-        api = _make_api(200, '{"products": [], "devices": []}')
+    async def test_sends_the_token_and_body_to_the_path_under_the_base_url(self):
+        websession = _make_websession(200, '{"id": "node-1"}')
 
-        assert await api.request("get", _URL) == {"products": [], "devices": []}
+        result = await request(
+            websession, "post", _PATH, token=_TOKEN, data='{"mode": "MANUAL"}'
+        )
+
+        assert result == {"id": "node-1"}
+        websession.request.assert_called_once_with(
+            "post",
+            _URL,
+            headers=_AUTH_HEADERS,
+            data='{"mode": "MANUAL"}',
+            timeout=_TIMEOUT,
+        )
 
     @pytest.mark.parametrize(
         ("status", "body"),
@@ -307,24 +289,19 @@ class TestRequest:
         ids=["200", "204", "whitespace"],
     )
     async def test_an_empty_body_returns_an_empty_dict(self, status, body):
-        api = _make_api(status, body)
+        websession = _make_websession(status, body)
 
-        assert await api.request("post", _URL) == {}
+        assert await request(websession, "post", _PATH, token=_TOKEN) == {}
 
-    @pytest.mark.parametrize(
-        "token_data",
-        [{}, {"token": ""}, {"token": None}],
-        ids=["missing", "empty", "none"],
-    )
-    async def test_without_a_token_raises_reauth_before_any_call(self, token_data):
-        api = _make_api()
-        api.session.tokens.token_data = token_data
+    @pytest.mark.parametrize("token", ["", None], ids=["empty", "none"])
+    async def test_without_a_token_raises_reauth_before_any_call(self, token):
+        websession = _make_websession()
 
         with pytest.raises(HiveReauthRequired) as exc_info:
-            await api.request("get", _URL)
+            await request(websession, "get", _PATH, token=token)
 
         assert str(exc_info.value) == "The session has no API token"
-        api.websession.request.assert_not_called()
+        websession.request.assert_not_called()
 
     @pytest.mark.parametrize(
         "body",
@@ -332,10 +309,10 @@ class TestRequest:
         ids=["html", "text", "truncated_json"],
     )
     async def test_a_body_that_is_not_json_raises_connection_error(self, body):
-        api = _make_api(200, body)
+        websession = _make_websession(200, body)
 
         with pytest.raises(HiveConnectionError) as exc_info:
-            await api.request("get", _URL)
+            await request(websession, "get", _PATH, token=_TOKEN)
 
         assert str(exc_info.value) == (
             f"Hive returned an unreadable body calling {_URL}"
@@ -347,10 +324,10 @@ class TestRequest:
         [('[{"id": "node-1"}]', "list"), ('"text"', "str"), ("null", "NoneType")],
     )
     async def test_json_that_is_not_an_object_raises_api_error(self, body, type_name):
-        api = _make_api(200, body)
+        websession = _make_websession(200, body)
 
         with pytest.raises(HiveApiError) as exc_info:
-            await api.request("get", _URL)
+            await request(websession, "get", _PATH, token=_TOKEN)
 
         assert str(exc_info.value) == (
             f"Hive returned a JSON {type_name} calling {_URL}"
@@ -358,51 +335,9 @@ class TestRequest:
         assert exc_info.value.__cause__ is None
 
     async def test_http_errors_are_raised_before_the_body_is_parsed(self):
-        api = _make_api(503, "<html>not json</html>")
+        websession = _make_websession(503, "<html>not json</html>")
 
         with pytest.raises(HiveConnectionError) as exc_info:
-            await api.request("get", _URL)
+            await request(websession, "get", _PATH, token=_TOKEN)
 
         assert f"HTTP 503 calling {_URL}: <html>not json</html>" in str(exc_info.value)
-
-
-# Tests for HiveApi.get_all
-
-
-class TestGetAll:
-    async def test_gets_every_product_and_device(self):
-        body = '{"products": [{"id": "p1"}], "devices": [{"id": "d1"}], "user": {}}'
-        api = _make_api(200, body)
-
-        result = await api.get_all()
-
-        assert result == {
-            "products": [{"id": "p1"}],
-            "devices": [{"id": "d1"}],
-            "user": {},
-        }
-        api.websession.request.assert_called_once_with(
-            "get",
-            "https://beekeeper.hivehome.com/1.0/nodes/all?products=true&devices=true",
-            headers=_AUTH_HEADERS,
-            data=None,
-            timeout=_TIMEOUT,
-        )
-
-
-# Tests for HiveApi.set_state
-
-
-class TestSetState:
-    async def test_posts_the_state_as_json_to_the_product_url(self):
-        api = _make_api(200, '{"id": "node-1"}')
-
-        await api.set_state("heating", "node-1", mode="MANUAL", target=21.5)
-
-        api.websession.request.assert_called_once_with(
-            "post",
-            "https://beekeeper.hivehome.com/1.0/nodes/heating/node-1",
-            headers=_AUTH_HEADERS,
-            data='{"mode": "MANUAL", "target": 21.5}',
-            timeout=_TIMEOUT,
-        )

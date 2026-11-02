@@ -1,4 +1,4 @@
-"""HTTP client for the Hive REST API.
+"""HTTP calls to the Hive REST API.
 
 Every aiohttp error is translated here into one of the library's exceptions,
 so the rest of the package only ever sees :class:`~hiveheating.exceptions.HiveError`
@@ -11,14 +11,11 @@ import json
 import logging
 import time
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
 from hiveheating.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
-
-if TYPE_CHECKING:
-    from hiveheating.hive import Hive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,14 +24,11 @@ _LOGGER = logging.getLogger(__name__)
 # interval; the connect limit makes an unreachable Hive fail fast.
 _TIMEOUT = ClientTimeout(total=20, connect=10)
 _BASE_URL = "https://beekeeper.hivehome.com/1.0"
-_ALL_NODES_URL = f"{_BASE_URL}/nodes/all?products=true&devices=true"
 _HEADERS = {
     "content-type": "application/json",
     "Accept": "*/*",
     "User-Agent": "Hive/12.04.0 iOS/18.3.1 Apple",
 }
-
-type JsonValue = str | int | float | bool | None
 
 
 async def _fetch(
@@ -104,71 +98,47 @@ async def _fetch(
     raise HiveApiError(f"Hive refused the request: {detail}")
 
 
-class HiveApi:
-    """Authenticated calls to the Hive REST API."""
+async def request(
+    websession: ClientSession,
+    method: str,
+    path: str,
+    *,
+    token: str | None,
+    data: str | None = None,
+) -> dict[str, Any]:
+    """Make an authenticated Hive API request and return its JSON body.
 
-    def __init__(self, session: Hive, websession: ClientSession | None = None) -> None:
-        """Set up the client.
+    Args:
+        websession: The aiohttp session to use.
+        method: HTTP method.
+        path: Path under the API's base URL, e.g. ``/nodes/all``.
+        token: The session's API token.
+        data: Request body.
 
-        Args:
-            session: The Hive session whose tokens authenticate the calls.
-            websession: The aiohttp session to use. One is created on first
-                use when none is given.
-        """
-        self.session = session
-        self.websession = websession
+    Returns:
+        The decoded body, or ``{}`` when the response has none.
 
-    def _get_websession(self) -> ClientSession:
-        """Return the shared ClientSession, creating it on first use.
-
-        Created lazily so the session is constructed inside a running
-        event loop rather than in the synchronous constructor.
-        """
-        if self.websession is None:
-            self.websession = ClientSession()
-        return self.websession
-
-    async def request(
-        self, method: str, url: str, data: str | None = None
-    ) -> dict[str, Any]:
-        """Make an authenticated request and return its JSON body.
-
-        Returns:
-            The decoded body, or ``{}`` when the response has none.
-
-        Raises:
-            HiveReauthRequired: The session has no token, or Hive rejected it.
-            HiveConnectionError: Hive could not be reached, failed, or sent an
-                unreadable body.
-            HiveApiError: Hive refused the request, or the body is not a JSON
-                object.
-        """
-        token = self.session.tokens.token_data.get("token")
-        if not token:
-            raise HiveReauthRequired("The session has no API token")
-        body = await _fetch(self._get_websession(), method, url, token=token, data=data)
-        if not body.strip():
-            return {}
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError as err:
-            raise HiveConnectionError(
-                f"Hive returned an unreadable body calling {url}"
-            ) from err
-        if not isinstance(parsed, dict):
-            raise HiveApiError(
-                f"Hive returned a JSON {type(parsed).__name__} calling {url}"
-            )
-        return parsed
-
-    async def get_all(self) -> dict[str, Any]:
-        """Fetch every product and device on the account."""
-        return await self.request("get", _ALL_NODES_URL)
-
-    async def set_state(
-        self, product_type: str, product_id: str, **state: JsonValue
-    ) -> None:
-        """Change a product's state."""
-        _LOGGER.debug("Setting %s %s: %s", product_type, product_id, state)
-        url = f"{_BASE_URL}/nodes/{product_type}/{product_id}"
-        await self.request("post", url, data=json.dumps(state))
+    Raises:
+        HiveReauthRequired: There is no token, or Hive rejected it.
+        HiveConnectionError: Hive could not be reached, failed, or sent an
+            unreadable body.
+        HiveApiError: Hive refused the request, or the body is not a JSON
+            object.
+    """
+    if not token:
+        raise HiveReauthRequired("The session has no API token")
+    url = f"{_BASE_URL}{path}"
+    body = await _fetch(websession, method, url, token=token, data=data)
+    if not body.strip():
+        return {}
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as err:
+        raise HiveConnectionError(
+            f"Hive returned an unreadable body calling {url}"
+        ) from err
+    if not isinstance(parsed, dict):
+        raise HiveApiError(
+            f"Hive returned a JSON {type(parsed).__name__} calling {url}"
+        )
+    return parsed

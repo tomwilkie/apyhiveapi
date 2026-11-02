@@ -10,7 +10,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
-from hiveheating.api import HiveApi
+from aiohttp import ClientSession
+
+from hiveheating.api import request
 from hiveheating.auth import FILE_USERNAME, SMS_REQUIRED, HiveAuth
 from hiveheating.exceptions import (
     HiveApiError,
@@ -23,14 +25,14 @@ from hiveheating.nodes import Nodes, parse_nodes
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
-    from aiohttp import ClientSession
-
-    from hiveheating.api import JsonValue
     from hiveheating.nodes import HeatingProduct, HotWaterProduct, Mode, Product
 
 _LOGGER = logging.getLogger(__name__)
 
 _FIXTURE = Path(__file__).parent / "data" / "data.json"
+_ALL_NODES_PATH = "/nodes/all?products=true&devices=true"
+
+type JsonValue = str | int | float | bool | None
 
 # Tokens are refreshed once this share of their lifetime has passed.
 _REFRESH_THRESHOLD = 0.90
@@ -101,7 +103,7 @@ class Hive:
         """
         self.auth = HiveAuth(username or "", password or "", websession=websession)
         self._owns_websession = websession is None
-        self.api = HiveApi(self, websession)
+        self.websession = websession
         self.tokens = SessionTokens()
         self.config = SessionConfig(username=username)
         self._refresh_lock = asyncio.Lock()
@@ -110,7 +112,7 @@ class Hive:
 
     async def close(self) -> None:
         """Close the aiohttp session if this object created it."""
-        websession = self.api.websession
+        websession = self.websession
         if self._owns_websession and websession is not None and not websession.closed:
             await websession.close()
 
@@ -175,7 +177,7 @@ class Hive:
         if self._reauth_error is not None:
             raise self._reauth_error.with_traceback(None)
 
-    async def login(self) -> None:
+    async def _login(self) -> None:
         """Log in with the stored username, password and device credentials.
 
         After a login fails with :class:`HiveReauthRequired`, later calls raise
@@ -189,18 +191,15 @@ class Hive:
         """
         self._raise_if_reauth_required()
         try:
-            await self._login()
+            result = await self.auth.login()
+            if result.get("ChallengeName") == HiveAuth.DEVICE_VERIFIER_CHALLENGE:
+                result = await self.auth.device_login()
         except HiveReauthRequired as err:
             self._reauth_error = err
             raise
-
-    async def _login(self) -> None:
-        """Run the Cognito login and store the tokens; see :meth:`login`."""
-        result = await self.auth.login()
-        if result.get("ChallengeName") == HiveAuth.DEVICE_VERIFIER_CHALLENGE:
-            result = await self.auth.device_login()
         if result.get("ChallengeName") == SMS_REQUIRED:
-            raise HiveReauthRequired("Hive asked for an SMS code")
+            self._reauth_error = HiveReauthRequired("Hive asked for an SMS code")
+            raise self._reauth_error
         if not result.get("AuthenticationResult"):
             raise HiveApiError(f"Login did not complete: {result.get('ChallengeName')}")
         self.update_tokens(result)
@@ -212,7 +211,7 @@ class Hive:
         )
         return datetime.now(UTC) >= expiry
 
-    async def hive_refresh_tokens(self) -> None:
+    async def _refresh_tokens(self) -> None:
         """Refresh the tokens once most of their lifetime has passed.
 
         Logs in again with the saved device credentials when Cognito rejects
@@ -236,7 +235,7 @@ class Hive:
                 )
             except HiveReauthRequired as err:
                 _LOGGER.debug("Token refresh rejected (%s), logging in again", err)
-                await self.login()
+                await self._login()
                 return
             self.update_tokens(result)
 
@@ -247,7 +246,7 @@ class Hive:
         login is serialised through the refresh lock and skipped when another
         caller has already replaced the tokens.
         """
-        await self.hive_refresh_tokens()
+        await self._refresh_tokens()
         issued = self.tokens.token_created
         try:
             return await call()
@@ -255,7 +254,7 @@ class Hive:
             async with self._refresh_lock:
                 if self.tokens.token_created == issued:
                     _LOGGER.debug("Hive rejected the token (%s), logging in again", err)
-                    await self.login()
+                    await self._login()
             return await call()
 
     # --- Commands ----------------------------------------------------------
@@ -313,8 +312,26 @@ class Hive:
         """Post a product's new state to Hive. Nothing is sent in file mode."""
         if self.config.file:
             return
-        await self._api_call(
-            lambda: self.api.set_state(product.type, product.id, **state)
+        _LOGGER.debug("Setting %s %s: %s", product.type, product.id, state)
+        path = f"/nodes/{product.type}/{product.id}"
+        await self._api_call(lambda: self._request("post", path, json.dumps(state)))
+
+    async def _request(
+        self, method: str, path: str, data: str | None = None
+    ) -> dict[str, Any]:
+        """Make a Hive API request with the session's token.
+
+        When no aiohttp session was given, one is created on first use, so it
+        is made inside a running event loop rather than in the constructor.
+        """
+        if self.websession is None:
+            self.websession = ClientSession()
+        return await request(
+            self.websession,
+            method,
+            path,
+            token=self.tokens.token_data.get("token"),
+            data=data,
         )
 
     # --- Nodes -------------------------------------------------------------
@@ -336,7 +353,9 @@ class Hive:
         if self.config.file:
             response = await asyncio.to_thread(_load_fixture)
         else:
-            response = await self._api_call(self.api.get_all)
+            response = await self._api_call(
+                lambda: self._request("get", _ALL_NODES_PATH)
+            )
         products, devices = response.get("products"), response.get("devices")
         if not products or not devices:
             # Every account has at least its hub, so an empty answer is a
@@ -351,11 +370,6 @@ class Hive:
         return nodes
 
     # --- New session -------------------------------------------------------
-
-    def _configure_file_mode(self, username: str | None) -> None:
-        """Switch to the bundled fixture data for the magic testing username."""
-        if username == FILE_USERNAME:
-            self.config.file = True
 
     def _apply_device_data(self, device_data: Sequence[Any]) -> None:
         """Load saved device credentials into the session.
@@ -390,7 +404,8 @@ class Hive:
         """
         config = config or {}
         _LOGGER.debug("new_session - Config: %s", sanitize_payload(config))
-        self._configure_file_mode(config.get("username", self.config.username))
+        if config.get("username", self.config.username) == FILE_USERNAME:
+            self.config.file = True
         if self.config.file:
             return
         if "tokens" not in config:

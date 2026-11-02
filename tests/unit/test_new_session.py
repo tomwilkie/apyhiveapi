@@ -23,8 +23,8 @@ _TOKENS = {
 def _make_hive():
     """Return a live-mode Hive whose network calls are mocked."""
     hive = Hive(username="user@example.com", password="pw")
-    hive.hive_refresh_tokens = AsyncMock()
-    hive.api.get_all = AsyncMock()
+    hive._refresh_tokens = AsyncMock()
+    hive._request = AsyncMock()
     return hive
 
 
@@ -37,19 +37,6 @@ class TestLoadFixture:
         assert isinstance(nodes["products"], list)
         assert isinstance(nodes["devices"], list)
         assert nodes["user"]["temperatureUnit"] == "C"
-
-
-class TestConfigureFileMode:
-    """Tests for Hive._configure_file_mode."""
-
-    @pytest.mark.parametrize(
-        ("username", "expected"),
-        [("use@file.com", True), ("real@user.com", False), (None, False), ("", False)],
-    )
-    def test_only_the_magic_username_enables_file_mode(self, username, expected):
-        hive = Hive()
-        hive._configure_file_mode(username)
-        assert hive.config.file is expected
 
 
 class TestApplyDeviceData:
@@ -153,8 +140,8 @@ class TestNewSession:
         assert hive.auth.device_group_key == "group"
         assert hive.auth.device_key == "key"
         assert hive.auth.device_password == "password"  # pragma: allowlist secret
-        hive.hive_refresh_tokens.assert_not_awaited()
-        hive.api.get_all.assert_not_awaited()
+        hive._refresh_tokens.assert_not_awaited()
+        hive._request.assert_not_awaited()
 
     def test_debug_log_shows_no_part_of_the_credentials(self, caplog):
         hive = _make_hive()

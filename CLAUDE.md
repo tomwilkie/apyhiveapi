@@ -71,7 +71,7 @@ own API and knows nothing about Home Assistant; the public API is:
 - `Auth(username=, password=)` (the `HiveAuth` class) with `login`, `sms_2fa`,
   `is_device_registered`, `device_registration`, `get_device_data` (sync; the
   fork stores whatever it returns as `device_data`) and `forget_device`, plus
-  the `SMS_REQUIRED` constant. `device_login` is used by `Hive.login`, not by
+  the `SMS_REQUIRED` constant. `device_login` is used by `Hive._login`, not by
   the fork.
 - the frozen dataclasses `get_nodes` returns (`Nodes`, `User`,
   `HeatingProduct`, `HotWaterProduct`, `Device`) and their fields, read as
@@ -149,7 +149,7 @@ The rules that keep it consistent:
 
 - **Translate third-party errors once, at the boundary.** Every botocore error
   is handled in `HiveAuth._cognito()` and every aiohttp error in `api._fetch()`
-  / `HiveApi.request()`. Nothing above those two functions imports or catches
+  / `api.request()`. Nothing above those two functions imports or catches
   aiohttp or botocore exceptions, and no `HiveError` is ever re-wrapped as
   another `HiveError`. Chain the original with `raise ... from err`.
 - **Handle or raise, never both.** Do not log an exception and re-raise it.
@@ -267,7 +267,7 @@ test, and in review.
   `tests/`. If it is already pinned, extend that test or add a parametrize
   case; do not write a sibling. Tests that differ only in their input belong
   in one `@pytest.mark.parametrize` with descriptive `ids`.
-- **Test at the layer that owns the logic.** `get_all`, `HiveApi.set_state`,
+- **Test at the layer that owns the logic.** `Hive._request`, `_set_state`,
   the `set_*` commands and `get_nodes` are thin delegations; each command's
   body is pinned once in `TestCommands`. Their error propagation is pinned
   once, where the handling lives: aiohttp translation in `TestFetch`, botocore translation in `TestCognito`, login-and-retry in
@@ -313,9 +313,9 @@ src/hiveheating/
 ├── hive.py             ← Hive — the session: login and token refresh, new_session,
 │                         get_nodes and the set_* commands; SessionTokens, SessionConfig
 ├── auth.py             ← HiveAuth (exported as Auth) — Cognito SRP login, SMS 2FA,
-│                         token refresh, trusted devices, SMS_REQUIRED, and get_login_info()
-│                         for the SSO login page; _cognito() translates botocore errors
-├── api.py              ← HiveApi — HTTP calls to beekeeper.hivehome.com; _fetch()
+│                         token refresh, trusted devices, SMS_REQUIRED; _ensure_client()
+│                         reads the SSO login page; _cognito() translates botocore errors
+├── api.py              ← request() — HTTP calls to beekeeper.hivehome.com; _fetch()
 │                         translates aiohttp errors
 ├── nodes.py            ← Nodes, User, HeatingProduct, HotWaterProduct, Device, Mode and parse_nodes()
 ├── srp.py              ← pure SRP/HKDF crypto: functions, constants and the client ephemeral
@@ -328,18 +328,19 @@ src/hiveheating/
 ### `Hive` (`hive.py`)
 
 `Hive(websession=None, username=None, password=None)` is the whole session.
-It owns `hive.auth` (`HiveAuth`), `hive.api` (`HiveApi`), `hive.tokens` and
-`hive.config`, and keeps no device state.
+It owns `hive.auth` (`HiveAuth`), `hive.websession`, `hive.tokens` and
+`hive.config`, and keeps no device state. `_request()` makes every Hive API
+call through `api.request()` with the session's token.
 
-- **Login and tokens** — `login()` logs in with the stored credentials,
+- **Login and tokens** — `_login()` logs in with the stored credentials,
   completes the device challenge with `auth.device_login()` and raises
   `HiveReauthRequired` if Hive wants an SMS code. A `HiveReauthRequired` from
-  a login is kept in `_reauth_error`, and `login()` and
-  `hive_refresh_tokens()` raise it again straight away until
+  a login is kept in `_reauth_error`, and `_login()` and
+  `_refresh_tokens()` raise it again straight away until
   `update_tokens()` stores new tokens. `update_tokens()` stores a
-  Cognito response or a saved config entry. `hive_refresh_tokens()` refreshes
+  Cognito response or a saved config entry. `_refresh_tokens()` refreshes
   at 90% of the token lifetime (`_REFRESH_THRESHOLD`) and falls back to
-  `login()` when the refresh token is rejected. `_api_call()` wraps every API
+  `_login()` when the refresh token is rejected. `_api_call()` wraps every API
   call: refresh first, and on `HiveReauthRequired` (HTTP 401) log in once
   and retry.
 - **New session** — `new_session(config)` applies the config (username and
@@ -400,7 +401,7 @@ Token layers are distinct:
 - `HiveAuth.access_token` — Cognito AccessToken stored on the auth object by
   every successful login, 2FA or refresh; used by the trusted-device methods
 - `Hive.tokens.token_data` — session-layer token store (`"token"`,
-  `"accessToken"`, `"refreshToken"`); used by `HiveApi` for API requests
+  `"accessToken"`, `"refreshToken"`); used by `Hive._request()` for API requests
 
 All timestamps are timezone-aware UTC `datetime`s.
 
