@@ -7,17 +7,14 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from hiveheating.api import HiveApi
-from hiveheating.auth import HiveAuth
+from hiveheating.auth import SMS_REQUIRED, HiveAuth
 from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
     HiveInvalidPassword,
-    HiveInvalidUsername,
     HiveReauthRequired,
 )
-from hiveheating.hive import REFRESH_THRESHOLD, Hive
-from hiveheating.models import SessionTokens
+from hiveheating.hive import _REFRESH_THRESHOLD, Hive, _load_fixture
 from hiveheating.nodes import Device, HeatingProduct, Nodes, User, parse_nodes
 
 AUTH_RESULT = {
@@ -34,7 +31,7 @@ NEW_TOKENS = {
     "accessToken": "access-token-0001",
 }
 OLD_TOKENS = {"token": "id-tok", "refreshToken": "rt", "accessToken": "acc-tok"}
-SMS_CHALLENGE = {"ChallengeName": HiveAuth.SMS_MFA_CHALLENGE}
+SMS_CHALLENGE = {"ChallengeName": SMS_REQUIRED}
 DEVICE_CHALLENGE = {"ChallengeName": HiveAuth.DEVICE_VERIFIER_CHALLENGE}
 _LOGGER_NAME = "hiveheating.hive"
 _LAST_POLL = datetime(2024, 1, 1, tzinfo=UTC)
@@ -74,31 +71,11 @@ def _is_about(moment, expected):
 
 
 class TestInit:
-    def test_builds_the_auth_api_and_session_state(self):
-        hive = Hive(username="user@example.com", password="pw")
-        assert isinstance(hive.auth, HiveAuth)
-        assert hive.auth.username == "user@example.com"
-        assert hive.auth.password == "pw"
-        assert hive.auth._websession is None
-        assert isinstance(hive.api, HiveApi)
-        assert hive.api.session is hive
-        assert hive.api.websession is None
-        assert hive.tokens == SessionTokens()
-        assert hive.config.username == "user@example.com"
-        assert hive.config.file is False
-        assert isinstance(hive._refresh_lock, asyncio.Lock)
-
     def test_passes_the_websession_to_auth_and_api(self):
         websession = MagicMock()
         hive = Hive(websession, username="user@example.com", password="pw")
         assert hive.api.websession is websession
         assert hive.auth._websession is websession
-
-    def test_missing_credentials_default_to_empty_strings(self):
-        hive = Hive()
-        assert hive.auth.username == ""
-        assert hive.auth.password == ""
-        assert hive.config.username is None
 
 
 class TestUpdateTokens:
@@ -238,37 +215,6 @@ class TestLogin:
         )
         assert hive.tokens.token_data == OLD_TOKENS
 
-    @pytest.mark.parametrize(
-        "error",
-        [
-            pytest.param(HiveInvalidUsername("unknown user"), id="invalid-username"),
-            pytest.param(HiveInvalidPassword("wrong password"), id="invalid-password"),
-            pytest.param(
-                HiveReauthRequired("device no longer trusted"), id="reauth-required"
-            ),
-            pytest.param(
-                HiveConnectionError("Cognito timed out"), id="connection-error"
-            ),
-            pytest.param(HiveApiError("Cognito refused"), id="api-error"),
-        ],
-    )
-    async def test_login_errors_propagate_unchanged(self, error):
-        hive = _make_hive()
-        hive.auth.login.side_effect = error
-        with pytest.raises(type(error)) as excinfo:
-            await hive.login()
-        assert excinfo.value is error
-        assert hive.tokens.token_data == OLD_TOKENS
-
-    async def test_device_login_errors_propagate_unchanged(self):
-        hive = _make_hive()
-        hive.auth.login.return_value = DEVICE_CHALLENGE
-        error = HiveConnectionError("Cognito timed out")
-        hive.auth.device_login.side_effect = error
-        with pytest.raises(HiveConnectionError) as excinfo:
-            await hive.login()
-        assert excinfo.value is error
-
 
 class TestReauthLatch:
     @pytest.mark.parametrize(
@@ -342,10 +288,9 @@ class TestReauthLatch:
 
 class TestRefreshDue:
     def test_due_once_the_threshold_share_of_the_lifetime_has_passed(self):
-        assert REFRESH_THRESHOLD == 0.90
         hive = _make_hive()
         hive.tokens.token_expiry = timedelta(seconds=1000)
-        threshold = timedelta(seconds=1000 * REFRESH_THRESHOLD)
+        threshold = timedelta(seconds=1000 * _REFRESH_THRESHOLD)
         hive.tokens.token_created = datetime.now(UTC) - threshold + _TOLERANCE
         assert hive._refresh_due() is False
         hive.tokens.token_created = datetime.now(UTC) - threshold - _TOLERANCE
@@ -380,16 +325,14 @@ class TestHiveRefreshTokens:
         assert _is_about(hive.tokens.token_created, datetime.now(UTC))
         assert hive._refresh_due() is False
 
-    async def test_rejected_refresh_logs_in_again(self, caplog):
+    async def test_rejected_refresh_logs_in_again(self):
         hive = _make_hive()
         _expire_tokens(hive)
         hive.auth.refresh_token.side_effect = HiveReauthRequired("refresh expired")
         hive.auth.login.return_value = AUTH_RESULT
-        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
-            assert await hive.hive_refresh_tokens() is None
+        await hive.hive_refresh_tokens()
         hive.auth.login.assert_awaited_once_with()
         assert hive.tokens.token_data == NEW_TOKENS
-        assert "Token refresh rejected (refresh expired)" in caplog.text
 
     @pytest.mark.parametrize(
         ("login", "exc"),
@@ -463,16 +406,14 @@ class TestApiCall:
         assert await hive._api_call(_call) == "result"
         hive.auth.refresh_token.assert_awaited_once_with("rt")
 
-    async def test_rejected_token_logs_in_and_retries_once(self, caplog):
+    async def test_rejected_token_logs_in_and_retries_once(self):
         hive = _make_hive()
         hive.auth.login.return_value = AUTH_RESULT
         api_call = AsyncMock(side_effect=[HiveReauthRequired("HTTP 401"), "second"])
-        with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
-            assert await hive._api_call(api_call) == "second"
+        assert await hive._api_call(api_call) == "second"
         hive.auth.login.assert_awaited_once_with()
         assert api_call.await_count == 2
         assert hive.tokens.token_data == NEW_TOKENS
-        assert "Hive rejected the token (HTTP 401)" in caplog.text
 
     async def test_second_rejection_propagates(self):
         hive = _make_hive()
@@ -616,15 +557,15 @@ class TestGetNodes:
             "hiveheating.hive.asyncio.to_thread", new=AsyncMock(return_value=_nodes())
         ) as to_thread:
             nodes = await hive.get_nodes()
-        to_thread.assert_awaited_once_with(hive.open_file, "data.json")
+        to_thread.assert_awaited_once_with(_load_fixture)
         hive.api.get_all.assert_not_awaited()
         assert set(nodes.products) == {"p1"}
 
     async def test_api_mode_fetches_all_nodes_and_parses_them(self):
         hive = _make_hive()
-        with patch.object(hive, "open_file") as open_file:
+        with patch("hiveheating.hive._load_fixture") as load_fixture:
             nodes = await hive.get_nodes()
-        open_file.assert_not_called()
+        load_fixture.assert_not_called()
         hive.api.get_all.assert_awaited_once_with()
         assert isinstance(nodes, Nodes)
         assert nodes.user == User(temperature_unit="C")

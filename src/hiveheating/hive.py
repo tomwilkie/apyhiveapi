@@ -5,19 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from hiveheating.api import HiveApi
-from hiveheating.auth import HiveAuth
+from hiveheating.auth import FILE_USERNAME, SMS_REQUIRED, HiveAuth
 from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
     HiveReauthRequired,
 )
 from hiveheating.helpers import sanitize_payload
-from hiveheating.models import SessionConfig, SessionTokens
 from hiveheating.nodes import Nodes, parse_nodes
 
 if TYPE_CHECKING:
@@ -26,21 +26,45 @@ if TYPE_CHECKING:
     from aiohttp import ClientSession
 
     from hiveheating.api import JsonValue
-    from hiveheating.nodes import HeatingProduct, HotWaterProduct, Product
+    from hiveheating.nodes import HeatingProduct, HotWaterProduct, Mode, Product
 
 _LOGGER = logging.getLogger(__name__)
 
-_DATA_DIR = Path(__file__).parent / "data"
-
-# The modes a product can be set to. Hive's MANUAL is "on" for hot water.
-type Mode = Literal["SCHEDULE", "MANUAL", "OFF"]
+_FIXTURE = Path(__file__).parent / "data" / "data.json"
 
 # Tokens are refreshed once this share of their lifetime has passed.
-REFRESH_THRESHOLD = 0.90
+_REFRESH_THRESHOLD = 0.90
 
 # device_data holds device_group_key, device_key and device_password. Entries
 # saved by older versions add the token issue time, which is ignored.
 _DEVICE_DATA_FIELDS = 3
+
+
+def _epoch() -> datetime:
+    return datetime.min.replace(tzinfo=UTC)
+
+
+@dataclass
+class SessionTokens:
+    """The session's API tokens and when they were issued."""
+
+    token_data: dict[str, str] = field(default_factory=dict)
+    token_created: datetime = field(default_factory=_epoch)
+    token_expiry: timedelta = field(default_factory=lambda: timedelta(seconds=3600))
+
+
+@dataclass
+class SessionConfig:
+    """Session configuration state."""
+
+    file: bool = False
+    username: str | None = None
+
+
+def _load_fixture() -> dict[str, Any]:
+    """Load the bundled all-nodes fixture used in file mode."""
+    result: dict[str, Any] = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    return result
 
 
 class Hive:
@@ -175,7 +199,7 @@ class Hive:
         result = await self.auth.login()
         if result.get("ChallengeName") == HiveAuth.DEVICE_VERIFIER_CHALLENGE:
             result = await self.auth.device_login()
-        if result.get("ChallengeName") == HiveAuth.SMS_MFA_CHALLENGE:
+        if result.get("ChallengeName") == SMS_REQUIRED:
             raise HiveReauthRequired("Hive asked for an SMS code")
         if not result.get("AuthenticationResult"):
             raise HiveApiError(f"Login did not complete: {result.get('ChallengeName')}")
@@ -184,7 +208,7 @@ class Hive:
     def _refresh_due(self) -> bool:
         """Return True once the tokens have used most of their lifetime."""
         expiry = (
-            self.tokens.token_created + self.tokens.token_expiry * REFRESH_THRESHOLD
+            self.tokens.token_created + self.tokens.token_expiry * _REFRESH_THRESHOLD
         )
         return datetime.now(UTC) >= expiry
 
@@ -310,7 +334,7 @@ class Hive:
             HiveApiError: Hive refused the request.
         """
         if self.config.file:
-            response = await asyncio.to_thread(self.open_file, "data.json")
+            response = await asyncio.to_thread(_load_fixture)
         else:
             response = await self._api_call(self.api.get_all)
         products, devices = response.get("products"), response.get("devices")
@@ -326,25 +350,11 @@ class Hive:
         )
         return nodes
 
-    def open_file(self, file: str) -> dict[str, Any]:
-        """Load a JSON fixture file from the package data directory.
-
-        Args:
-            file: Filename relative to the ``data/`` directory.
-
-        Returns:
-            Parsed JSON content of the file.
-        """
-        result: dict[str, Any] = json.loads(
-            (_DATA_DIR / file).read_text(encoding="utf-8")
-        )
-        return result
-
     # --- New session -------------------------------------------------------
 
     def _configure_file_mode(self, username: str | None) -> None:
         """Switch to the bundled fixture data for the magic testing username."""
-        if username == "use@file.com":
+        if username == FILE_USERNAME:
             self.config.file = True
 
     def _apply_device_data(self, device_data: Sequence[Any]) -> None:

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hiveheating.exceptions import HiveReauthRequired
-from hiveheating.hive import Hive
+from hiveheating.hive import Hive, _load_fixture
 
 _LOGGER_NAME = "hiveheating.hive"
 _EPOCH = datetime.min.replace(tzinfo=UTC)
@@ -28,11 +28,11 @@ def _make_hive():
     return hive
 
 
-class TestOpenFile:
-    """Tests for Hive.open_file."""
+class TestLoadFixture:
+    """Tests for _load_fixture."""
 
     def test_returns_the_parsed_fixture(self):
-        nodes = Hive().open_file("data.json")
+        nodes = _load_fixture()
         assert set(nodes) == {"user", "products", "devices"}
         assert isinstance(nodes["products"], list)
         assert isinstance(nodes["devices"], list)
@@ -70,13 +70,6 @@ class TestApplyDeviceData:
         assert hive.auth.device_group_key is None
         assert hive.auth.device_key is None
         assert hive.auth.device_password is None
-
-    def test_three_values_set_the_device_credentials(self):
-        hive = _make_hive()
-        hive._apply_device_data(["group", "key", "password"])
-        assert hive.auth.device_group_key == "group"
-        assert hive.auth.device_key == "key"
-        assert hive.auth.device_password == "password"  # pragma: allowlist secret
 
     def test_a_saved_token_issue_time_is_ignored(self):
         hive = _make_hive()

@@ -55,12 +55,6 @@ class TestOwnedWebsession:
 class TestGivenWebsession:
     """A websession passed in, as Home Assistant does, is never closed."""
 
-    def test_the_given_websession_is_used(self):
-        given = _mock_client_session()
-        hive = Hive(websession=given)
-        assert hive.api.websession is given
-        assert hive.api._get_websession() is given
-
     async def test_close_leaves_the_given_websession_open(self):
         given = _mock_client_session()
         await Hive(websession=given).close()

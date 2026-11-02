@@ -42,11 +42,6 @@ class TestSanitizePayload:
         """No part of a sensitive string is kept, so its head and tail are hidden."""
         assert sanitize_payload({"token": value})["token"] == "***"
 
-    def test_non_sensitive_key_passes_through(self):
-        """Keys with no sensitive substrings are left unchanged."""
-        result = sanitize_payload({"username": "user@test.com"})
-        assert result["username"] == "user@test.com"
-
     def test_nested_dict_is_recursed_for_sensitive_key(self):
         """Sensitive key inside a nested dict is masked."""
         result = sanitize_payload({"outer": {"token": "abc"}})

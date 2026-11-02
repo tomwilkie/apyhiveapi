@@ -1,7 +1,7 @@
 """Async Python library for the Hive smart home API."""
 
+from hiveheating.auth import SMS_REQUIRED
 from hiveheating.auth import HiveAuth as Auth
-from hiveheating.const import SMS_REQUIRED
 from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
@@ -11,11 +11,12 @@ from hiveheating.exceptions import (
     HiveInvalidUsername,
     HiveReauthRequired,
 )
-from hiveheating.hive import Hive, Mode
+from hiveheating.hive import Hive
 from hiveheating.nodes import (
     Device,
     HeatingProduct,
     HotWaterProduct,
+    Mode,
     Nodes,
     Product,
     User,

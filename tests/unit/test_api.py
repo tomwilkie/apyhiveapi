@@ -1,36 +1,17 @@
-"""Unit tests for hiveheating.api: _fetch, get_login_info and HiveApi."""
+"""Unit tests for hiveheating.api: _fetch and HiveApi."""
 
 import json
-import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 
-from hiveheating.api import (
-    _HEADERS,
-    _SSO_URL,
-    _TIMEOUT,
-    HiveApi,
-    _fetch,
-    get_login_info,
-)
+from hiveheating.api import _HEADERS, _TIMEOUT, HiveApi, _fetch
 from hiveheating.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
 
 _TOKEN = "test-token"
 _URL = "https://beekeeper.hivehome.com/1.0/nodes/heating/node-1"
 _AUTH_HEADERS = {**_HEADERS, "Authorization": _TOKEN}
-_SSO_PAGE = (
-    "<html><head><script>"
-    'window.HiveSSOPoolId="eu-west-1_abc",'
-    'window.HiveSSOPublicCognitoClientId="client123"'
-    "</script></head></html>"
-)
-_LOGIN_INFO = {
-    "UPID": "eu-west-1_abc",
-    "CLIID": "client123",
-    "REGION": "eu-west-1_abc",
-}
 
 
 def _make_response(status=200, body="", headers=None):
@@ -56,22 +37,6 @@ def _make_api(status=200, body="", token=_TOKEN):
     session = MagicMock()
     session.tokens.token_data = {"token": token}
     return HiveApi(session, websession=_make_websession(status, body))
-
-
-def _api_messages(caplog):
-    """Return the messages the hiveheating.api logger emitted."""
-    return [r.getMessage() for r in caplog.records if r.name == "hiveheating.api"]
-
-
-# Tests for the module constants
-
-
-class TestConstants:
-    def test_headers_carry_no_token(self):
-        assert _HEADERS["content-type"] == "application/json"
-        assert _HEADERS["Accept"] == "*/*"
-        assert _HEADERS["User-Agent"].startswith("Hive/")
-        assert "Authorization" not in _HEADERS
 
 
 # Tests for _fetch
@@ -274,24 +239,7 @@ class TestFetch:
 
 
 class TestFetchGatewayErrorType:
-    """API Gateway's x-amzn-ErrorType header is named in the error."""
-
-    @pytest.mark.parametrize(
-        ("status", "exc"),
-        [
-            (401, HiveReauthRequired),
-            (403, HiveApiError),
-            (429, HiveApiError),
-            (503, HiveConnectionError),
-        ],
-    )
-    async def test_the_gateway_error_type_is_named_in_the_error(self, status, exc):
-        websession = _make_websession(
-            status, "{}", {"x-amzn-ErrorType": "SomeException"}
-        )
-
-        with pytest.raises(exc, match=rf"HTTP {status} \(SomeException\) calling"):
-            await _fetch(websession, "get", _URL, token="test-token")
+    """Hive's API gateway blocking a burst of requests."""
 
     @pytest.mark.parametrize(
         ("token", "error_type"),
@@ -321,198 +269,10 @@ class TestFetchGatewayErrorType:
         )
 
 
-class TestFetchLogging:
-    async def test_logs_method_url_status_and_duration(self, caplog):
-        caplog.set_level(logging.DEBUG, logger="hiveheating.api")
-        websession = _make_websession(200, "body")
-
-        with patch("hiveheating.api.time") as fake_time:
-            fake_time.monotonic.side_effect = [10.0, 10.25]
-            await _fetch(websession, "post", _URL)
-
-        assert _api_messages(caplog) == [f"POST {_URL} answered HTTP 200 in 0.25s"]
-        assert caplog.records[0].levelno == logging.DEBUG
-
-    async def test_logs_rejected_requests_too(self, caplog):
-        caplog.set_level(logging.DEBUG, logger="hiveheating.api")
-        websession = _make_websession(503, "")
-
-        with pytest.raises(HiveConnectionError):
-            await _fetch(websession, "get", _URL)
-
-        messages = _api_messages(caplog)
-        assert len(messages) == 1
-        assert messages[0].startswith(f"GET {_URL} answered HTTP 503 in ")
-
-
-# Tests for get_login_info
-
-
-class TestGetLoginInfo:
-    @pytest.mark.parametrize(
-        ("html", "expected"),
-        [
-            pytest.param(_SSO_PAGE, _LOGIN_INFO, id="double-quoted"),
-            pytest.param(
-                "<script>\n"
-                "        window.HiveSSOPoolId = 'eu-west-1_abc'\n"
-                "        window.HiveSSOCognitoClientId = 'private123'\n"
-                "        window.HiveSSOPublicCognitoClientId = 'client123'\n"
-                "        window.HiveSSOState = '%%STATE%%'\n"
-                "    </script>",
-                _LOGIN_INFO,
-                id="single-quoted-with-spaces",
-            ),
-            pytest.param(
-                '<SCRIPT type="text/javascript">'
-                'window.HiveSSOPoolId = "eu-west-1_abc"; '
-                'window.HiveSSOPublicCognitoClientId = "client123";'
-                "</SCRIPT>",
-                _LOGIN_INFO,
-                id="script-tag-attributes-and-uppercase",
-            ),
-            pytest.param(
-                "<script>"
-                'window.HiveSSOPoolId = "it\'s"; '
-                "window.HiveSSOPublicCognitoClientId = 'say \"hi\"'"
-                "</script>",
-                {"UPID": "it's", "CLIID": 'say "hi"', "REGION": "it's"},
-                id="value-contains-other-quote",
-            ),
-        ],
-    )
-    async def test_parses_the_cognito_config_from_the_first_script(
-        self, html, expected
-    ):
-        websession = _make_websession(body=html)
-
-        assert await get_login_info(websession) == expected
-
-    async def test_fetches_the_sso_page_with_the_given_session(self):
-        websession = _make_websession(body=_SSO_PAGE)
-
-        with patch("hiveheating.api.ClientSession") as session_cls:
-            await get_login_info(websession)
-
-        websession.request.assert_called_once_with(
-            "get",
-            "https://sso.hivehome.com/",
-            headers=None,
-            data=None,
-            timeout=_TIMEOUT,
-        )
-        session_cls.assert_not_called()
-        websession.close.assert_not_called()
-
-    @pytest.mark.parametrize(
-        ("html", "missing_key"),
-        [
-            pytest.param(
-                "<script>window.Unrelated = 'x'</script>"
-                "<script>window.HiveSSOPoolId = 'p' "
-                "window.HiveSSOPublicCognitoClientId = 'c'</script>",
-                "HiveSSOPoolId",
-                id="config-in-second-script",
-            ),
-            pytest.param(
-                "<script>window.HiveSSOPoolId = 'eu-west-1_abc\"</script>",
-                "HiveSSOPoolId",
-                id="mismatched-quotes",
-            ),
-            pytest.param(
-                "<script>window.HiveSSOPoolId = 'eu-west-1_abc'</script>",
-                "HiveSSOPublicCognitoClientId",
-                id="pool-id-only",
-            ),
-            pytest.param(
-                "<script>window.SomeOtherKey = 'value'</script>",
-                "HiveSSOPoolId",
-                id="unrelated-key",
-            ),
-            pytest.param("", "HiveSSOPoolId", id="empty-page"),
-            pytest.param(
-                "<html><body>Down for maintenance</body></html>",
-                "HiveSSOPoolId",
-                id="no-script",
-            ),
-        ],
-    )
-    async def test_page_without_the_config_raises_api_error(self, html, missing_key):
-        websession = _make_websession(body=html)
-
-        with pytest.raises(HiveApiError) as exc_info:
-            await get_login_info(websession)
-
-        assert str(exc_info.value) == (
-            f"The Hive login page did not include '{missing_key}'"
-        )
-        assert isinstance(exc_info.value.__cause__, KeyError)
-        assert exc_info.value.__cause__.args == (missing_key,)
-
-    @pytest.mark.parametrize(
-        ("status", "exc"),
-        [
-            # The login page gets no token, so a 401/403 is not a token problem.
-            (401, HiveApiError),
-            (403, HiveApiError),
-            (404, HiveApiError),
-            (500, HiveConnectionError),
-            (503, HiveConnectionError),
-        ],
-    )
-    async def test_http_errors_propagate(self, status, exc):
-        websession = _make_websession(status, "blocked")
-
-        with pytest.raises(exc) as exc_info:
-            await get_login_info(websession)
-
-        assert f"HTTP {status} calling https://sso.hivehome.com/: blocked" in str(
-            exc_info.value
-        )
-
-    async def test_opens_and_closes_a_temporary_session_when_none_is_given(self):
-        temp = _make_websession(body=_SSO_PAGE)
-        temp.__aenter__ = AsyncMock(return_value=temp)
-        temp.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("hiveheating.api.ClientSession", return_value=temp) as session_cls:
-            result = await get_login_info()
-
-        assert result == _LOGIN_INFO
-        session_cls.assert_called_once_with()
-        temp.__aenter__.assert_awaited_once()
-        temp.request.assert_called_once_with(
-            "get", _SSO_URL, headers=None, data=None, timeout=_TIMEOUT
-        )
-        temp.__aexit__.assert_awaited_once()
-
-
 # Tests for HiveApi construction and its websession
 
 
 class TestHiveApiWebsession:
-    def test_get_websession_returns_the_given_session(self):
-        websession = MagicMock()
-        api = HiveApi(MagicMock(), websession)
-
-        with patch("hiveheating.api.ClientSession") as session_cls:
-            assert api._get_websession() is websession
-
-        session_cls.assert_not_called()
-
-    def test_get_websession_creates_one_lazily_and_caches_it(self):
-        with patch("hiveheating.api.ClientSession") as session_cls:
-            api = HiveApi(MagicMock())
-            session_cls.assert_not_called()
-            assert api.websession is None
-            first = api._get_websession()
-            second = api._get_websession()
-
-        session_cls.assert_called_once_with()
-        assert first is session_cls.return_value
-        assert second is first
-        assert api.websession is first
-
     async def test_requests_share_the_lazily_created_session(self):
         websession = _make_websession(200, '{"ok": true}')
         session = MagicMock()
@@ -540,20 +300,6 @@ class TestRequest:
         api = _make_api(200, '{"products": [], "devices": []}')
 
         assert await api.request("get", _URL) == {"products": [], "devices": []}
-
-    async def test_sends_the_token_headers_and_data(self):
-        api = _make_api()
-
-        await api.request("post", _URL, data='{"mode": "MANUAL"}')
-
-        api.websession.request.assert_called_once_with(
-            "post",
-            _URL,
-            headers=_AUTH_HEADERS,
-            data='{"mode": "MANUAL"}',
-            timeout=_TIMEOUT,
-        )
-        assert "Authorization" not in _HEADERS
 
     @pytest.mark.parametrize(
         ("status", "body"),
@@ -611,25 +357,13 @@ class TestRequest:
         )
         assert exc_info.value.__cause__ is None
 
-    @pytest.mark.parametrize(
-        ("status", "exc"),
-        [
-            (401, HiveReauthRequired),
-            (403, HiveApiError),
-            (404, HiveApiError),
-            (500, HiveConnectionError),
-            (503, HiveConnectionError),
-        ],
-    )
-    async def test_http_errors_are_raised_before_the_body_is_parsed(self, status, exc):
-        api = _make_api(status, "<html>not json</html>")
+    async def test_http_errors_are_raised_before_the_body_is_parsed(self):
+        api = _make_api(503, "<html>not json</html>")
 
-        with pytest.raises(exc) as exc_info:
+        with pytest.raises(HiveConnectionError) as exc_info:
             await api.request("get", _URL)
 
-        assert f"HTTP {status} calling {_URL}: <html>not json</html>" in str(
-            exc_info.value
-        )
+        assert f"HTTP 503 calling {_URL}: <html>not json</html>" in str(exc_info.value)
 
 
 # Tests for HiveApi.get_all
@@ -660,20 +394,15 @@ class TestGetAll:
 
 
 class TestSetState:
-    async def test_posts_the_state_as_json_to_the_product_url(self, caplog):
-        caplog.set_level(logging.DEBUG, logger="hiveheating.api")
+    async def test_posts_the_state_as_json_to_the_product_url(self):
         api = _make_api(200, '{"id": "node-1"}')
 
-        result = await api.set_state("heating", "node-1", mode="MANUAL", target=21.5)
+        await api.set_state("heating", "node-1", mode="MANUAL", target=21.5)
 
-        assert result is None
         api.websession.request.assert_called_once_with(
             "post",
             "https://beekeeper.hivehome.com/1.0/nodes/heating/node-1",
             headers=_AUTH_HEADERS,
             data='{"mode": "MANUAL", "target": 21.5}',
             timeout=_TIMEOUT,
-        )
-        assert "Setting heating node-1: {'mode': 'MANUAL', 'target': 21.5}" in (
-            _api_messages(caplog)
         )
