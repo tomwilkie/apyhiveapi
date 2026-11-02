@@ -5,14 +5,14 @@ GitHub Actions. Both Claude jobs in `.github/workflows/claude.yml` (the
 automatic PR review and `@claude` mentions) load this file, so project
 knowledge and rules belong here, not in the workflow prompt.
 
-This is apyhiveapi, the async Python library behind the Hive integration for
+This is hiveheating, the async Python library behind the Hive integration for
 Home Assistant. It is a hard fork of Pyhass/Pyhive, restarted at version
-0.0.1 and published on PyPI as `apyhiveapi` (it was `pyhive-integration`,
-installed from GitHub release wheels, until v0.1.5; upstream owns that name
-on PyPI). It is imported as `hiveheating`, not `apyhiveapi`: Home Assistant
-ships upstream's `pyhive-integration` for its built-in Hive integration, and
-that installs `apyhiveapi/` and `pyhiveapi/` into site-packages, where they
-would mix with this library's files. Never reuse those two import names;
+0.0.1. It is published on PyPI and imported as `hiveheating`. It was
+`pyhive-integration` (installed from GitHub release wheels) until v0.1.5 and
+`apyhiveapi` until v0.2.1. Both clash with upstream: Home Assistant ships
+upstream's `pyhive-integration` for its built-in Hive integration, and that
+installs `apyhiveapi/` and `pyhiveapi/` into site-packages, where they would
+mix with this library's files. Never reuse those two import names;
 `make verify-dist` checks the wheel imports alongside upstream. It covers Hive
 heating and hot water only. The source is one flat package in
 `src/hiveheating/`: no sync package, no mixins, no deprecation shims and no
@@ -38,7 +38,7 @@ explicitly: that code is a removal candidate.
   with `__init__.py`, `config_flow.py`, `entity.py`, `const.py`, `climate.py`,
   `water_heater.py` and `manifest.json`, which pins this library. Once the
   fork is ported (see below), the manifest pins a release of this library
-  (`apyhiveapi==<version>` from PyPI; up to v0.1.5 it installed a GitHub
+  (`hiveheating==<version>` from PyPI; up to v0.1.5 it installed a GitHub
   release wheel as `<wheel URL>#pyhive-integration==<version>`) and its
   light and switch platforms are gone. The fork's own `CLAUDE.md` lists the
   API it calls and the error mapping it applies; its tests mock `Hive` and

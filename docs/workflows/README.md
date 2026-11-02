@@ -25,7 +25,7 @@ feature/* ──PR──▶ main ──patch bump (or the PR's new version)─�
 | `ci.yml` (Lint) | pull requests and pushes to `main` that touch code or lint config | Runs every pre-commit hook: ruff, pylint, mypy, bandit, codespell, yamllint, detect-secrets and the PII check on fixture data. |
 | `tests.yml` (Tests, Coverage, Packaging) | every pull request and push to `main` | Tests on Python 3.13 and 3.14, the 99% coverage gate, and a wheel built and imported in a clean venv. The jobs always report, so they can be required checks. |
 | `claude.yml` | pull requests and `@claude` mentions | Claude reviews the change against `CLAUDE.md` and the Home Assistant fork. |
-| `release.yml` | every push to `main`, and by hand | Bumps the version with `bump-my-version` (or keeps a new version the pull request set), builds the sdist and wheel, verifies the wheel imports, pushes the bump commit and its `v<version>` tag to `main`, publishes a GitHub Release with both files attached, then uploads them to PyPI as `apyhiveapi` through Trusted Publishing. |
+| `release.yml` | every push to `main`, and by hand | Bumps the version with `bump-my-version` (or keeps a new version the pull request set), builds the sdist and wheel, verifies the wheel imports, pushes the bump commit and its `v<version>` tag to `main`, publishes a GitHub Release with both files attached, then uploads them to PyPI as `hiveheating` through Trusted Publishing. |
 
 Dependabot (`.github/dependabot.yml`) opens weekly pull requests for pip
 dependencies and GitHub Actions. Pre-commit hook revisions are updated with
@@ -44,7 +44,7 @@ builds the sdist and wheel, checks that the wheel imports in a clean venv,
 pushes the commit and tag to `main`, and publishes a GitHub Release with
 generated notes and both files attached. Nothing lands on `main` unless the
 wheel built. A second job then uploads the same files to PyPI as
-[`apyhiveapi`](https://pypi.org/project/apyhiveapi/).
+[`hiveheating`](https://pypi.org/project/hiveheating/).
 
 For a **minor or major release**, set `version` in `pyproject.toml` to the new
 version in the pull request that needs it (`0.1.5` → `0.2.0`). On the push to
@@ -61,7 +61,7 @@ Point the Home Assistant fork at the release. In
 `custom_components/hive/manifest.json`:
 
 ```json
-"requirements": ["apyhiveapi==0.1.6"]
+"requirements": ["hiveheating==0.3.0"]
 ```
 
 Up to v0.1.5 the package was called `pyhive-integration` and the manifest
@@ -79,9 +79,9 @@ and the values must match exactly:
 
 | Field | Value |
 |---|---|
-| PyPI project name | `apyhiveapi` |
+| PyPI project name | `hiveheating` |
 | Owner | `tomwilkie` |
-| Repository name | `apyhiveapi` |
+| Repository name | `hiveheating` |
 | Workflow name | `release.yml` |
 | Environment name | `pypi` |
 

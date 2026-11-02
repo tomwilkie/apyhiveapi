@@ -1,1 +1,1 @@
-"""Tests for apyhiveapi."""
+"""Tests for hiveheating."""

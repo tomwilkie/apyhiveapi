@@ -9,7 +9,7 @@
 
 ```bash
 git clone https://github.com/tomwilkie/hiveheating.git
-cd apyhiveapi
+cd hiveheating
 make setup
 ```
 

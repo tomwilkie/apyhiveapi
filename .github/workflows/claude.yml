@@ -73,7 +73,7 @@ env:
     PR NUMBER: ${{ github.event.pull_request.number }}
     BASE BRANCH: ${{ github.event.pull_request.base.ref }}
 
-    You are reviewing a pull request for apyhiveapi, the Python library
+    You are reviewing a pull request for hiveheating, the Python library
     behind the Home Assistant Hive integration.
 
     Your main job is to find real bugs: code that will behave wrongly,

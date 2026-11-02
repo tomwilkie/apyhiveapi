@@ -1,4 +1,4 @@
-"""Exceptions raised by apyhiveapi.
+"""Exceptions raised by hiveheating.
 
 Each class names what the caller should do about it: retry later
 (:class:`HiveConnectionError`), give up on this request
