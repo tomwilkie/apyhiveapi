@@ -2,7 +2,7 @@
 
 import pytest
 
-from apyhiveapi.srp import hash_sha256, hex_hash, hex_to_long, long_to_hex, pad_hex
+from hiveheating.srp import hash_sha256, hex_hash, hex_to_long, long_to_hex, pad_hex
 
 HELLO_SHA256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 

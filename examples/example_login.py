@@ -1,4 +1,4 @@
-"""Minimal standalone login example for apyhiveapi.
+"""Minimal standalone login example for hiveheating.
 
 Run it once: it asks for your Hive email and password, completes the SMS
 two-factor challenge, registers this machine as a trusted device and saves
@@ -6,7 +6,7 @@ the device credentials to ``hive_device.json`` in the working directory.
 Run it again: it logs in with the saved device credentials, no SMS needed,
 and lists the same products and devices.
 
-    pip install apyhiveapi
+    pip install hiveheating
     python examples/example_login.py
 
 The password is never stored. The saved file holds a device password that
@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from apyhiveapi import SMS_REQUIRED, Auth, Hive, HiveReauthRequired
+from hiveheating import SMS_REQUIRED, Auth, Hive, HiveReauthRequired
 
 DEVICE_FILE = Path("hive_device.json")
 

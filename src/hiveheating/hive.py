@@ -9,24 +9,24 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self
 
-from apyhiveapi.api import HiveApi
-from apyhiveapi.auth import HiveAuth
-from apyhiveapi.exceptions import (
+from hiveheating.api import HiveApi
+from hiveheating.auth import HiveAuth
+from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
     HiveReauthRequired,
 )
-from apyhiveapi.helpers import sanitize_payload
-from apyhiveapi.models import SessionConfig, SessionTokens
-from apyhiveapi.nodes import Nodes, parse_nodes
+from hiveheating.helpers import sanitize_payload
+from hiveheating.models import SessionConfig, SessionTokens
+from hiveheating.nodes import Nodes, parse_nodes
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from aiohttp import ClientSession
 
-    from apyhiveapi.api import JsonValue
-    from apyhiveapi.nodes import HeatingProduct, HotWaterProduct, Product
+    from hiveheating.api import JsonValue
+    from hiveheating.nodes import HeatingProduct, HotWaterProduct, Product
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,10 +52,10 @@ class Hive:
     ``POST /nodes/{type}/{id}``. The session keeps no device state and has no
     timer: the caller decides when to poll.
 
-    Every error raised is a :class:`~apyhiveapi.exceptions.HiveError`:
-    :class:`~apyhiveapi.exceptions.HiveReauthRequired` when the user has to
-    log in again, :class:`~apyhiveapi.exceptions.HiveConnectionError` for
-    transient failures and :class:`~apyhiveapi.exceptions.HiveApiError` when
+    Every error raised is a :class:`~hiveheating.exceptions.HiveError`:
+    :class:`~hiveheating.exceptions.HiveReauthRequired` when the user has to
+    log in again, :class:`~hiveheating.exceptions.HiveConnectionError` for
+    transient failures and :class:`~hiveheating.exceptions.HiveApiError` when
     Hive refuses a request.
     """
 

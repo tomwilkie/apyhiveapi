@@ -5,7 +5,7 @@ name: Release
 # builds the sdist and wheel, checks that the wheel imports in a clean venv,
 # and only then pushes the commit and tag to main and publishes a GitHub
 # Release with both files attached. A second job uploads the same files to
-# PyPI as `apyhiveapi` through Trusted Publishing (OpenID Connect, no API
+# PyPI as `hiveheating` through Trusted Publishing (OpenID Connect, no API
 # token). A pull request that sets a new version in pyproject.toml (for a
 # minor or major release) is released at that version without a bump: on a
 # push, a version with no v<version> tag yet is tagged as it is. The workflow
@@ -117,7 +117,7 @@ jobs:
     # against; its name must match the publisher's exactly.
     environment:
       name: pypi
-      url: https://pypi.org/project/apyhiveapi/${{ needs.release.outputs.version }}/
+      url: https://pypi.org/project/hiveheating/${{ needs.release.outputs.version }}/
     permissions:
       id-token: write
     steps:

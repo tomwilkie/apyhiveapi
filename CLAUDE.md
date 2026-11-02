@@ -5,12 +5,17 @@ GitHub Actions. Both Claude jobs in `.github/workflows/claude.yml` (the
 automatic PR review and `@claude` mentions) load this file, so project
 knowledge and rules belong here, not in the workflow prompt.
 
-This is apyhiveapi, the async Python library behind the Hive integration for
+This is hiveheating, the async Python library behind the Hive integration for
 Home Assistant. It is a hard fork of Pyhass/Pyhive, restarted at version
-0.0.1 and published on PyPI as `apyhiveapi` (it was `pyhive-integration`,
-installed from GitHub release wheels, until v0.1.5; upstream owns that name
-on PyPI). It covers Hive heating and hot water only. The source is one flat package in
-`src/apyhiveapi/`: no sync package, no mixins, no deprecation shims and no
+0.0.1. It is published on PyPI and imported as `hiveheating`. It was
+`pyhive-integration` (installed from GitHub release wheels) until v0.1.5 and
+`apyhiveapi` until v0.2.1. Both clash with upstream: Home Assistant ships
+upstream's `pyhive-integration` for its built-in Hive integration, and that
+installs `apyhiveapi/` and `pyhiveapi/` into site-packages, where they would
+mix with this library's files. Never reuse those two import names;
+`make verify-dist` checks the wheel imports alongside upstream. It covers Hive
+heating and hot water only. The source is one flat package in
+`src/hiveheating/`: no sync package, no mixins, no deprecation shims and no
 camelCase compatibility aliases. The public API is snake_case only.
 
 ## The Home Assistant fork is the only consumer
@@ -33,7 +38,7 @@ explicitly: that code is a removal candidate.
   with `__init__.py`, `config_flow.py`, `entity.py`, `const.py`, `climate.py`,
   `water_heater.py` and `manifest.json`, which pins this library. Once the
   fork is ported (see below), the manifest pins a release of this library
-  (`apyhiveapi==<version>` from PyPI; up to v0.1.5 it installed a GitHub
+  (`hiveheating==<version>` from PyPI; up to v0.1.5 it installed a GitHub
   release wheel as `<wheel URL>#pyhive-integration==<version>`) and its
   light and switch platforms are gone. The fork's own `CLAUDE.md` lists the
   API it calls and the error mapping it applies; its tests mock `Hive` and
@@ -71,7 +76,7 @@ own API and knows nothing about Home Assistant; the public API is:
 - the frozen dataclasses `get_nodes` returns (`Nodes`, `User`,
   `HeatingProduct`, `HotWaterProduct`, `Device`) and their fields, read as
   attributes; see "Nodes" below
-- the exceptions exported from `apyhiveapi` (see "Error handling" below)
+- the exceptions exported from `hiveheating` (see "Error handling" below)
 
 Everything that turns Hive's model into Home Assistant's lives in the fork:
 its `DataUpdateCoordinator` calls `get_nodes()` on its own interval, and the
@@ -112,7 +117,7 @@ requires Python 3.14; this library supports 3.13 and later.
 
 ## Project rules
 
-- Edit the source in `src/apyhiveapi/` only; there is no generated code.
+- Edit the source in `src/hiveheating/` only; there is no generated code.
 - Keep it flat and concrete: plain classes and functions, no mixins, no
   compatibility aliases or shims. When a name changes, rename it in the fork.
 - Everything is fully annotated and `mypy --strict` passes on `src/`. The
@@ -123,8 +128,8 @@ requires Python 3.14; this library supports 3.13 and later.
 - The placeholder `aws_access_key_id` / `aws_secret_access_key` /
   `aws_session_token` strings in `auth.py` must stay; they are not leaked
   secrets and boto3 Cognito auth breaks without them.
-- Never log tokens or PII; log payloads via `apyhiveapi.helpers.sanitize_payload`.
-  Data in `src/apyhiveapi/data/*.json` must be anonymised.
+- Never log tokens or PII; log payloads via `hiveheating.helpers.sanitize_payload`.
+  Data in `src/hiveheating/data/*.json` must be anonymised.
 - New behaviour and bug fixes need tests in `tests/unit` or `tests/e2e`; coverage must stay at 99%. One test per behaviour, not per
   call site: see "What a test is for" below before adding one.
 
@@ -215,7 +220,7 @@ release: then set it to the new version, and `release.yml` releases that
 version as it is because it has no tag yet.
 
 A PII check pre-commit hook (`scripts/check_data_pii.py`) runs on any
-`src/apyhiveapi/data/*.json` change — ensure fixture data is anonymised before
+`src/hiveheating/data/*.json` change — ensure fixture data is anonymised before
 committing.
 
 ### Development scripts
@@ -225,8 +230,9 @@ committing.
   account and takes admin commands over a local socket (`state DEVICE` shows
   a parsed product; `set-mode`, `set-temp` and `boost` send commands). Read-only unless
   started with `WRITE=1`.
-- `scripts/verify_dist.py` installs the built wheel in a throwaway venv and
-  imports every module (`make verify-dist`).
+- `scripts/verify_dist.py` installs the built wheel in a throwaway venv, then
+  in one that already has the `pyhive-integration` core pins, and
+  imports every module each time (`make verify-dist`).
 - `examples/example_login.py` is the minimal standalone login example the
   README points at.
 
@@ -302,7 +308,7 @@ same PR.
 ### Source layout
 
 ```text
-src/apyhiveapi/
+src/hiveheating/
 ├── __init__.py         ← public exports: Hive, Auth, the node dataclasses, SMS_REQUIRED, the exceptions
 ├── hive.py             ← Hive — the session: login and token refresh, new_session,
 │                         get_nodes and the set_* commands
@@ -402,7 +408,7 @@ All timestamps are timezone-aware UTC `datetime`s.
 ### File-based testing
 
 Set `username="use@file.com"` to make the session load
-`src/apyhiveapi/data/data.json`, an anonymised all-nodes response (`user`,
+`src/hiveheating/data/data.json`, an anonymised all-nodes response (`user`,
 `products`, `devices`), instead of calling the API. Used for development
 without live credentials. The fixture is read in a worker thread, so file mode
 is safe under Home Assistant. Commands send nothing in file mode.

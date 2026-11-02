@@ -2,7 +2,7 @@
 
 Cognito's refusals and connection failures are translated in
 :meth:`HiveAuth._cognito`, so callers only ever see
-:class:`~apyhiveapi.exceptions.HiveError` subclasses. A botocore
+:class:`~hiveheating.exceptions.HiveError` subclasses. A botocore
 ``ParamValidationError`` means a bug in the call itself and propagates.
 """
 
@@ -24,8 +24,8 @@ import boto3
 import botocore.exceptions
 from botocore.config import Config
 
-from apyhiveapi.api import get_login_info
-from apyhiveapi.exceptions import (
+from hiveheating.api import get_login_info
+from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
     HiveError,
@@ -34,7 +34,7 @@ from apyhiveapi.exceptions import (
     HiveInvalidUsername,
     HiveReauthRequired,
 )
-from apyhiveapi.srp import (
+from hiveheating.srp import (
     G_HEX,
     N_HEX,
     calculate_u,

@@ -1,4 +1,4 @@
-"""Unit tests for apyhiveapi.api: _fetch, get_login_info and HiveApi."""
+"""Unit tests for hiveheating.api: _fetch, get_login_info and HiveApi."""
 
 import json
 import logging
@@ -7,8 +7,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from apyhiveapi.api import _HEADERS, _SSO_URL, _TIMEOUT, HiveApi, _fetch, get_login_info
-from apyhiveapi.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
+from hiveheating.api import (
+    _HEADERS,
+    _SSO_URL,
+    _TIMEOUT,
+    HiveApi,
+    _fetch,
+    get_login_info,
+)
+from hiveheating.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
 
 _TOKEN = "test-token"
 _URL = "https://beekeeper.hivehome.com/1.0/nodes/heating/node-1"
@@ -52,8 +59,8 @@ def _make_api(status=200, body="", token=_TOKEN):
 
 
 def _api_messages(caplog):
-    """Return the messages the apyhiveapi.api logger emitted."""
-    return [r.getMessage() for r in caplog.records if r.name == "apyhiveapi.api"]
+    """Return the messages the hiveheating.api logger emitted."""
+    return [r.getMessage() for r in caplog.records if r.name == "hiveheating.api"]
 
 
 # Tests for the module constants
@@ -316,10 +323,10 @@ class TestFetchGatewayErrorType:
 
 class TestFetchLogging:
     async def test_logs_method_url_status_and_duration(self, caplog):
-        caplog.set_level(logging.DEBUG, logger="apyhiveapi.api")
+        caplog.set_level(logging.DEBUG, logger="hiveheating.api")
         websession = _make_websession(200, "body")
 
-        with patch("apyhiveapi.api.time") as fake_time:
+        with patch("hiveheating.api.time") as fake_time:
             fake_time.monotonic.side_effect = [10.0, 10.25]
             await _fetch(websession, "post", _URL)
 
@@ -327,7 +334,7 @@ class TestFetchLogging:
         assert caplog.records[0].levelno == logging.DEBUG
 
     async def test_logs_rejected_requests_too(self, caplog):
-        caplog.set_level(logging.DEBUG, logger="apyhiveapi.api")
+        caplog.set_level(logging.DEBUG, logger="hiveheating.api")
         websession = _make_websession(503, "")
 
         with pytest.raises(HiveConnectionError):
@@ -384,7 +391,7 @@ class TestGetLoginInfo:
     async def test_fetches_the_sso_page_with_the_given_session(self):
         websession = _make_websession(body=_SSO_PAGE)
 
-        with patch("apyhiveapi.api.ClientSession") as session_cls:
+        with patch("hiveheating.api.ClientSession") as session_cls:
             await get_login_info(websession)
 
         websession.request.assert_called_once_with(
@@ -468,7 +475,7 @@ class TestGetLoginInfo:
         temp.__aenter__ = AsyncMock(return_value=temp)
         temp.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("apyhiveapi.api.ClientSession", return_value=temp) as session_cls:
+        with patch("hiveheating.api.ClientSession", return_value=temp) as session_cls:
             result = await get_login_info()
 
         assert result == _LOGIN_INFO
@@ -488,13 +495,13 @@ class TestHiveApiWebsession:
         websession = MagicMock()
         api = HiveApi(MagicMock(), websession)
 
-        with patch("apyhiveapi.api.ClientSession") as session_cls:
+        with patch("hiveheating.api.ClientSession") as session_cls:
             assert api._get_websession() is websession
 
         session_cls.assert_not_called()
 
     def test_get_websession_creates_one_lazily_and_caches_it(self):
-        with patch("apyhiveapi.api.ClientSession") as session_cls:
+        with patch("hiveheating.api.ClientSession") as session_cls:
             api = HiveApi(MagicMock())
             session_cls.assert_not_called()
             assert api.websession is None
@@ -513,7 +520,7 @@ class TestHiveApiWebsession:
         api = HiveApi(session)
 
         with patch(
-            "apyhiveapi.api.ClientSession", return_value=websession
+            "hiveheating.api.ClientSession", return_value=websession
         ) as session_cls:
             first = await api.request("get", _URL)
             second = await api.request("get", _URL)
@@ -654,7 +661,7 @@ class TestGetAll:
 
 class TestSetState:
     async def test_posts_the_state_as_json_to_the_product_url(self, caplog):
-        caplog.set_level(logging.DEBUG, logger="apyhiveapi.api")
+        caplog.set_level(logging.DEBUG, logger="hiveheating.api")
         api = _make_api(200, '{"id": "node-1"}')
 
         result = await api.set_state("heating", "node-1", mode="MANUAL", target=21.5)

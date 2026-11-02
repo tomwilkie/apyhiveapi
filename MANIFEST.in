@@ -1,6 +1,6 @@
 recursive-include src *.py
-include src/apyhiveapi/py.typed
-recursive-include src/apyhiveapi/data *.json
+include src/hiveheating/py.typed
+recursive-include src/hiveheating/data *.json
 include LICENSE README.md
 global-exclude .DS_Store
 global-exclude *.py[cod]

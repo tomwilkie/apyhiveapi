@@ -4,7 +4,7 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from apyhiveapi.hive import Hive
+from hiveheating.hive import Hive
 
 
 def _mock_client_session(*, closed=False):
@@ -27,7 +27,7 @@ class TestOwnedWebsession:
     async def test_close_closes_the_lazily_created_websession(self):
         hive = Hive()
         websession = _mock_client_session()
-        with patch("apyhiveapi.api.ClientSession", return_value=websession) as factory:
+        with patch("hiveheating.api.ClientSession", return_value=websession) as factory:
             assert hive.api._get_websession() is websession
             await hive.close()
         factory.assert_called_once_with()
@@ -36,7 +36,7 @@ class TestOwnedWebsession:
     async def test_close_skips_an_already_closed_websession(self):
         hive = Hive()
         websession = _mock_client_session(closed=True)
-        with patch("apyhiveapi.api.ClientSession", return_value=websession):
+        with patch("hiveheating.api.ClientSession", return_value=websession):
             hive.api._get_websession()
             await hive.close()
         websession.close.assert_not_awaited()
@@ -44,7 +44,7 @@ class TestOwnedWebsession:
     async def test_async_with_closes_the_websession_on_exit(self):
         hive = Hive()
         websession = _mock_client_session()
-        with patch("apyhiveapi.api.ClientSession", return_value=websession):
+        with patch("hiveheating.api.ClientSession", return_value=websession):
             async with hive as entered:
                 assert entered is hive
                 hive.api._get_websession()

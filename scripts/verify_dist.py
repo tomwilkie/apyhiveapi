@@ -6,6 +6,13 @@ produces a wheel that installs cleanly and then fails at ``import``. This
 script closes that gap by installing the built wheel into a throwaway
 virtualenv and importing every module in it.
 
+It does that twice: once in an empty venv, and once in a venv that already
+has the upstream ``pyhive-integration`` at the version Home Assistant core
+pins. Home Assistant ships that package for its built-in Hive integration,
+so every install has upstream's files in site-packages before ours arrive.
+A package name shared with upstream lets its files shadow ours there; the
+second run catches that.
+
 Usage:
     python scripts/verify_dist.py [dist_dir]
 
@@ -13,23 +20,33 @@ Exits non-zero with a description of what is missing or unimportable.
 """
 
 import json
+import re
 import subprocess
 import sys
 import sysconfig
 import tempfile
+import urllib.request
 import venv
 from pathlib import Path
 
 # Packages shipped by this distribution.
-FLAVOURS = ("apyhiveapi",)
+FLAVOURS = ("hiveheating",)
 
 # Package data that must ship alongside the code: the fixture, and the
 # py.typed marker the Home Assistant fork's type checking relies on.
-REQUIRED_DATA = {"apyhiveapi": ["data/data.json", "py.typed"]}
+REQUIRED_DATA = {"hiveheating": ["data/data.json", "py.typed"]}
 
 # Entry points the Home Assistant integration depends on. A build that
 # imports but has lost these is still a broken release.
-REQUIRED_ATTRS = {"apyhiveapi": ["Auth", "Hive", "HiveReauthRequired"]}
+REQUIRED_ATTRS = {"hiveheating": ["Auth", "Hive", "HiveReauthRequired"]}
+
+# Home Assistant core's requirements for every built-in integration. The
+# upstream pin is read from here so the check follows what Home Assistant
+# ships rather than a copy that goes stale.
+CORE_REQUIREMENTS_URL = (
+    "https://raw.githubusercontent.com/home-assistant/core/dev/requirements_all.txt"
+)
+UPSTREAM = "pyhive-integration"
 
 # Runs inside the throwaway venv, so it must stay stdlib-only.
 PROBE = """
@@ -96,35 +113,68 @@ def find_wheel(dist_dir: Path) -> Path:
     return wheels[0]
 
 
-def main(argv: list[str]) -> int:
-    """Install the built wheel in a clean venv and import everything in it.
-
-    Args:
-        argv: Command line arguments; ``argv[0]`` may be the dist directory.
+def upstream_requirement() -> str:
+    """Return the upstream requirement Home Assistant core pins.
 
     Returns:
-        0 when the distribution is complete and importable, 1 otherwise.
-    """
-    dist_dir = Path(argv[0] if argv else "dist")
-    wheel = find_wheel(dist_dir)
-    print(f"verifying {wheel.name}")
+        A requirement such as ``pyhive-integration==1.0.10``.
 
+    Raises:
+        SystemExit: Core's requirements could not be read or pin nothing.
+    """
+    with urllib.request.urlopen(CORE_REQUIREMENTS_URL, timeout=30) as response:
+        text = response.read().decode()
+    match = re.search(rf"^{re.escape(UPSTREAM)}==\S+$", text, re.MULTILINE)
+    if match is None:
+        raise SystemExit(
+            f"error: {UPSTREAM} is not pinned in {CORE_REQUIREMENTS_URL}; "
+            "update UPSTREAM in scripts/verify_dist.py",
+        )
+    return match.group(0)
+
+
+def pip_install(python: Path, *args: str) -> bool:
+    """Install into the venv, printing pip's output on failure.
+
+    Args:
+        python: The venv's interpreter.
+        *args: What to install.
+
+    Returns:
+        True when pip succeeded.
+    """
+    install = subprocess.run(
+        [str(python), "-m", "pip", "install", "--quiet", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if install.returncode != 0:
+        print(install.stdout + install.stderr, file=sys.stderr)
+        return False
+    return True
+
+
+def verify(wheel: Path, preinstall: str | None) -> list[str]:
+    """Install the wheel in a new venv and import everything in it.
+
+    Args:
+        wheel: The built wheel.
+        preinstall: A requirement installed before the wheel, or None.
+
+    Returns:
+        A description of each problem found; empty when there are none.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         env_dir = Path(tmp) / "venv"
         venv.create(env_dir, with_pip=True, clear=True)
         bin_dir = "Scripts" if sysconfig.get_platform().startswith("win") else "bin"
         python = env_dir / bin_dir / "python"
 
-        install = subprocess.run(
-            [str(python), "-m", "pip", "install", "--quiet", str(wheel)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if install.returncode != 0:
-            print(install.stdout + install.stderr, file=sys.stderr)
-            print("error: wheel failed to install", file=sys.stderr)
-            return 1
+        if preinstall and not pip_install(python, preinstall):
+            return [f"{preinstall} failed to install"]
+        if not pip_install(python, str(wheel)):
+            return ["wheel failed to install"]
 
         # Run from the temp dir so a sibling src/ tree cannot shadow the
         # installed package.
@@ -144,20 +194,43 @@ def main(argv: list[str]) -> int:
         )
         if probe.returncode != 0 or not probe.stdout.strip():
             print(probe.stdout + probe.stderr, file=sys.stderr)
-            print("error: verification probe crashed", file=sys.stderr)
-            return 1
+            return ["verification probe crashed"]
 
         result = json.loads(probe.stdout)
 
-    failures = result["failures"]
-    print(f"imported {result['imported']} modules")
-    if failures:
-        print(f"\nerror: {len(failures)} problem(s) in the built distribution:")
-        for failure in failures:
-            print(f"  - {failure}")
+    print(f"  imported {result['imported']} modules")
+    failures: list[str] = result["failures"]
+    return failures
+
+
+def main(argv: list[str]) -> int:
+    """Check the built wheel alone and alongside upstream.
+
+    Args:
+        argv: Command line arguments; ``argv[0]`` may be the dist directory.
+
+    Returns:
+        0 when the distribution is complete and importable, 1 otherwise.
+    """
+    dist_dir = Path(argv[0] if argv else "dist")
+    wheel = find_wheel(dist_dir)
+    upstream = upstream_requirement()
+
+    failed = False
+    for label, preinstall in (("a clean venv", None), (upstream, upstream)):
+        print(f"verifying {wheel.name} in {label}")
+        failures = verify(wheel, preinstall)
+        if failures:
+            failed = True
+            print(f"\nerror: {len(failures)} problem(s) in {label}:")
+            for failure in failures:
+                print(f"  - {failure}")
+
+    if failed:
         print(
-            "\nIf package data is missing, check `[tool.setuptools]` "
-            "in pyproject.toml.",
+            "\nIf package data is missing, check `[tool.setuptools]` in "
+            f"pyproject.toml. If only the {UPSTREAM} run fails, a package "
+            "name is shared with upstream: see its top_level.txt.",
         )
         return 1
 

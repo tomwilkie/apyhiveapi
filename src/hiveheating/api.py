@@ -1,7 +1,7 @@
 """HTTP client for the Hive API and the SSO login page.
 
 Every aiohttp error is translated here into one of the library's exceptions,
-so the rest of the package only ever sees :class:`~apyhiveapi.exceptions.HiveError`
+so the rest of the package only ever sees :class:`~hiveheating.exceptions.HiveError`
 subclasses.
 """
 
@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
-from apyhiveapi.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
+from hiveheating.exceptions import HiveApiError, HiveConnectionError, HiveReauthRequired
 
 if TYPE_CHECKING:
-    from apyhiveapi.hive import Hive
+    from hiveheating.hive import Hive
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -1,6 +1,6 @@
 """End-to-end tests over the file-mode session (use@file.com) and its fixture."""
 
-from apyhiveapi import HeatingProduct, HotWaterProduct
+from hiveheating import HeatingProduct, HotWaterProduct
 
 _HUB_ID = "hub-0000-0000-0000-000000000001"
 _THERMOSTAT_ID = "thermostatui-0000-0000-0000-000000000001"

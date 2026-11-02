@@ -2,8 +2,8 @@
 
 import pytest
 
-import apyhiveapi
-from apyhiveapi.exceptions import (
+import hiveheating
+from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
     HiveError,
@@ -45,9 +45,9 @@ class TestHierarchy:
 class TestPublicExports:
     def test_exactly_the_hive_errors_are_exported(self):
         exported = {
-            name: getattr(apyhiveapi, name)
-            for name in apyhiveapi.__all__
-            if isinstance(getattr(apyhiveapi, name), type)
-            and issubclass(getattr(apyhiveapi, name), BaseException)
+            name: getattr(hiveheating, name)
+            for name in hiveheating.__all__
+            if isinstance(getattr(hiveheating, name), type)
+            and issubclass(getattr(hiveheating, name), BaseException)
         }
         assert exported == {cls.__name__: cls for cls in (HiveError, *LEAF_EXCEPTIONS)}

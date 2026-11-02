@@ -2,7 +2,7 @@
 
 import pytest
 
-from apyhiveapi.nodes import (
+from hiveheating.nodes import (
     Device,
     HeatingProduct,
     HotWaterProduct,

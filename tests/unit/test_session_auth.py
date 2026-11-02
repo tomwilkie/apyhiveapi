@@ -7,18 +7,18 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from apyhiveapi.api import HiveApi
-from apyhiveapi.auth import HiveAuth
-from apyhiveapi.exceptions import (
+from hiveheating.api import HiveApi
+from hiveheating.auth import HiveAuth
+from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
     HiveInvalidPassword,
     HiveInvalidUsername,
     HiveReauthRequired,
 )
-from apyhiveapi.hive import REFRESH_THRESHOLD, Hive
-from apyhiveapi.models import SessionTokens
-from apyhiveapi.nodes import Device, HeatingProduct, Nodes, User, parse_nodes
+from hiveheating.hive import REFRESH_THRESHOLD, Hive
+from hiveheating.models import SessionTokens
+from hiveheating.nodes import Device, HeatingProduct, Nodes, User, parse_nodes
 
 AUTH_RESULT = {
     "AuthenticationResult": {
@@ -36,7 +36,7 @@ NEW_TOKENS = {
 OLD_TOKENS = {"token": "id-tok", "refreshToken": "rt", "accessToken": "acc-tok"}
 SMS_CHALLENGE = {"ChallengeName": HiveAuth.SMS_MFA_CHALLENGE}
 DEVICE_CHALLENGE = {"ChallengeName": HiveAuth.DEVICE_VERIFIER_CHALLENGE}
-_LOGGER_NAME = "apyhiveapi.hive"
+_LOGGER_NAME = "hiveheating.hive"
 _LAST_POLL = datetime(2024, 1, 1, tzinfo=UTC)
 _TOLERANCE = timedelta(seconds=5)
 
@@ -613,7 +613,7 @@ class TestGetNodes:
         hive = _make_hive()
         hive.config.file = True
         with patch(
-            "apyhiveapi.hive.asyncio.to_thread", new=AsyncMock(return_value=_nodes())
+            "hiveheating.hive.asyncio.to_thread", new=AsyncMock(return_value=_nodes())
         ) as to_thread:
             nodes = await hive.get_nodes()
         to_thread.assert_awaited_once_with(hive.open_file, "data.json")
