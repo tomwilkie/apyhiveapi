@@ -4,7 +4,7 @@
 
 import logging
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -14,17 +14,21 @@ from hiveheating.hive import Hive, _load_fixture
 _LOGGER_NAME = "hiveheating.hive"
 _EPOCH = datetime.min.replace(tzinfo=UTC)
 _TOKENS = {
-    "token": "id-token",
-    "accessToken": "access-token",
-    "refreshToken": "refresh-token",
+    "AuthenticationResult": {
+        "IdToken": "id-token",
+        "AccessToken": "access-token",
+        "RefreshToken": "refresh-token",
+    }
 }
 
 
 def _make_hive():
     """Return a live-mode Hive whose network calls are mocked."""
-    hive = Hive(username="user@example.com", password="pw")
-    hive.hive_refresh_tokens = AsyncMock()
-    hive.api.get_all = AsyncMock()
+    hive = Hive(MagicMock())
+    hive.auth.username = "user@example.com"
+    hive.auth.password = "pw"  # pragma: allowlist secret
+    hive._refresh_tokens = AsyncMock()
+    hive._request = AsyncMock()
     return hive
 
 
@@ -37,19 +41,6 @@ class TestLoadFixture:
         assert isinstance(nodes["products"], list)
         assert isinstance(nodes["devices"], list)
         assert nodes["user"]["temperatureUnit"] == "C"
-
-
-class TestConfigureFileMode:
-    """Tests for Hive._configure_file_mode."""
-
-    @pytest.mark.parametrize(
-        ("username", "expected"),
-        [("use@file.com", True), ("real@user.com", False), (None, False), ("", False)],
-    )
-    def test_only_the_magic_username_enables_file_mode(self, username, expected):
-        hive = Hive()
-        hive._configure_file_mode(username)
-        assert hive.config.file is expected
 
 
 class TestApplyDeviceData:
@@ -84,22 +75,19 @@ class TestNewSession:
     """Tests for Hive.new_session."""
 
     @pytest.mark.parametrize(
-        ("ctor_username", "config"),
+        "config",
         [
-            pytest.param("use@file.com", {}, id="constructor-empty-config"),
-            pytest.param("use@file.com", None, id="constructor-no-config"),
-            pytest.param(None, {"username": "use@file.com"}, id="config-username"),
+            pytest.param({"username": "use@file.com"}, id="username-only"),
             pytest.param(
-                "use@file.com",
                 {"username": "use@file.com", "device_data": []},
-                id="config-username-empty-device-data",
+                id="empty-device-data",
             ),
         ],
     )
-    def test_file_mode_needs_no_tokens(self, ctor_username, config):
-        hive = Hive(username=ctor_username, password="")
+    def test_file_mode_needs_no_tokens(self, config):
+        hive = Hive(MagicMock())
         hive.new_session(config)
-        assert hive.config.file is True
+        assert hive._file is True
         assert hive.tokens.token_data == {}
         assert hive.auth.device_key is None
 
@@ -130,7 +118,10 @@ class TestNewSession:
     def test_tokens_only_config_stores_tokens_and_keeps_credentials(self):
         hive = _make_hive()
         hive.new_session({"tokens": _TOKENS})
-        assert hive.tokens.token_data == _TOKENS
+        assert hive.tokens.token_data == {
+            "token": "id-token",
+            "refreshToken": "refresh-token",
+        }
         assert hive.tokens.token_created == _EPOCH
         assert hive.auth.username == "user@example.com"
         assert hive.auth.password == "pw"
@@ -153,8 +144,8 @@ class TestNewSession:
         assert hive.auth.device_group_key == "group"
         assert hive.auth.device_key == "key"
         assert hive.auth.device_password == "password"  # pragma: allowlist secret
-        hive.hive_refresh_tokens.assert_not_awaited()
-        hive.api.get_all.assert_not_awaited()
+        hive._refresh_tokens.assert_not_awaited()
+        hive._request.assert_not_awaited()
 
     def test_debug_log_shows_no_part_of_the_credentials(self, caplog):
         hive = _make_hive()
@@ -163,9 +154,11 @@ class TestNewSession:
             "password": "PWHEADxxxxPWTAIL",  # pragma: allowlist secret
             "device_data": ["GKHEADxxxxGKTAIL", "DKHEADxxxxDKTAIL", "DPHEADxxxxDPTAIL"],
             "tokens": {
-                "token": "IDHEADxxxxxxxxxxIDTAIL",
-                "refreshToken": "RFHEADxxxxxxxxxxRFTAIL",
-                "accessToken": "ACHEADxxxxxxxxxxACTAIL",
+                "AuthenticationResult": {
+                    "IdToken": "IDHEADxxxxxxxxxxIDTAIL",
+                    "RefreshToken": "RFHEADxxxxxxxxxxRFTAIL",
+                    "AccessToken": "ACHEADxxxxxxxxxxACTAIL",
+                }
             },
         }
         with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):

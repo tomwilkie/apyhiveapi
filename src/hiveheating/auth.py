@@ -19,12 +19,12 @@ import logging
 import os
 import re
 import socket
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import boto3
 import botocore.exceptions
-from aiohttp import ClientSession
 from botocore.config import Config
 
 from hiveheating.api import _fetch
@@ -41,28 +41,29 @@ from hiveheating.srp import (
     BIG_N,
     G,
     K,
-    calculate_a,
     calculate_u,
     compute_hkdf,
-    generate_small_a,
     get_random,
     hash_sha256,
     hex_hash,
     hex_to_long,
     long_to_hex,
+    new_ephemeral,
     pad_hex,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from aiohttp import ClientSession
+
 _LOGGER = logging.getLogger(__name__)
 
 # The ChallengeName of a login that needs the user's SMS code.
 SMS_REQUIRED = "SMS_MFA"
 
-# The username that switches to the bundled fixture instead of Hive.
-FILE_USERNAME = "use@file.com"
+# The ChallengeName Cognito answers a trusted device's login with.
+DEVICE_VERIFIER_CHALLENGE = "DEVICE_SRP_AUTH"
 
 # Cognito error codes and the exception each one becomes.
 type CodeMap = Mapping[str, type[HiveError]]
@@ -87,11 +88,6 @@ _SSO_URL = "https://sso.hivehome.com/"
 # the closing quote to match).
 _FIRST_SCRIPT = re.compile(r"<script[^>]*>(.*?)</script>", re.DOTALL | re.IGNORECASE)
 _SSO_ASSIGNMENT = re.compile(r"""window\.(\w+)\s*=\s*(["'])(.*?)\2""")
-_SSO_KEYS = {
-    "UPID": "HiveSSOPoolId",
-    "CLIID": "HiveSSOPublicCognitoClientId",
-    "REGION": "HiveSSOPoolId",
-}
 
 # Cognito error codes that mean the saved device is no longer trusted.
 _DEVICE_REJECTED: CodeMap = {
@@ -100,43 +96,85 @@ _DEVICE_REJECTED: CodeMap = {
 }
 
 
-async def get_login_info(websession: ClientSession | None = None) -> dict[str, str]:
-    """Fetch the Cognito pool details embedded in the Hive SSO login page.
+@dataclass(frozen=True)
+class LoginResult:
+    """Cognito's answer to a login, an SMS code or a token refresh.
+
+    ``response`` is Cognito's response as it came, which is what a config
+    entry saves as its ``tokens``.
+    """
+
+    response: dict[str, Any]
+
+    @property
+    def challenge(self) -> str | None:
+        """The challenge Cognito asked for, if any."""
+        challenge = self.response.get("ChallengeName")
+        return challenge if isinstance(challenge, str) else None
+
+    @property
+    def complete(self) -> bool:
+        """Whether Cognito issued tokens."""
+        return bool(self.response.get("AuthenticationResult"))
+
+    @property
+    def sms_required(self) -> bool:
+        """Whether Cognito wants the SMS code it sent: pass this to ``sms_2fa``."""
+        return self.challenge == SMS_REQUIRED
+
+    @property
+    def device_challenge(self) -> bool:
+        """Whether Cognito wants the saved device to finish the login."""
+        return self.challenge == DEVICE_VERIFIER_CHALLENGE
+
+    @property
+    def new_device(self) -> bool:
+        """Whether Cognito issued new device keys, to register as a trusted device."""
+        tokens = self.response.get("AuthenticationResult") or {}
+        return bool(tokens.get("NewDeviceMetadata"))
+
+
+def _srp_key(
+    ephemeral: tuple[int, int],
+    identity: str,
+    secret: str,
+    server_b_value: str,
+    salt: str,
+) -> bytes:
+    """Derive the SRP session key for *identity* and its *secret*.
+
+    *identity* is the pool name plus user ID for a password login, or the
+    device group key plus device key for a device login.
 
     Args:
-        websession: aiohttp session to use. A short-lived one is created when
-            none is given.
+        ephemeral: The handshake's client ephemeral ``(a, A)``.
+        identity: Who is authenticating, as Cognito expects it.
+        secret: The password or device password.
+        server_b_value: Cognito's ``SRP_B`` value, a hex string.
+        salt: Cognito's ``SALT`` value.
 
     Returns:
-        ``UPID``, ``CLIID`` and ``REGION``.
-
-    Raises:
-        HiveConnectionError: The page could not be fetched.
-        HiveApiError: The page does not contain the Cognito details.
+        The HKDF key that signs the challenge response.
     """
-    if websession is None:
-        async with ClientSession() as own_session:
-            page = await _fetch(own_session, "get", _SSO_URL)
-    else:
-        page = await _fetch(websession, "get", _SSO_URL)
-    script = _FIRST_SCRIPT.search(page)
-    values = {
-        key: value
-        for key, _quote, value in _SSO_ASSIGNMENT.findall(
-            script.group(1) if script else ""
-        )
-    }
-    try:
-        return {name: values[source] for name, source in _SSO_KEYS.items()}
-    except KeyError as err:
-        raise HiveApiError(f"The Hive login page did not include {err}") from err
+    small_a, large_a = ephemeral
+    server_b = hex_to_long(server_b_value)
+    u_value = calculate_u(large_a, server_b)
+    if u_value == 0:
+        raise ValueError("U cannot be zero")
+    identity_hash = hash_sha256(f"{identity}:{secret}".encode())
+    x_value = hex_to_long(hex_hash(pad_hex(salt) + identity_hash))
+    base = (server_b - K * pow(G, x_value, BIG_N)) % BIG_N
+    s_value = pow(base, small_a + u_value * x_value, BIG_N)
+    return compute_hkdf(
+        bytearray.fromhex(pad_hex(s_value)),
+        bytearray.fromhex(pad_hex(long_to_hex(u_value))),
+    )
 
 
 class HiveAuth:
     """Log in to a Hive account through AWS Cognito and manage trusted devices."""
 
     PASSWORD_VERIFIER_CHALLENGE = "PASSWORD_VERIFIER"  # noqa: S105 - challenge name
-    DEVICE_VERIFIER_CHALLENGE = "DEVICE_SRP_AUTH"
     DEVICE_PASSWORD_CHALLENGE = "DEVICE_PASSWORD_VERIFIER"  # noqa: S105 - challenge name
 
     def __init__(  # noqa: PLR0913 - one argument per saved credential
@@ -147,7 +185,7 @@ class HiveAuth:
         device_key: str | None = None,
         device_password: str | None = None,
         *,
-        websession: ClientSession | None = None,
+        websession: ClientSession,
     ) -> None:
         """Set up the auth state.
 
@@ -157,8 +195,7 @@ class HiveAuth:
             device_group_key: Saved trusted-device group key, if any.
             device_key: Saved trusted-device key, if any.
             device_password: Saved trusted-device password, if any.
-            websession: aiohttp session for reading the Hive login page. A
-                short-lived one is created when none is given.
+            websession: aiohttp session for reading the Hive login page.
         """
         self.username = username
         self.password = password
@@ -168,29 +205,39 @@ class HiveAuth:
         self.access_token: str | None = None
         # Cognito's own ID for the user, learnt from the PASSWORD_VERIFIER challenge.
         self.user_id = username
-        self.small_a_value: int = generate_small_a()
-        self.large_a_value: int = calculate_a(self.small_a_value)
-        self.use_file = self.username == FILE_USERNAME
-        self.file_response: dict[str, Any] = {
-            "AuthenticationResult": {"AccessToken": "file"}
-        }
         self._websession = websession
-        # Set by async_init once the SSO login page has been read.
-        self._pool_id: str | None = None
+        # Set by _ensure_client once the SSO login page has been read.
+        self._pool_name: str | None = None
         self._client_id: str | None = None
         self.client: Any = None
 
-    async def async_init(self) -> None:
-        """Read the Cognito pool details from the Hive login page and create the client.
+    async def _ensure_client(self) -> None:
+        """Create the Cognito client on first use.
+
+        The pool details come from Hive's SSO login page.
 
         Raises:
             HiveConnectionError: The login page could not be fetched.
             HiveApiError: The page did not include the Cognito details.
         """
-        info = await get_login_info(self._websession)
-        self._pool_id = info["UPID"]
-        self._client_id = info["CLIID"]
-        region = info["REGION"].split("_")[0]
+        if self.client is not None:
+            return
+        page = await _fetch(self._websession, "get", _SSO_URL)
+        script = _FIRST_SCRIPT.search(page)
+        values = {
+            key: value
+            for key, _quote, value in _SSO_ASSIGNMENT.findall(
+                script.group(1) if script else ""
+            )
+        }
+        try:
+            pool_id = values["HiveSSOPoolId"]
+            client_id = values["HiveSSOPublicCognitoClientId"]
+        except KeyError as err:
+            raise HiveApiError(f"The Hive login page did not include {err}") from err
+        region, _, pool_name = pool_id.partition("_")
+        if not pool_name:
+            raise HiveApiError(f"Unexpected Cognito pool ID: {pool_id!r}")
         # Cognito USER_SRP_AUTH does not use IAM credentials, but boto3 requires
         # non-None values, so these placeholders are deliberate.
         self.client = await asyncio.get_running_loop().run_in_executor(
@@ -205,11 +252,8 @@ class HiveAuth:
                 config=_COGNITO_CONFIG,
             ),
         )
-
-    async def _ensure_client(self) -> None:
-        """Create the Cognito client on first use."""
-        if self.client is None:
-            await self.async_init()
+        self._pool_name = pool_name
+        self._client_id = client_id
 
     async def _cognito(
         self, method: str, code_map: CodeMap | None = None, **kwargs: object
@@ -251,13 +295,13 @@ class HiveAuth:
 
     # --- Login flows -------------------------------------------------------
 
-    async def login(self) -> dict[str, Any]:
+    async def login(self) -> LoginResult:
         """Log in with the username and password.
 
         Returns:
-            Cognito's response: an ``AuthenticationResult`` with the tokens, or
-            a challenge for the caller to complete (``SMS_MFA`` through
-            :meth:`sms_2fa`, ``DEVICE_SRP_AUTH`` through :meth:`device_login`).
+            Cognito's answer: the tokens, or a challenge for the caller to
+            complete (``sms_required`` through :meth:`sms_2fa`,
+            ``device_challenge`` through :meth:`device_login`).
 
         Raises:
             HiveInvalidUsername: Hive does not know the username.
@@ -266,21 +310,27 @@ class HiveAuth:
             HiveApiError: Cognito asked for a challenge this library cannot answer.
             HiveConnectionError: Cognito or the login page could not be reached.
         """
-        if self.use_file:
-            return self.file_response
         await self._ensure_client()
-        self._new_srp_ephemeral()
+        ephemeral = new_ephemeral()
         response = await self._cognito(
             "initiate_auth",
             {"UserNotFoundException": HiveInvalidUsername},
             AuthFlow="USER_SRP_AUTH",
-            AuthParameters=self._auth_params(),
+            AuthParameters=self._auth_params(ephemeral),
             ClientId=self._client_id,
         )
         challenge = response.get("ChallengeName")
         if challenge != self.PASSWORD_VERIFIER_CHALLENGE:
             raise HiveApiError(f"Unsupported Cognito challenge: {challenge}")
-        answer = await self._answer_password_challenge(response["ChallengeParameters"])
+        parameters = response["ChallengeParameters"]
+        self.user_id = parameters["USER_ID_FOR_SRP"]
+        answer = await self._answer_srp_challenge(
+            parameters,
+            ephemeral,
+            identity=f"{self._pool_name}{self.user_id}",
+            secret=self.password,
+            username=self.user_id,
+        )
         result = await self._cognito(
             "respond_to_auth_challenge",
             {
@@ -292,15 +342,13 @@ class HiveAuth:
             ChallengeName=self.PASSWORD_VERIFIER_CHALLENGE,
             ChallengeResponses=answer,
         )
-        if "AuthenticationResult" in result:
-            self._store_auth_result(result)
-        return result
+        return self._login_result(result)
 
-    async def device_login(self) -> dict[str, Any]:
+    async def device_login(self) -> LoginResult:
         """Answer the ``DEVICE_SRP_AUTH`` challenge with the saved device credentials.
 
         Returns:
-            Cognito's response, normally an ``AuthenticationResult`` with the tokens.
+            Cognito's answer, normally the tokens.
 
         Raises:
             HiveReauthRequired: No device credentials are saved, or Cognito no
@@ -308,17 +356,28 @@ class HiveAuth:
             HiveConnectionError: Cognito could not be reached.
             HiveApiError: Cognito refused the call for another reason.
         """
-        _group_key, device_key, _device_password = self._device_credentials()
+        group_key = self.device_group_key
+        device_key = self.device_key
+        device_password = self.device_password
+        if not (group_key and device_key and device_password):
+            raise HiveReauthRequired("There are no saved device credentials")
         await self._ensure_client()
-        self._new_srp_ephemeral()
+        ephemeral = new_ephemeral()
         challenge = await self._cognito(
             "respond_to_auth_challenge",
             _DEVICE_REJECTED,
             ClientId=self._client_id,
-            ChallengeName=self.DEVICE_VERIFIER_CHALLENGE,
-            ChallengeResponses=self._auth_params(device_key),
+            ChallengeName=DEVICE_VERIFIER_CHALLENGE,
+            ChallengeResponses=self._auth_params(ephemeral, device_key),
         )
-        answer = await self._answer_device_challenge(challenge["ChallengeParameters"])
+        parameters = challenge["ChallengeParameters"]
+        answer = await self._answer_srp_challenge(
+            parameters,
+            ephemeral,
+            identity=f"{group_key}{device_key}",
+            secret=device_password,
+            username=parameters["USERNAME"],
+        )
         result = await self._cognito(
             "respond_to_auth_challenge",
             _DEVICE_REJECTED,
@@ -326,13 +385,11 @@ class HiveAuth:
             ChallengeName=self.DEVICE_PASSWORD_CHALLENGE,
             ChallengeResponses=answer,
         )
-        if "AuthenticationResult" in result:
-            self._store_auth_result(result)
-        return result
+        return self._login_result(result)
 
     async def sms_2fa(
-        self, entered_code: str | int, challenge: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, entered_code: str | int, challenge: LoginResult
+    ) -> LoginResult:
         """Answer the ``SMS_MFA`` challenge from :meth:`login` with the user's code.
 
         Raises:
@@ -341,7 +398,7 @@ class HiveAuth:
             HiveConnectionError: Cognito could not be reached.
             HiveApiError: Cognito refused the call for another reason.
         """
-        session = challenge.get("Session")
+        session = challenge.response.get("Session")
         if not session:
             raise ValueError("The challenge has no Session: pass the result of login()")
         await self._ensure_client()
@@ -360,11 +417,9 @@ class HiveAuth:
                 "USERNAME": self.user_id,
             },
         )
-        if "AuthenticationResult" in result:
-            self._store_auth_result(result)
-        return result
+        return self._login_result(result)
 
-    async def refresh_token(self, token: str | None) -> dict[str, Any]:
+    async def refresh_token(self, token: str | None) -> LoginResult:
         """Exchange the refresh token for new ID and access tokens.
 
         Raises:
@@ -388,31 +443,31 @@ class HiveAuth:
             AuthFlow="REFRESH_TOKEN_AUTH",
             AuthParameters=params,
         )
-        if "AuthenticationResult" in result:
-            self._store_auth_result(result)
-        return result
+        return self._login_result(result)
 
-    def _store_auth_result(self, result: dict[str, Any]) -> None:
-        """Keep the access token and new device keys from an AuthenticationResult."""
-        auth_result = result["AuthenticationResult"]
+    def _login_result(self, response: dict[str, Any]) -> LoginResult:
+        """Keep the access token and any new device keys from Cognito's answer."""
+        result = LoginResult(response)
+        if not result.complete:
+            return result
+        auth_result = response["AuthenticationResult"]
         self.access_token = auth_result["AccessToken"]
         if "NewDeviceMetadata" in auth_result:
             self.device_group_key = auth_result["NewDeviceMetadata"]["DeviceGroupKey"]
             self.device_key = auth_result["NewDeviceMetadata"]["DeviceKey"]
             _LOGGER.debug("Cognito issued new device keys")
+        return result
 
     # --- Trusted devices ---------------------------------------------------
 
     async def device_registration(self, device_name: str | None = None) -> None:
-        """Register this machine as a trusted device so later logins skip the SMS."""
-        await self.confirm_device(device_name)
-        await self.update_device_status()
+        """Register this machine as a trusted device so later logins skip the SMS.
 
-    async def confirm_device(self, device_name: str | None = None) -> dict[str, Any]:
-        """Confirm the device with Cognito as *device_name*, the hostname by default.
-
-        On success ``device_password`` holds the new password the device will
-        log in with; a failed confirmation leaves the saved credentials alone.
+        Confirms the device with Cognito as *device_name*, the hostname by
+        default, then marks it as remembered. Once Cognito accepts the
+        confirmation, ``device_password`` holds the new password the device
+        will log in with; a failed confirmation leaves the saved credentials
+        alone.
 
         Raises:
             HiveApiError: The login issued no device keys, or Cognito refused.
@@ -423,24 +478,34 @@ class HiveAuth:
         if not (group_key and device_key):
             raise HiveApiError("Cognito issued no device keys to register")
         await self._ensure_client()
-        verifier, device_password = self._device_verifier(group_key, device_key)
-        result = await self._cognito(
+        # The verifier proves a new device password without sending it. Source:
+        # amazon-cognito-identity-js AuthenticationHelper.generateHashDevice.
+        device_password = base64.standard_b64encode(os.urandom(40)).decode("utf-8")
+        combined_hash = hash_sha256(
+            f"{group_key}{device_key}:{device_password}".encode()
+        )
+        salt = pad_hex(get_random(16))
+        x_value = hex_to_long(hex_hash(salt + combined_hash))
+        verifier = pad_hex(pow(G, x_value, BIG_N))
+        await self._cognito(
             "confirm_device",
             AccessToken=self.access_token,
             DeviceKey=device_key,
             DeviceName=device_name or socket.gethostname(),
-            DeviceSecretVerifierConfig=verifier,
+            DeviceSecretVerifierConfig={
+                "PasswordVerifier": base64.standard_b64encode(
+                    bytearray.fromhex(verifier)
+                ).decode("utf-8"),
+                "Salt": base64.standard_b64encode(bytearray.fromhex(salt)).decode(
+                    "utf-8"
+                ),
+            },
         )
         self.device_password = device_password
-        return result
-
-    async def update_device_status(self) -> dict[str, Any]:
-        """Mark the device as remembered so Cognito trusts it."""
-        await self._ensure_client()
-        return await self._cognito(
+        await self._cognito(
             "update_device_status",
             AccessToken=self.access_token,
-            DeviceKey=self.device_key,
+            DeviceKey=device_key,
             DeviceRememberedStatus="remembered",
         )
 
@@ -453,21 +518,15 @@ class HiveAuth:
         """
         return (self.device_group_key, self.device_key, self.device_password)
 
-    async def is_device_registered(
-        self, access_token: str | None = None, device_key: str | None = None
-    ) -> bool:
-        """Return whether Cognito knows the device and remembers it.
-
-        Args:
-            access_token: Access token. Defaults to ``self.access_token``.
-            device_key: Device key. Defaults to ``self.device_key``.
+    async def is_device_registered(self) -> bool:
+        """Return whether Cognito knows this device and remembers it.
 
         Raises:
             HiveConnectionError: Cognito or the login page could not be reached.
             HiveApiError: The login page did not include the Cognito details.
         """
-        token = access_token or self.access_token
-        key = device_key or self.device_key
+        token = self.access_token
+        key = self.device_key
         if not token or not key:
             return False
         await self._ensure_client()
@@ -490,26 +549,7 @@ class HiveAuth:
             "forget_device", AccessToken=access_token, DeviceKey=device_key
         )
 
-    def _device_credentials(self) -> tuple[str, str, str]:
-        """Return the saved device credentials.
-
-        Raises:
-            HiveReauthRequired: Any of them is missing.
-        """
-        group_key = self.device_group_key
-        device_key = self.device_key
-        device_password = self.device_password
-        if not (group_key and device_key and device_password):
-            raise HiveReauthRequired("There are no saved device credentials")
-        return group_key, device_key, device_password
-
     # --- SRP ---------------------------------------------------------------
-
-    def _pool_name(self) -> str:
-        """Return the Cognito user-pool name (the pool ID without its region)."""
-        if not self._pool_id or "_" not in self._pool_id:
-            raise HiveApiError(f"Unexpected Cognito pool ID: {self._pool_id!r}")
-        return self._pool_id.split("_")[1]
 
     @staticmethod
     def _cognito_timestamp() -> str:
@@ -521,55 +561,19 @@ class HiveAuth:
             datetime.now(UTC).strftime("%a %b %d %H:%M:%S UTC %Y"),
         )
 
-    def _new_srp_ephemeral(self) -> None:
-        """Generate a fresh SRP client ephemeral (a, A) pair.
-
-        SRP ephemerals must not be reused across handshakes, so this is
-        called at the start of every authentication attempt.
-        """
-        self.small_a_value = generate_small_a()
-        self.large_a_value = calculate_a(self.small_a_value)
-
-    def _auth_params(self, device_key: str | None = None) -> dict[str, str]:
+    def _auth_params(
+        self, ephemeral: tuple[int, int], device_key: str | None = None
+    ) -> dict[str, str]:
         """Return the parameters that start an SRP handshake."""
-        params = {"USERNAME": self.username, "SRP_A": long_to_hex(self.large_a_value)}
+        params = {"USERNAME": self.username, "SRP_A": long_to_hex(ephemeral[1])}
         if device_key is not None:
             params["DEVICE_KEY"] = device_key
         return params
 
-    def _srp_key(
-        self, identity: str, secret: str, server_b_value: str, salt: str
-    ) -> bytes:
-        """Derive the SRP session key for *identity* and its *secret*.
-
-        *identity* is the pool name plus user ID for a password login, or the
-        device group key plus device key for a device login.
-
-        Args:
-            identity: Who is authenticating, as Cognito expects it.
-            secret: The password or device password.
-            server_b_value: Cognito's ``SRP_B`` value, a hex string.
-            salt: Cognito's ``SALT`` value.
-
-        Returns:
-            The HKDF key that signs the challenge response.
-        """
-        server_b = hex_to_long(server_b_value)
-        u_value = calculate_u(self.large_a_value, server_b)
-        if u_value == 0:
-            raise ValueError("U cannot be zero")
-        identity_hash = hash_sha256(f"{identity}:{secret}".encode())
-        x_value = hex_to_long(hex_hash(pad_hex(salt) + identity_hash))
-        base = (server_b - K * pow(G, x_value, BIG_N)) % BIG_N
-        s_value = pow(base, self.small_a_value + u_value * x_value, BIG_N)
-        return compute_hkdf(
-            bytearray.fromhex(pad_hex(s_value)),
-            bytearray.fromhex(pad_hex(long_to_hex(u_value))),
-        )
-
     async def _answer_srp_challenge(
         self,
         challenge_parameters: dict[str, Any],
+        ephemeral: tuple[int, int],
         *,
         identity: str,
         secret: str,
@@ -580,7 +584,13 @@ class HiveAuth:
         secret_block = challenge_parameters["SECRET_BLOCK"]
         timestamp = self._cognito_timestamp()
         key = await asyncio.get_running_loop().run_in_executor(
-            None, self._srp_key, identity, secret, challenge_parameters["SRP_B"], salt
+            None,
+            _srp_key,
+            ephemeral,
+            identity,
+            secret,
+            challenge_parameters["SRP_B"],
+            salt,
         )
         message = (
             identity.encode()
@@ -597,53 +607,3 @@ class HiveAuth:
         if self.device_key is not None:
             response["DEVICE_KEY"] = self.device_key
         return response
-
-    async def _answer_password_challenge(
-        self, challenge_parameters: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Answer the ``PASSWORD_VERIFIER`` challenge."""
-        self.user_id = challenge_parameters["USER_ID_FOR_SRP"]
-        return await self._answer_srp_challenge(
-            challenge_parameters,
-            identity=f"{self._pool_name()}{self.user_id}",
-            secret=self.password,
-            username=self.user_id,
-        )
-
-    async def _answer_device_challenge(
-        self, challenge_parameters: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Answer the ``DEVICE_PASSWORD_VERIFIER`` challenge."""
-        group_key, device_key, device_password = self._device_credentials()
-        return await self._answer_srp_challenge(
-            challenge_parameters,
-            identity=f"{group_key}{device_key}",
-            secret=device_password,
-            username=challenge_parameters["USERNAME"],
-        )
-
-    def _device_verifier(
-        self, device_group_key: str, device_key: str
-    ) -> tuple[dict[str, str], str]:
-        """Generate the verifier that registers this device with Cognito.
-
-        Returns:
-            The ``DeviceSecretVerifierConfig`` to send, and the new device
-            password it proves. The password is only worth keeping once
-            Cognito has accepted the verifier.
-        """
-        # Source: amazon-cognito-identity-js AuthenticationHelper.generateHashDevice.
-        device_password = base64.standard_b64encode(os.urandom(40)).decode("utf-8")
-        combined_hash = hash_sha256(
-            f"{device_group_key}{device_key}:{device_password}".encode()
-        )
-        salt = pad_hex(get_random(16))
-        x_value = hex_to_long(hex_hash(salt + combined_hash))
-        verifier = pad_hex(pow(G, x_value, BIG_N))
-        config = {
-            "PasswordVerifier": base64.standard_b64encode(
-                bytearray.fromhex(verifier)
-            ).decode("utf-8"),
-            "Salt": base64.standard_b64encode(bytearray.fromhex(salt)).decode("utf-8"),
-        }
-        return config, device_password

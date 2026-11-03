@@ -103,3 +103,13 @@ def calculate_a(small_a: int) -> int:
     if (big_a % BIG_N) == 0:
         raise ValueError("Safety check for A failed")
     return big_a
+
+
+def new_ephemeral() -> tuple[int, int]:
+    """Return a fresh SRP client ephemeral ``(a, A)``.
+
+    SRP ephemerals must not be reused across handshakes, so every
+    authentication attempt makes a new one.
+    """
+    small_a = generate_small_a()
+    return small_a, calculate_a(small_a)

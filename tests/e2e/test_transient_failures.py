@@ -20,7 +20,7 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, web
 from aiohttp.test_utils import TestServer
 
-from hiveheating import Hive
+from hiveheating import Hive, LoginResult
 from hiveheating.exceptions import HiveConnectionError
 from hiveheating.nodes import parse_nodes
 
@@ -128,7 +128,6 @@ async def fake_hive(monkeypatch):
     await server.server.start_server()
     base = str(server.server.make_url("/1.0"))
     monkeypatch.setattr("hiveheating.api._BASE_URL", base)
-    monkeypatch.setattr("hiveheating.api._ALL_NODES_URL", f"{base}/nodes/all")
     monkeypatch.setattr("hiveheating.api._TIMEOUT", _TEST_TIMEOUT)
     yield server
     await server.close()
@@ -149,13 +148,18 @@ def session(websession):
     login does nothing.
     """
     hive = Hive(websession)
-    hive.auth.refresh_token = AsyncMock(return_value=_COGNITO_RESULT)
-    hive.login = AsyncMock()
+    hive.auth.refresh_token = AsyncMock(return_value=LoginResult(_COGNITO_RESULT))
+    hive._login = AsyncMock()
     hive.new_session(
         {
             "username": "user@example.com",
             "password": "password",  # pragma: allowlist secret
-            "tokens": {"token": "id-token", "refreshToken": "refresh-token"},
+            "tokens": {
+                "AuthenticationResult": {
+                    "IdToken": "id-token",
+                    "RefreshToken": "refresh-token",
+                }
+            },
         }
     )
     return hive
@@ -177,7 +181,7 @@ class TestPollFailures:
         fake_hive.poll_outcomes = list(fault)
         with pytest.raises(HiveConnectionError):
             await session.get_nodes()
-        session.login.assert_not_awaited()
+        session._login.assert_not_awaited()
         fake_hive.set_temperature(_HEATING_ID, 23.5)
         assert _temperature(await session.get_nodes()) == 23.5
         session.auth.refresh_token.assert_awaited_once()
@@ -186,7 +190,7 @@ class TestPollFailures:
         fake_hive.poll_outcomes = ["forbidden"]
         with pytest.raises(HiveConnectionError, match=r"\(ForbiddenException\)"):
             await session.get_nodes()
-        session.login.assert_not_awaited()
+        session._login.assert_not_awaited()
 
     async def test_a_hung_request_gives_up_at_the_timeout(self, session, fake_hive):
         fake_hive.poll_outcomes = ["timeout"]
@@ -201,14 +205,14 @@ class TestPollFailures:
     ):
         session.auth.refresh_token.side_effect = [
             HiveConnectionError("Cognito timed out"),
-            _COGNITO_RESULT,
+            LoginResult(_COGNITO_RESULT),
         ]
         with pytest.raises(HiveConnectionError, match="Cognito timed out"):
             await session.get_nodes()
         assert fake_hive.polls == 0
         await session.get_nodes()
         assert fake_hive.polls == 1
-        session.login.assert_not_awaited()
+        session._login.assert_not_awaited()
 
 
 class TestDroppedConnection:
@@ -239,7 +243,7 @@ class TestCommandFailures:
         with pytest.raises(HiveConnectionError):
             await session.set_target_temperature(_PRODUCTS[_HEATING_ID], 21.0)
         assert fake_hive.polls == 0
-        session.login.assert_not_awaited()
+        session._login.assert_not_awaited()
 
     async def test_a_blocked_command_raises_without_logging_in(
         self, session, fake_hive
@@ -251,10 +255,10 @@ class TestCommandFailures:
         ):
             await session.set_mode(_PRODUCTS[_HOTWATER_ID], "MANUAL")
         assert fake_hive.commands == [{"mode": "MANUAL"}]
-        session.login.assert_not_awaited()
+        session._login.assert_not_awaited()
 
     async def test_a_rejected_token_logs_in_once_and_resends(self, session, fake_hive):
         fake_hive.command_outcomes = ["unauthorized"]
         await session.set_mode(_PRODUCTS[_HOTWATER_ID], "MANUAL")
-        session.login.assert_awaited_once()
+        session._login.assert_awaited_once()
         assert fake_hive.commands == [{"mode": "MANUAL"}, {"mode": "MANUAL"}]

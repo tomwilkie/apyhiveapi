@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from hiveheating.auth import SMS_REQUIRED, HiveAuth
+from hiveheating.auth import DEVICE_VERIFIER_CHALLENGE, SMS_REQUIRED, LoginResult
 from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
@@ -17,7 +17,7 @@ from hiveheating.exceptions import (
 from hiveheating.hive import _REFRESH_THRESHOLD, Hive, _load_fixture
 from hiveheating.nodes import Device, HeatingProduct, Nodes, User, parse_nodes
 
-AUTH_RESULT = {
+AUTH_RESPONSE = {
     "AuthenticationResult": {
         "IdToken": "id-token-0001",
         "AccessToken": "access-token-0001",
@@ -25,14 +25,11 @@ AUTH_RESULT = {
         "ExpiresIn": 3600,
     }
 }
-NEW_TOKENS = {
-    "token": "id-token-0001",
-    "refreshToken": "refresh-token-0001",
-    "accessToken": "access-token-0001",
-}
-OLD_TOKENS = {"token": "id-tok", "refreshToken": "rt", "accessToken": "acc-tok"}
-SMS_CHALLENGE = {"ChallengeName": SMS_REQUIRED}
-DEVICE_CHALLENGE = {"ChallengeName": HiveAuth.DEVICE_VERIFIER_CHALLENGE}
+NEW_TOKENS = {"token": "id-token-0001", "refreshToken": "refresh-token-0001"}
+OLD_TOKENS = {"token": "id-tok", "refreshToken": "rt"}
+AUTH_RESULT = LoginResult(AUTH_RESPONSE)
+SMS_CHALLENGE = LoginResult({"ChallengeName": SMS_REQUIRED})
+DEVICE_CHALLENGE = LoginResult({"ChallengeName": DEVICE_VERIFIER_CHALLENGE})
 _LOGGER_NAME = "hiveheating.hive"
 _LAST_POLL = datetime(2024, 1, 1, tzinfo=UTC)
 _TOLERANCE = timedelta(seconds=5)
@@ -49,12 +46,11 @@ def _nodes():
 
 def _make_hive():
     """Return a Hive with fresh tokens whose Cognito and API calls are mocked."""
-    hive = Hive(username="user@example.com", password="pw")
+    hive = Hive(MagicMock())
     hive.auth.login = AsyncMock()
     hive.auth.device_login = AsyncMock()
     hive.auth.refresh_token = AsyncMock()
-    hive.api.get_all = AsyncMock(return_value=_nodes())
-    hive.api.set_state = AsyncMock()
+    hive._request = AsyncMock(return_value=_nodes())
     hive.tokens.token_data = dict(OLD_TOKENS)
     hive.tokens.token_created = datetime.now(UTC)
     return hive
@@ -71,10 +67,10 @@ def _is_about(moment, expected):
 
 
 class TestInit:
-    def test_passes_the_websession_to_auth_and_api(self):
+    def test_passes_the_websession_to_auth_and_requests(self):
         websession = MagicMock()
-        hive = Hive(websession, username="user@example.com", password="pw")
-        assert hive.api.websession is websession
+        hive = Hive(websession)
+        assert hive.websession is websession
         assert hive.auth._websession is websession
 
 
@@ -83,7 +79,7 @@ class TestUpdateTokens:
         hive = _make_hive()
         hive.tokens.token_created = _LAST_POLL
         hive.tokens.token_expiry = timedelta(seconds=900)
-        hive.update_tokens(AUTH_RESULT)
+        hive.update_tokens(AUTH_RESPONSE)
         assert hive.tokens.token_data == NEW_TOKENS
         assert hive.tokens.token_expiry == timedelta(seconds=3600)
         assert hive.tokens.token_created.tzinfo is UTC
@@ -92,25 +88,14 @@ class TestUpdateTokens:
     def test_update_expiry_time_false_leaves_token_created(self):
         hive = _make_hive()
         hive.tokens.token_created = _LAST_POLL
-        hive.update_tokens(AUTH_RESULT, update_expiry_time=False)
+        hive.update_tokens(AUTH_RESPONSE, update_expiry_time=False)
         assert hive.tokens.token_created == _LAST_POLL
         assert hive.tokens.token_data == NEW_TOKENS
 
-    @pytest.mark.parametrize(
-        ("tokens", "expected_token"),
-        [
-            pytest.param(
-                {"AuthenticationResult": {"IdToken": "new-id"}},
-                "new-id",
-                id="cognito-result",
-            ),
-            pytest.param({"token": "t-only"}, "t-only", id="flat-dict"),
-        ],
-    )
-    def test_missing_keys_are_not_written(self, tokens, expected_token):
+    def test_missing_keys_are_not_written(self):
         hive = _make_hive()
-        hive.update_tokens(tokens)
-        assert hive.tokens.token_data == {**OLD_TOKENS, "token": expected_token}
+        hive.update_tokens({"AuthenticationResult": {"IdToken": "new-id"}})
+        assert hive.tokens.token_data == {**OLD_TOKENS, "token": "new-id"}
         assert hive.tokens.token_expiry == timedelta(seconds=3600)
 
     @pytest.mark.parametrize(
@@ -133,15 +118,6 @@ class TestUpdateTokens:
         assert hive.tokens.token_created == _LAST_POLL
         assert hive.tokens.token_expiry == timedelta(seconds=900)
 
-    def test_flat_dict_is_stored_as_is(self):
-        hive = _make_hive()
-        hive.tokens.token_created = _LAST_POLL
-        hive.tokens.token_expiry = timedelta(seconds=900)
-        hive.update_tokens(dict(NEW_TOKENS))
-        assert hive.tokens.token_data == NEW_TOKENS
-        assert _is_about(hive.tokens.token_created, datetime.now(UTC))
-        assert hive.tokens.token_expiry == timedelta(seconds=900)
-
     def test_debug_log_shows_no_part_of_a_long_token(self, caplog):
         hive = _make_hive()
         tokens = {
@@ -161,7 +137,7 @@ class TestLogin:
         hive = _make_hive()
         hive.auth.login.return_value = AUTH_RESULT
         hive.tokens.token_created = _LAST_POLL
-        assert await hive.login() is None
+        assert await hive._login() is None
         hive.auth.login.assert_awaited_once_with()
         hive.auth.device_login.assert_not_awaited()
         assert hive.tokens.token_data == NEW_TOKENS
@@ -171,7 +147,7 @@ class TestLogin:
         hive = _make_hive()
         hive.auth.login.return_value = DEVICE_CHALLENGE
         hive.auth.device_login.return_value = AUTH_RESULT
-        await hive.login()
+        await hive._login()
         hive.auth.device_login.assert_awaited_once_with()
         assert hive.tokens.token_data == NEW_TOKENS
 
@@ -189,7 +165,7 @@ class TestLogin:
         hive.auth.login.return_value = login_result
         hive.auth.device_login.return_value = device_login_result
         with pytest.raises(HiveReauthRequired, match="SMS"):
-            await hive.login()
+            await hive._login()
         if device_login_result is None:
             hive.auth.device_login.assert_not_awaited()
         else:
@@ -207,9 +183,9 @@ class TestLogin:
     )
     async def test_unanswerable_login_raises_api_error(self, result):
         hive = _make_hive()
-        hive.auth.login.return_value = result
+        hive.auth.login.return_value = LoginResult(result)
         with pytest.raises(HiveApiError) as excinfo:
-            await hive.login()
+            await hive._login()
         assert str(excinfo.value) == (
             f"Login did not complete: {result.get('ChallengeName')}"
         )
@@ -231,10 +207,10 @@ class TestReauthLatch:
         hive = _make_hive()
         hive.auth.login.configure_mock(**login)
         with pytest.raises(HiveReauthRequired) as first:
-            await hive.login()
+            await hive._login()
 
         with pytest.raises(HiveReauthRequired) as second:
-            await hive.login()
+            await hive._login()
 
         assert second.value is first.value
         hive.auth.login.assert_awaited_once_with()
@@ -258,11 +234,11 @@ class TestReauthLatch:
         hive = _make_hive()
         hive.auth.login.return_value = SMS_CHALLENGE
         with pytest.raises(HiveReauthRequired):
-            await hive.login()
-        hive.update_tokens(AUTH_RESULT)
+            await hive._login()
+        hive.update_tokens(AUTH_RESPONSE)
         hive.auth.login.return_value = AUTH_RESULT
 
-        await hive.login()
+        await hive._login()
 
         assert hive.auth.login.await_count == 2
 
@@ -279,9 +255,9 @@ class TestReauthLatch:
         hive = _make_hive()
         hive.auth.login.side_effect = [error, AUTH_RESULT]
         with pytest.raises(type(error)):
-            await hive.login()
+            await hive._login()
 
-        await hive.login()
+        await hive._login()
 
         assert hive.tokens.token_data == NEW_TOKENS
 
@@ -297,21 +273,21 @@ class TestRefreshDue:
         assert hive._refresh_due() is True
 
     def test_new_session_is_due(self):
-        hive = Hive(username="user@example.com", password="pw")
+        hive = Hive(MagicMock())
         assert hive._refresh_due() is True
 
 
-class TestHiveRefreshTokens:
+class TestRefreshTokens:
     async def test_file_mode_never_refreshes(self):
         hive = _make_hive()
-        hive.config.file = True
+        hive._file = True
         _expire_tokens(hive)
-        assert await hive.hive_refresh_tokens() is None
+        assert await hive._refresh_tokens() is None
         hive.auth.refresh_token.assert_not_awaited()
 
     async def test_fresh_tokens_are_left_alone(self):
         hive = _make_hive()
-        assert await hive.hive_refresh_tokens() is None
+        assert await hive._refresh_tokens() is None
         hive.auth.refresh_token.assert_not_awaited()
         assert hive.tokens.token_data == OLD_TOKENS
 
@@ -319,7 +295,7 @@ class TestHiveRefreshTokens:
         hive = _make_hive()
         _expire_tokens(hive)
         hive.auth.refresh_token.return_value = AUTH_RESULT
-        assert await hive.hive_refresh_tokens() is None
+        assert await hive._refresh_tokens() is None
         hive.auth.refresh_token.assert_awaited_once_with("rt")
         assert hive.tokens.token_data == NEW_TOKENS
         assert _is_about(hive.tokens.token_created, datetime.now(UTC))
@@ -330,7 +306,7 @@ class TestHiveRefreshTokens:
         _expire_tokens(hive)
         hive.auth.refresh_token.side_effect = HiveReauthRequired("refresh expired")
         hive.auth.login.return_value = AUTH_RESULT
-        await hive.hive_refresh_tokens()
+        await hive._refresh_tokens()
         hive.auth.login.assert_awaited_once_with()
         assert hive.tokens.token_data == NEW_TOKENS
 
@@ -353,7 +329,7 @@ class TestHiveRefreshTokens:
         hive.auth.refresh_token.side_effect = HiveReauthRequired("refresh expired")
         hive.auth.login.configure_mock(**login)
         with pytest.raises(exc):
-            await hive.hive_refresh_tokens()
+            await hive._refresh_tokens()
         hive.auth.login.assert_awaited_once_with()
 
     @pytest.mark.parametrize(
@@ -370,7 +346,7 @@ class TestHiveRefreshTokens:
         _expire_tokens(hive)
         hive.auth.refresh_token.side_effect = error
         with pytest.raises(type(error)) as excinfo:
-            await hive.hive_refresh_tokens()
+            await hive._refresh_tokens()
         assert excinfo.value is error
         hive.auth.login.assert_not_awaited()
         assert hive.tokens.token_data == OLD_TOKENS
@@ -383,11 +359,11 @@ class TestHiveRefreshTokens:
         async def _refresh(_token):
             # Yield so the second caller runs while the refresh is in flight.
             await asyncio.sleep(0)
-            hive.update_tokens(AUTH_RESULT)
+            hive.update_tokens(AUTH_RESPONSE)
             return AUTH_RESULT
 
         hive.auth.refresh_token = AsyncMock(side_effect=_refresh)
-        await asyncio.gather(hive.hive_refresh_tokens(), hive.hive_refresh_tokens())
+        await asyncio.gather(hive._refresh_tokens(), hive._refresh_tokens())
         hive.auth.refresh_token.assert_awaited_once_with("rt")
         assert hive.tokens.token_data == NEW_TOKENS
 
@@ -417,18 +393,18 @@ class TestApiCall:
 
     async def test_second_rejection_propagates(self):
         hive = _make_hive()
-        hive.login = AsyncMock()
+        hive._login = AsyncMock()
         second = HiveReauthRequired("still rejected")
         api_call = AsyncMock(side_effect=[HiveReauthRequired("HTTP 401"), second])
         with pytest.raises(HiveReauthRequired) as excinfo:
             await hive._api_call(api_call)
         assert excinfo.value is second
-        hive.login.assert_awaited_once_with()
+        hive._login.assert_awaited_once_with()
         assert api_call.await_count == 2
 
     async def test_failed_login_propagates(self):
         hive = _make_hive()
-        hive.login = AsyncMock(side_effect=HiveInvalidPassword("wrong password"))
+        hive._login = AsyncMock(side_effect=HiveInvalidPassword("wrong password"))
         api_call = AsyncMock(side_effect=HiveReauthRequired("HTTP 401"))
         with pytest.raises(HiveInvalidPassword):
             await hive._api_call(api_call)
@@ -445,7 +421,7 @@ class TestApiCall:
     )
     async def test_refresh_errors_propagate_before_the_call(self, error):
         hive = _make_hive()
-        hive.hive_refresh_tokens = AsyncMock(side_effect=error)
+        hive._refresh_tokens = AsyncMock(side_effect=error)
         api_call = AsyncMock()
         with pytest.raises(type(error)) as excinfo:
             await hive._api_call(api_call)
@@ -462,12 +438,12 @@ class TestApiCall:
     )
     async def test_other_errors_propagate_without_a_login(self, error):
         hive = _make_hive()
-        hive.login = AsyncMock()
+        hive._login = AsyncMock()
         api_call = AsyncMock(side_effect=error)
         with pytest.raises(type(error)) as excinfo:
             await hive._api_call(api_call)
         assert excinfo.value is error
-        hive.login.assert_not_awaited()
+        hive._login.assert_not_awaited()
         api_call.assert_awaited_once_with()
 
     async def test_concurrent_rejections_log_in_once(self):
@@ -476,14 +452,14 @@ class TestApiCall:
         async def _login():
             # A real login yields to the loop and then replaces the tokens.
             await asyncio.sleep(0)
-            hive.update_tokens(AUTH_RESULT)
+            hive.update_tokens(AUTH_RESPONSE)
 
-        hive.login = AsyncMock(side_effect=_login)
+        hive._login = AsyncMock(side_effect=_login)
         first = AsyncMock(side_effect=[HiveReauthRequired("HTTP 401"), "a"])
         second = AsyncMock(side_effect=[HiveReauthRequired("HTTP 401"), "b"])
         results = await asyncio.gather(hive._api_call(first), hive._api_call(second))
         assert results == ["a", "b"]
-        hive.login.assert_awaited_once_with()
+        hive._login.assert_awaited_once_with()
         assert first.await_count == second.await_count == 2
 
 
@@ -503,22 +479,26 @@ class TestCommands:
         [
             pytest.param(
                 lambda hive: hive.set_mode(_PRODUCTS["w1"], "MANUAL"),
-                call("hotwater", "w1", mode="MANUAL"),
+                call("post", "/nodes/hotwater/w1", '{"mode": "MANUAL"}'),
                 id="set-mode",
             ),
             pytest.param(
                 lambda hive: hive.set_target_temperature(_PRODUCTS["p1"], 20.5),
-                call("heating", "p1", target=20.5),
+                call("post", "/nodes/heating/p1", '{"target": 20.5}'),
                 id="set-target-temperature",
             ),
             pytest.param(
                 lambda hive: hive.set_heating_boost(_PRODUCTS["p1"], 30, 22.0),
-                call("heating", "p1", mode="BOOST", boost=30, target=22.0),
+                call(
+                    "post",
+                    "/nodes/heating/p1",
+                    '{"mode": "BOOST", "boost": 30, "target": 22.0}',
+                ),
                 id="set-heating-boost",
             ),
             pytest.param(
                 lambda hive: hive.set_hot_water_boost(_PRODUCTS["w1"], 60),
-                call("hotwater", "w1", mode="BOOST", boost=60),
+                call("post", "/nodes/hotwater/w1", '{"mode": "BOOST", "boost": 60}'),
                 id="set-hot-water-boost",
             ),
         ],
@@ -526,39 +506,37 @@ class TestCommands:
     async def test_each_command_posts_its_state_to_the_product(self, command, expected):
         hive = _make_hive()
         await command(hive)
-        assert hive.api.set_state.await_args_list == [expected]
+        assert hive._request.await_args_list == [expected]
 
     async def test_file_mode_sends_nothing(self):
         hive = _make_hive()
-        hive.config.file = True
+        hive._file = True
         _expire_tokens(hive)
         await hive.set_target_temperature(_PRODUCTS["p1"], 20.5)
-        hive.api.set_state.assert_not_awaited()
+        hive._request.assert_not_awaited()
         hive.auth.refresh_token.assert_not_awaited()
 
     async def test_rejected_token_logs_in_and_retries(self):
         hive = _make_hive()
-        hive.api.set_state.side_effect = [HiveReauthRequired("HTTP 401"), None]
+        hive._request.side_effect = [HiveReauthRequired("HTTP 401"), {}]
         hive.auth.login.return_value = AUTH_RESULT
         await hive.set_target_temperature(_PRODUCTS["p1"], 21.0)
         hive.auth.login.assert_awaited_once_with()
-        assert hive.api.set_state.await_args_list == [
-            call("heating", "p1", target=21.0),
-            call("heating", "p1", target=21.0),
-        ]
+        expected = call("post", "/nodes/heating/p1", '{"target": 21.0}')
+        assert hive._request.await_args_list == [expected, expected]
         assert hive.tokens.token_data == NEW_TOKENS
 
 
 class TestGetNodes:
     async def test_file_mode_reads_the_bundled_fixture_off_the_event_loop(self):
         hive = _make_hive()
-        hive.config.file = True
+        hive._file = True
         with patch(
             "hiveheating.hive.asyncio.to_thread", new=AsyncMock(return_value=_nodes())
         ) as to_thread:
             nodes = await hive.get_nodes()
         to_thread.assert_awaited_once_with(_load_fixture)
-        hive.api.get_all.assert_not_awaited()
+        hive._request.assert_not_awaited()
         assert set(nodes.products) == {"p1"}
 
     async def test_api_mode_fetches_all_nodes_and_parses_them(self):
@@ -566,7 +544,9 @@ class TestGetNodes:
         with patch("hiveheating.hive._load_fixture") as load_fixture:
             nodes = await hive.get_nodes()
         load_fixture.assert_not_called()
-        hive.api.get_all.assert_awaited_once_with()
+        hive._request.assert_awaited_once_with(
+            "get", "/nodes/all?products=true&devices=true"
+        )
         assert isinstance(nodes, Nodes)
         assert nodes.user == User(temperature_unit="C")
         assert isinstance(nodes.products["p1"], HeatingProduct)
@@ -575,11 +555,11 @@ class TestGetNodes:
 
     async def test_rejected_token_logs_in_again_and_refetches(self):
         hive = _make_hive()
-        hive.api.get_all.side_effect = [HiveReauthRequired("HTTP 401"), _nodes()]
+        hive._request.side_effect = [HiveReauthRequired("HTTP 401"), _nodes()]
         hive.auth.login.return_value = AUTH_RESULT
         nodes = await hive.get_nodes()
         hive.auth.login.assert_awaited_once_with()
-        assert hive.api.get_all.await_count == 2
+        assert hive._request.await_count == 2
         assert hive.tokens.token_data == NEW_TOKENS
         assert set(nodes.devices) == {"d1"}
 
@@ -598,6 +578,6 @@ class TestGetNodes:
     )
     async def test_a_reply_without_products_or_devices_is_transient(self, response):
         hive = _make_hive()
-        hive.api.get_all.return_value = response
+        hive._request.return_value = response
         with pytest.raises(HiveConnectionError, match="no products or no devices"):
             await hive.get_nodes()
