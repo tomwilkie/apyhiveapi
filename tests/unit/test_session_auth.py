@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from hiveheating.auth import SMS_REQUIRED, HiveAuth
+from hiveheating.auth import DEVICE_VERIFIER_CHALLENGE, SMS_REQUIRED, LoginResult
 from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
@@ -17,7 +17,7 @@ from hiveheating.exceptions import (
 from hiveheating.hive import _REFRESH_THRESHOLD, Hive, _load_fixture
 from hiveheating.nodes import Device, HeatingProduct, Nodes, User, parse_nodes
 
-AUTH_RESULT = {
+AUTH_RESPONSE = {
     "AuthenticationResult": {
         "IdToken": "id-token-0001",
         "AccessToken": "access-token-0001",
@@ -27,8 +27,9 @@ AUTH_RESULT = {
 }
 NEW_TOKENS = {"token": "id-token-0001", "refreshToken": "refresh-token-0001"}
 OLD_TOKENS = {"token": "id-tok", "refreshToken": "rt"}
-SMS_CHALLENGE = {"ChallengeName": SMS_REQUIRED}
-DEVICE_CHALLENGE = {"ChallengeName": HiveAuth.DEVICE_VERIFIER_CHALLENGE}
+AUTH_RESULT = LoginResult(AUTH_RESPONSE)
+SMS_CHALLENGE = LoginResult({"ChallengeName": SMS_REQUIRED})
+DEVICE_CHALLENGE = LoginResult({"ChallengeName": DEVICE_VERIFIER_CHALLENGE})
 _LOGGER_NAME = "hiveheating.hive"
 _LAST_POLL = datetime(2024, 1, 1, tzinfo=UTC)
 _TOLERANCE = timedelta(seconds=5)
@@ -78,7 +79,7 @@ class TestUpdateTokens:
         hive = _make_hive()
         hive.tokens.token_created = _LAST_POLL
         hive.tokens.token_expiry = timedelta(seconds=900)
-        hive.update_tokens(AUTH_RESULT)
+        hive.update_tokens(AUTH_RESPONSE)
         assert hive.tokens.token_data == NEW_TOKENS
         assert hive.tokens.token_expiry == timedelta(seconds=3600)
         assert hive.tokens.token_created.tzinfo is UTC
@@ -87,7 +88,7 @@ class TestUpdateTokens:
     def test_update_expiry_time_false_leaves_token_created(self):
         hive = _make_hive()
         hive.tokens.token_created = _LAST_POLL
-        hive.update_tokens(AUTH_RESULT, update_expiry_time=False)
+        hive.update_tokens(AUTH_RESPONSE, update_expiry_time=False)
         assert hive.tokens.token_created == _LAST_POLL
         assert hive.tokens.token_data == NEW_TOKENS
 
@@ -182,7 +183,7 @@ class TestLogin:
     )
     async def test_unanswerable_login_raises_api_error(self, result):
         hive = _make_hive()
-        hive.auth.login.return_value = result
+        hive.auth.login.return_value = LoginResult(result)
         with pytest.raises(HiveApiError) as excinfo:
             await hive._login()
         assert str(excinfo.value) == (
@@ -234,7 +235,7 @@ class TestReauthLatch:
         hive.auth.login.return_value = SMS_CHALLENGE
         with pytest.raises(HiveReauthRequired):
             await hive._login()
-        hive.update_tokens(AUTH_RESULT)
+        hive.update_tokens(AUTH_RESPONSE)
         hive.auth.login.return_value = AUTH_RESULT
 
         await hive._login()
@@ -358,7 +359,7 @@ class TestRefreshTokens:
         async def _refresh(_token):
             # Yield so the second caller runs while the refresh is in flight.
             await asyncio.sleep(0)
-            hive.update_tokens(AUTH_RESULT)
+            hive.update_tokens(AUTH_RESPONSE)
             return AUTH_RESULT
 
         hive.auth.refresh_token = AsyncMock(side_effect=_refresh)
@@ -451,7 +452,7 @@ class TestApiCall:
         async def _login():
             # A real login yields to the loop and then replaces the tokens.
             await asyncio.sleep(0)
-            hive.update_tokens(AUTH_RESULT)
+            hive.update_tokens(AUTH_RESPONSE)
 
         hive._login = AsyncMock(side_effect=_login)
         first = AsyncMock(side_effect=[HiveReauthRequired("HTTP 401"), "a"])

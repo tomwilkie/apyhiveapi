@@ -26,7 +26,7 @@ from typing import Any
 
 from aiohttp import ClientSession
 
-from hiveheating import SMS_REQUIRED, Auth, Hive, HiveReauthRequired
+from hiveheating import Auth, Hive, HiveReauthRequired, LoginResult
 
 DEVICE_FILE = Path("hive_device.json")
 
@@ -50,38 +50,38 @@ def save_device(username: str, device_data: list[str]) -> None:
     DEVICE_FILE.chmod(0o600)
 
 
-def tokens_from(result: dict[str, Any]) -> dict[str, Any]:
-    """Keep the part of a Cognito response that new_session reads."""
-    return {"AuthenticationResult": result["AuthenticationResult"]}
+def tokens_from(result: LoginResult) -> dict[str, Any]:
+    """Keep the part of Cognito's response that new_session reads."""
+    return {"AuthenticationResult": result.response["AuthenticationResult"]}
 
 
 async def device_login(
     websession: ClientSession, username: str, password: str, device_data: list[str]
-) -> dict[str, Any]:
-    """Log in with saved device credentials. Returns {} if Hive rejects them."""
+) -> LoginResult | None:
+    """Log in with saved device credentials. Returns None if Hive rejects them."""
     auth = Auth(username, password, *device_data, websession=websession)
     try:
         # The password login comes first; Hive answers it with a device
         # challenge, which device_login() then completes without an SMS.
         result = await auth.login()
-        if result.get("ChallengeName") == Auth.DEVICE_VERIFIER_CHALLENGE:
+        if result.device_challenge:
             result = await auth.device_login()
     except HiveReauthRequired:
-        return {}
-    return result if "AuthenticationResult" in result else {}
+        return None
+    return result if result.complete else None
 
 
 async def sms_login(
     websession: ClientSession, username: str, password: str
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[LoginResult, list[str]]:
     """Log in with password + SMS code and register this machine as a device."""
     auth = Auth(username, password, websession=websession)
     result = await auth.login()
-    if result.get("ChallengeName") == SMS_REQUIRED:
+    if result.sms_required:
         code = input("SMS code: ").strip()
         result = await auth.sms_2fa(code, result)
-    if "AuthenticationResult" not in result:
-        sys.exit(f"Login did not complete: {result.get('ChallengeName')}")
+    if not result.complete:
+        sys.exit(f"Login did not complete: {result.challenge}")
 
     device_data: list[str] = []
     if auth.device_key:
@@ -101,16 +101,16 @@ async def build_config(websession: ClientSession) -> dict[str, Any]:
     password = getpass.getpass("Hive password (hidden, not stored): ")
     device_data = stored.get("device_data") or []
 
-    result: dict[str, Any] = {}
+    result: LoginResult | None = None
     if device_data:
         print("Logging in with the saved device credentials (no SMS)...")
         result = await device_login(websession, username, password, device_data)
-        if not result:
+        if result is None:
             print("Hive rejected the saved device credentials - signing in again.")
             DEVICE_FILE.unlink(missing_ok=True)
             device_data = []
 
-    if not result:
+    if result is None:
         print("Logging in with password + SMS...")
         result, device_data = await sms_login(websession, username, password)
         if all(device_data):

@@ -50,7 +50,7 @@ import asyncio
 import getpass
 
 from aiohttp import ClientSession
-from hiveheating import SMS_REQUIRED, Auth, Hive
+from hiveheating import Auth, Hive
 
 
 async def main():
@@ -59,9 +59,9 @@ async def main():
 
     async with ClientSession() as websession:
         auth = Auth(username=username, password=password, websession=websession)
-        tokens = await auth.login()
-        if tokens.get("ChallengeName") == SMS_REQUIRED:
-            tokens = await auth.sms_2fa(input("SMS code: "), tokens)
+        result = await auth.login()
+        if result.sms_required:
+            result = await auth.sms_2fa(input("SMS code: "), result)
             await auth.device_registration()
 
         hive = Hive(websession)
@@ -69,7 +69,7 @@ async def main():
             {
                 "username": username,
                 "password": password,
-                "tokens": tokens,
+                "tokens": result.response,
                 "device_data": auth.get_device_data(),
             }
         )
@@ -85,11 +85,13 @@ asyncio.run(main())
 
 ## Authentication
 
-Authentication uses the AWS Cognito SRP flow. On the first login `login()` returns a
-`ChallengeName` of `SMS_MFA` (the `SMS_REQUIRED` constant) when the account has SMS
-two-factor authentication enabled; pass the code to `sms_2fa(code, tokens)`. Then call
-`device_registration()` to register the machine as a trusted device and save the
-credentials `get_device_data()` returns, so later sessions can log in without an SMS.
+Authentication uses the AWS Cognito SRP flow. `login()`, `sms_2fa()` and
+`device_login()` return a `LoginResult`. On the first login its `sms_required` is true
+when the account has SMS two-factor authentication enabled; pass the code and the
+result to `sms_2fa(code, result)`. Then call `device_registration()` to register the
+machine as a trusted device and save the credentials `get_device_data()` returns, so
+later sessions can log in without an SMS. Save `result.response` as the session's
+`tokens`.
 
 > **Note:** Only the Hive account owner is supported. Guest accounts cannot be used.
 

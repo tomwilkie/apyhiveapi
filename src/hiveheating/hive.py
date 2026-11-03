@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from hiveheating.api import request
-from hiveheating.auth import SMS_REQUIRED, HiveAuth
+from hiveheating.auth import HiveAuth
 from hiveheating.exceptions import (
     HiveApiError,
     HiveConnectionError,
@@ -159,17 +159,17 @@ class Hive:
         self._raise_if_reauth_required()
         try:
             result = await self.auth.login()
-            if result.get("ChallengeName") == HiveAuth.DEVICE_VERIFIER_CHALLENGE:
+            if result.device_challenge:
                 result = await self.auth.device_login()
         except HiveReauthRequired as err:
             self._reauth_error = err
             raise
-        if result.get("ChallengeName") == SMS_REQUIRED:
+        if result.sms_required:
             self._reauth_error = HiveReauthRequired("Hive asked for an SMS code")
             raise self._reauth_error
-        if not result.get("AuthenticationResult"):
-            raise HiveApiError(f"Login did not complete: {result.get('ChallengeName')}")
-        self.update_tokens(result)
+        if not result.complete:
+            raise HiveApiError(f"Login did not complete: {result.challenge}")
+        self.update_tokens(result.response)
 
     def _refresh_due(self) -> bool:
         """Return True once the tokens have used most of their lifetime."""
@@ -203,7 +203,7 @@ class Hive:
                 _LOGGER.debug("Token refresh rejected (%s), logging in again", err)
                 await self._login()
                 return
-            self.update_tokens(result)
+            self.update_tokens(result.response)
 
     async def _api_call[T](self, call: Callable[[], Awaitable[T]]) -> T:
         """Call the API with fresh tokens, logging in again if Hive rejects them.

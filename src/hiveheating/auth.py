@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import socket
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -61,6 +62,9 @@ _LOGGER = logging.getLogger(__name__)
 # The ChallengeName of a login that needs the user's SMS code.
 SMS_REQUIRED = "SMS_MFA"
 
+# The ChallengeName Cognito answers a trusted device's login with.
+DEVICE_VERIFIER_CHALLENGE = "DEVICE_SRP_AUTH"
+
 # Cognito error codes and the exception each one becomes.
 type CodeMap = Mapping[str, type[HiveError]]
 
@@ -90,6 +94,44 @@ _DEVICE_REJECTED: CodeMap = {
     "NotAuthorizedException": HiveReauthRequired,
     "ResourceNotFoundException": HiveReauthRequired,
 }
+
+
+@dataclass(frozen=True)
+class LoginResult:
+    """Cognito's answer to a login, an SMS code or a token refresh.
+
+    ``response`` is Cognito's response as it came, which is what a config
+    entry saves as its ``tokens``.
+    """
+
+    response: dict[str, Any]
+
+    @property
+    def challenge(self) -> str | None:
+        """The challenge Cognito asked for, if any."""
+        challenge = self.response.get("ChallengeName")
+        return challenge if isinstance(challenge, str) else None
+
+    @property
+    def complete(self) -> bool:
+        """Whether Cognito issued tokens."""
+        return bool(self.response.get("AuthenticationResult"))
+
+    @property
+    def sms_required(self) -> bool:
+        """Whether Cognito wants the SMS code it sent: pass this to ``sms_2fa``."""
+        return self.challenge == SMS_REQUIRED
+
+    @property
+    def device_challenge(self) -> bool:
+        """Whether Cognito wants the saved device to finish the login."""
+        return self.challenge == DEVICE_VERIFIER_CHALLENGE
+
+    @property
+    def new_device(self) -> bool:
+        """Whether Cognito issued new device keys, to register as a trusted device."""
+        tokens = self.response.get("AuthenticationResult") or {}
+        return bool(tokens.get("NewDeviceMetadata"))
 
 
 def _srp_key(
@@ -133,7 +175,6 @@ class HiveAuth:
     """Log in to a Hive account through AWS Cognito and manage trusted devices."""
 
     PASSWORD_VERIFIER_CHALLENGE = "PASSWORD_VERIFIER"  # noqa: S105 - challenge name
-    DEVICE_VERIFIER_CHALLENGE = "DEVICE_SRP_AUTH"
     DEVICE_PASSWORD_CHALLENGE = "DEVICE_PASSWORD_VERIFIER"  # noqa: S105 - challenge name
 
     def __init__(  # noqa: PLR0913 - one argument per saved credential
@@ -254,13 +295,13 @@ class HiveAuth:
 
     # --- Login flows -------------------------------------------------------
 
-    async def login(self) -> dict[str, Any]:
+    async def login(self) -> LoginResult:
         """Log in with the username and password.
 
         Returns:
-            Cognito's response: an ``AuthenticationResult`` with the tokens, or
-            a challenge for the caller to complete (``SMS_MFA`` through
-            :meth:`sms_2fa`, ``DEVICE_SRP_AUTH`` through :meth:`device_login`).
+            Cognito's answer: the tokens, or a challenge for the caller to
+            complete (``sms_required`` through :meth:`sms_2fa`,
+            ``device_challenge`` through :meth:`device_login`).
 
         Raises:
             HiveInvalidUsername: Hive does not know the username.
@@ -301,15 +342,13 @@ class HiveAuth:
             ChallengeName=self.PASSWORD_VERIFIER_CHALLENGE,
             ChallengeResponses=answer,
         )
-        if "AuthenticationResult" in result:
-            self._store_auth_result(result)
-        return result
+        return self._login_result(result)
 
-    async def device_login(self) -> dict[str, Any]:
+    async def device_login(self) -> LoginResult:
         """Answer the ``DEVICE_SRP_AUTH`` challenge with the saved device credentials.
 
         Returns:
-            Cognito's response, normally an ``AuthenticationResult`` with the tokens.
+            Cognito's answer, normally the tokens.
 
         Raises:
             HiveReauthRequired: No device credentials are saved, or Cognito no
@@ -328,7 +367,7 @@ class HiveAuth:
             "respond_to_auth_challenge",
             _DEVICE_REJECTED,
             ClientId=self._client_id,
-            ChallengeName=self.DEVICE_VERIFIER_CHALLENGE,
+            ChallengeName=DEVICE_VERIFIER_CHALLENGE,
             ChallengeResponses=self._auth_params(ephemeral, device_key),
         )
         parameters = challenge["ChallengeParameters"]
@@ -346,13 +385,11 @@ class HiveAuth:
             ChallengeName=self.DEVICE_PASSWORD_CHALLENGE,
             ChallengeResponses=answer,
         )
-        if "AuthenticationResult" in result:
-            self._store_auth_result(result)
-        return result
+        return self._login_result(result)
 
     async def sms_2fa(
-        self, entered_code: str | int, challenge: dict[str, Any]
-    ) -> dict[str, Any]:
+        self, entered_code: str | int, challenge: LoginResult
+    ) -> LoginResult:
         """Answer the ``SMS_MFA`` challenge from :meth:`login` with the user's code.
 
         Raises:
@@ -361,7 +398,7 @@ class HiveAuth:
             HiveConnectionError: Cognito could not be reached.
             HiveApiError: Cognito refused the call for another reason.
         """
-        session = challenge.get("Session")
+        session = challenge.response.get("Session")
         if not session:
             raise ValueError("The challenge has no Session: pass the result of login()")
         await self._ensure_client()
@@ -380,11 +417,9 @@ class HiveAuth:
                 "USERNAME": self.user_id,
             },
         )
-        if "AuthenticationResult" in result:
-            self._store_auth_result(result)
-        return result
+        return self._login_result(result)
 
-    async def refresh_token(self, token: str | None) -> dict[str, Any]:
+    async def refresh_token(self, token: str | None) -> LoginResult:
         """Exchange the refresh token for new ID and access tokens.
 
         Raises:
@@ -408,18 +443,20 @@ class HiveAuth:
             AuthFlow="REFRESH_TOKEN_AUTH",
             AuthParameters=params,
         )
-        if "AuthenticationResult" in result:
-            self._store_auth_result(result)
-        return result
+        return self._login_result(result)
 
-    def _store_auth_result(self, result: dict[str, Any]) -> None:
-        """Keep the access token and new device keys from an AuthenticationResult."""
-        auth_result = result["AuthenticationResult"]
+    def _login_result(self, response: dict[str, Any]) -> LoginResult:
+        """Keep the access token and any new device keys from Cognito's answer."""
+        result = LoginResult(response)
+        if not result.complete:
+            return result
+        auth_result = response["AuthenticationResult"]
         self.access_token = auth_result["AccessToken"]
         if "NewDeviceMetadata" in auth_result:
             self.device_group_key = auth_result["NewDeviceMetadata"]["DeviceGroupKey"]
             self.device_key = auth_result["NewDeviceMetadata"]["DeviceKey"]
             _LOGGER.debug("Cognito issued new device keys")
+        return result
 
     # --- Trusted devices ---------------------------------------------------
 

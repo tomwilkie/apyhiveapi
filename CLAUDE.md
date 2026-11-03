@@ -70,9 +70,11 @@ own API and knows nothing about Home Assistant; the public API is:
   `Mode` type. The websession is required and the caller closes it.
 - `Auth(username=, password=, websession=)` (the `HiveAuth` class) with `login`, `sms_2fa`,
   `is_device_registered`, `device_registration`, `get_device_data` (sync; the
-  fork stores whatever it returns as `device_data`) and `forget_device`, plus
-  the `SMS_REQUIRED` constant. `device_login` is used by `Hive._login`, not by
-  the fork.
+  fork stores whatever it returns as `device_data`) and `forget_device`.
+  `login`, `sms_2fa`, `device_login` and `refresh_token` return a frozen
+  `LoginResult`: Cognito's `response` (the fork saves it as `tokens`) and the
+  properties `complete`, `sms_required`, `device_challenge`, `new_device` and
+  `challenge`. `device_login` is used by `Hive._login`, not by the fork.
 - the frozen dataclasses `get_nodes` returns (`Nodes`, `User`,
   `HeatingProduct`, `HotWaterProduct`, `Device`) and their fields, read as
   attributes; see "Nodes" below
@@ -309,11 +311,11 @@ same PR.
 
 ```text
 src/hiveheating/
-├── __init__.py         ← public exports: Hive, Auth, the node dataclasses, SMS_REQUIRED, the exceptions
+├── __init__.py         ← public exports: Hive, Auth, LoginResult, the node dataclasses, the exceptions
 ├── hive.py             ← Hive — the session: login and token refresh, new_session,
 │                         get_nodes and the set_* commands; SessionTokens
 ├── auth.py             ← HiveAuth (exported as Auth) — Cognito SRP login, SMS 2FA,
-│                         token refresh, trusted devices, SMS_REQUIRED; _ensure_client()
+│                         token refresh, trusted devices, LoginResult; _ensure_client()
 │                         reads the SSO login page; _cognito() translates botocore errors
 ├── api.py              ← request() — HTTP calls to beekeeper.hivehome.com; _fetch()
 │                         translates aiohttp errors
@@ -376,8 +378,8 @@ thermostat's own flag is on its `Device`.
 
 Two flows:
 
-1. **First login** — `Auth.login()` returns `ChallengeName == "SMS_MFA"` (use
-   the `SMS_REQUIRED` constant). Call `auth.sms_2fa(code, result)`, then
+1. **First login** — `Auth.login()` returns a `LoginResult` whose
+   `sms_required` is true. Call `auth.sms_2fa(code, result)`, then
    `auth.device_registration()` to make this machine a trusted device, then
    save the credentials from `auth.get_device_data()`
    (`device_group_key`, `device_key`, `device_password`). A fourth value, the

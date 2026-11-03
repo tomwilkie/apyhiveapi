@@ -20,7 +20,7 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, web
 from aiohttp.test_utils import TestServer
 
-from hiveheating import Hive
+from hiveheating import Hive, LoginResult
 from hiveheating.exceptions import HiveConnectionError
 from hiveheating.nodes import parse_nodes
 
@@ -148,7 +148,7 @@ def session(websession):
     login does nothing.
     """
     hive = Hive(websession)
-    hive.auth.refresh_token = AsyncMock(return_value=_COGNITO_RESULT)
+    hive.auth.refresh_token = AsyncMock(return_value=LoginResult(_COGNITO_RESULT))
     hive._login = AsyncMock()
     hive.new_session(
         {
@@ -205,7 +205,7 @@ class TestPollFailures:
     ):
         session.auth.refresh_token.side_effect = [
             HiveConnectionError("Cognito timed out"),
-            _COGNITO_RESULT,
+            LoginResult(_COGNITO_RESULT),
         ]
         with pytest.raises(HiveConnectionError, match="Cognito timed out"):
             await session.get_nodes()

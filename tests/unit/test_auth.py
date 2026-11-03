@@ -16,6 +16,7 @@ from hiveheating.auth import (
     _COGNITO_CONFIG,
     _SSO_URL,
     HiveAuth,
+    LoginResult,
     _srp_key,
 )
 from hiveheating.exceptions import (
@@ -183,6 +184,51 @@ def _make_websession(status=200, body=""):
     return websession
 
 
+# Tests for LoginResult
+
+
+class TestLoginResult:
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            pytest.param(
+                AUTH_RESULT,
+                (True, False, False, False, None),
+                id="tokens",
+            ),
+            pytest.param(
+                NEW_DEVICE_RESULT,
+                (True, False, False, True, None),
+                id="tokens-and-new-device-keys",
+            ),
+            pytest.param(
+                SMS_CHALLENGE,
+                (False, True, False, False, "SMS_MFA"),
+                id="sms-code-needed",
+            ),
+            pytest.param(
+                {"ChallengeName": "DEVICE_SRP_AUTH"},
+                (False, False, True, False, "DEVICE_SRP_AUTH"),
+                id="device-challenge",
+            ),
+            pytest.param(
+                {"AuthenticationResult": None, "ChallengeName": 1},
+                (False, False, False, False, None),
+                id="unexpected-values",
+            ),
+        ],
+    )
+    def test_reads_cognito_s_answer(self, response, expected):
+        result = LoginResult(response)
+        assert (
+            result.complete,
+            result.sms_required,
+            result.device_challenge,
+            result.new_device,
+            result.challenge,
+        ) == expected
+
+
 # Tests for _ensure_client
 
 
@@ -335,7 +381,7 @@ class TestEnsureClient:
             ),
             pytest.param(
                 "sms_2fa",
-                ("123456", SMS_CHALLENGE),
+                ("123456", LoginResult(SMS_CHALLENGE)),
                 "respond_to_auth_challenge",
                 id="sms-2fa",
             ),
@@ -534,7 +580,7 @@ class TestLogin:
         auth.client.respond_to_auth_challenge.return_value = AUTH_RESULT
         with patch("hiveheating.auth.new_ephemeral", return_value=EPHEMERAL):
             result = await auth.login()
-        assert result is AUTH_RESULT
+        assert result.response is AUTH_RESULT
         assert auth.user_id == "uuid-user"
         assert auth.access_token == "access-token"
         auth.client.respond_to_auth_challenge.assert_called_once()
@@ -585,7 +631,7 @@ class TestLogin:
         auth.client.initiate_auth.return_value = PASSWORD_CHALLENGE
         auth.client.respond_to_auth_challenge.return_value = SMS_CHALLENGE
         result = await auth.login()
-        assert result is SMS_CHALLENGE
+        assert result.response is SMS_CHALLENGE
         assert auth.access_token is None
 
     @pytest.mark.parametrize(
@@ -679,7 +725,7 @@ class TestDeviceLogin:
         ]
         with patch("hiveheating.auth.new_ephemeral", return_value=EPHEMERAL):
             result = await auth.device_login()
-        assert result is NEW_DEVICE_RESULT
+        assert result.response is NEW_DEVICE_RESULT
         assert auth.access_token == "access-token"
         first, second = auth.client.respond_to_auth_challenge.call_args_list
         assert first == call(
@@ -724,7 +770,7 @@ class TestDeviceLogin:
             SMS_CHALLENGE,
         ]
         result = await auth.device_login()
-        assert result is SMS_CHALLENGE
+        assert result.response is SMS_CHALLENGE
         assert auth.access_token is None
 
     @pytest.mark.parametrize(
@@ -769,8 +815,8 @@ class TestSms2fa:
         auth = make_auth()
         auth.user_id = "uuid-user"
         auth.client.respond_to_auth_challenge.return_value = NEW_DEVICE_RESULT
-        result = await auth.sms_2fa(code, SMS_CHALLENGE)
-        assert result is NEW_DEVICE_RESULT
+        result = await auth.sms_2fa(code, LoginResult(SMS_CHALLENGE))
+        assert result.response is NEW_DEVICE_RESULT
         auth.client.respond_to_auth_challenge.assert_called_once_with(
             ClientId=CLIENT_ID,
             ChallengeName="SMS_MFA",
@@ -785,8 +831,8 @@ class TestSms2fa:
         auth = make_auth()
         retry = {"ChallengeName": "SMS_MFA", "Session": "session-2"}
         auth.client.respond_to_auth_challenge.return_value = retry
-        result = await auth.sms_2fa("000000", SMS_CHALLENGE)
-        assert result is retry
+        result = await auth.sms_2fa("000000", LoginResult(SMS_CHALLENGE))
+        assert result.response is retry
         assert auth.access_token is None
 
     @pytest.mark.parametrize(
@@ -800,7 +846,7 @@ class TestSms2fa:
     async def test_a_challenge_without_a_session_is_rejected(self, challenge):
         auth = make_auth()
         with pytest.raises(ValueError, match="no Session"):
-            await auth.sms_2fa("123456", challenge)
+            await auth.sms_2fa("123456", LoginResult(challenge))
         auth.client.respond_to_auth_challenge.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -812,7 +858,7 @@ class TestSms2fa:
         err = client_error(code, operation="RespondToAuthChallenge")
         auth.client.respond_to_auth_challenge.side_effect = err
         with pytest.raises(HiveInvalid2FACode) as exc_info:
-            await auth.sms_2fa("000000", SMS_CHALLENGE)
+            await auth.sms_2fa("000000", LoginResult(SMS_CHALLENGE))
         assert exc_info.value.__cause__ is err
         assert auth.access_token is None
 
@@ -847,7 +893,7 @@ class TestRefreshToken:
         auth = make_auth(device_key=device_key)
         auth.client.initiate_auth.return_value = AUTH_RESULT
         result = await auth.refresh_token("refresh-token")
-        assert result is AUTH_RESULT
+        assert result.response is AUTH_RESULT
         auth.client.initiate_auth.assert_called_once_with(
             ClientId=CLIENT_ID,
             AuthFlow="REFRESH_TOKEN_AUTH",
@@ -859,7 +905,7 @@ class TestRefreshToken:
         auth = make_auth()
         auth.client.initiate_auth.return_value = {"ChallengeName": "SMS_MFA"}
         result = await auth.refresh_token("refresh-token")
-        assert result == {"ChallengeName": "SMS_MFA"}
+        assert result.response == {"ChallengeName": "SMS_MFA"}
         assert auth.access_token is None
 
     @pytest.mark.parametrize(
