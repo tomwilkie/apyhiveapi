@@ -66,9 +66,9 @@ own API and knows nothing about Home Assistant; the public API is:
   tokens and device credentials, sends nothing), `get_nodes` (Hive's
   `GET /nodes/all`), the commands `set_mode`, `set_target_temperature`,
   `set_heating_boost` and `set_hot_water_boost` (each one
-  `POST /nodes/{type}/{id}` for a product from the snapshot), and `close`;
-  plus the `Mode` type
-- `Auth(username=, password=)` (the `HiveAuth` class) with `login`, `sms_2fa`,
+  `POST /nodes/{type}/{id}` for a product from the snapshot); plus the
+  `Mode` type. The websession is required and the caller closes it.
+- `Auth(username=, password=, websession=)` (the `HiveAuth` class) with `login`, `sms_2fa`,
   `is_device_registered`, `device_registration`, `get_device_data` (sync; the
   fork stores whatever it returns as `device_data`) and `forget_device`, plus
   the `SMS_REQUIRED` constant. `device_login` is used by `Hive._login`, not by
@@ -311,7 +311,7 @@ same PR.
 src/hiveheating/
 ├── __init__.py         ← public exports: Hive, Auth, the node dataclasses, SMS_REQUIRED, the exceptions
 ├── hive.py             ← Hive — the session: login and token refresh, new_session,
-│                         get_nodes and the set_* commands; SessionTokens, SessionConfig
+│                         get_nodes and the set_* commands; SessionTokens
 ├── auth.py             ← HiveAuth (exported as Auth) — Cognito SRP login, SMS 2FA,
 │                         token refresh, trusted devices, SMS_REQUIRED; _ensure_client()
 │                         reads the SSO login page; _cognito() translates botocore errors
@@ -327,18 +327,18 @@ src/hiveheating/
 
 ### `Hive` (`hive.py`)
 
-`Hive(websession=None, username=None, password=None)` is the whole session.
-It owns `hive.auth` (`HiveAuth`), `hive.websession`, `hive.tokens` and
-`hive.config`, and keeps no device state. `_request()` makes every Hive API
+`Hive(websession)` is the whole session. It owns `hive.auth` (`HiveAuth`),
+`hive.websession` and `hive.tokens`, and keeps no device state. `_request()` makes every Hive API
 call through `api.request()` with the session's token.
 
 - **Login and tokens** — `_login()` logs in with the stored credentials,
   completes the device challenge with `auth.device_login()` and raises
   `HiveReauthRequired` if Hive wants an SMS code. A `HiveReauthRequired` from
-  a login is kept in `_reauth_error`, and `_login()` and
-  `_refresh_tokens()` raise it again straight away until
-  `update_tokens()` stores new tokens. `update_tokens()` stores a
-  Cognito response or a saved config entry. `_refresh_tokens()` refreshes
+  a login is kept in `_reauth_error`, and `_api_call()` and `_login()`
+  raise it again straight away until `update_tokens()` stores new tokens
+  (`_login()` checks too, for callers that were waiting on the lock).
+  `update_tokens()` stores the ID and refresh tokens from a Cognito
+  response, from a login or refresh or saved in the config entry. `_refresh_tokens()` refreshes
   at 90% of the token lifetime (`_REFRESH_THRESHOLD`) and falls back to
   `_login()` when the refresh token is rejected. `_api_call()` wraps every API
   call: refresh first, and on `HiveReauthRequired` (HTTP 401) log in once
@@ -353,10 +353,6 @@ call through `api.request()` with the session's token.
   `set_hot_water_boost` each post a fixed body for the product they are given
   through `_set_state()`, a no-op in file mode. There is no boost-off call:
   ending a boost is `set_mode` with the product's `previous_mode`.
-
-`Hive` creates its own `aiohttp.ClientSession` when none is passed and closes
-it in `close()` / `__aexit__`. The fork always passes Home Assistant's shared
-session; the owned-session path exists for the tests and the dev scripts.
 
 ### Nodes (`nodes.py`)
 
@@ -400,14 +396,14 @@ Token layers are distinct:
 
 - `HiveAuth.access_token` — Cognito AccessToken stored on the auth object by
   every successful login, 2FA or refresh; used by the trusted-device methods
-- `Hive.tokens.token_data` — session-layer token store (`"token"`,
-  `"accessToken"`, `"refreshToken"`); used by `Hive._request()` for API requests
+- `Hive.tokens.token_data` — session-layer token store (`"token"` and
+  `"refreshToken"`); used by `Hive._request()` for API requests
 
 All timestamps are timezone-aware UTC `datetime`s.
 
 ### File-based testing
 
-Set `username="use@file.com"` to make the session load
+Pass `username="use@file.com"` in the `new_session` config to make the session load
 `src/hiveheating/data/data.json`, an anonymised all-nodes response (`user`,
 `products`, `devices`), instead of calling the API. Used for development
 without live credentials. The fixture is read in a worker thread, so file mode

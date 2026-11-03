@@ -24,6 +24,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from aiohttp import ClientSession
+
 from hiveheating import SMS_REQUIRED, Auth, Hive, HiveReauthRequired
 
 DEVICE_FILE = Path("hive_device.json")
@@ -48,21 +50,16 @@ def save_device(username: str, device_data: list[str]) -> None:
     DEVICE_FILE.chmod(0o600)
 
 
-def tokens_from(result: dict[str, Any]) -> dict[str, str]:
-    """Convert a Cognito AuthenticationResult into new_session tokens."""
-    auth_result = result["AuthenticationResult"]
-    return {
-        "token": auth_result["IdToken"],
-        "refreshToken": auth_result["RefreshToken"],
-        "accessToken": auth_result["AccessToken"],
-    }
+def tokens_from(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep the part of a Cognito response that new_session reads."""
+    return {"AuthenticationResult": result["AuthenticationResult"]}
 
 
 async def device_login(
-    username: str, password: str, device_data: list[str]
+    websession: ClientSession, username: str, password: str, device_data: list[str]
 ) -> dict[str, Any]:
     """Log in with saved device credentials. Returns {} if Hive rejects them."""
-    auth = Auth(username, password, *device_data)
+    auth = Auth(username, password, *device_data, websession=websession)
     try:
         # The password login comes first; Hive answers it with a device
         # challenge, which device_login() then completes without an SMS.
@@ -74,9 +71,11 @@ async def device_login(
     return result if "AuthenticationResult" in result else {}
 
 
-async def sms_login(username: str, password: str) -> tuple[dict[str, Any], list[str]]:
+async def sms_login(
+    websession: ClientSession, username: str, password: str
+) -> tuple[dict[str, Any], list[str]]:
     """Log in with password + SMS code and register this machine as a device."""
-    auth = Auth(username, password)
+    auth = Auth(username, password, websession=websession)
     result = await auth.login()
     if result.get("ChallengeName") == SMS_REQUIRED:
         code = input("SMS code: ").strip()
@@ -95,7 +94,7 @@ async def sms_login(username: str, password: str) -> tuple[dict[str, Any], list[
     return result, device_data
 
 
-async def build_config() -> dict[str, Any]:
+async def build_config(websession: ClientSession) -> dict[str, Any]:
     """Log in (reusing saved device credentials when possible)."""
     stored = load_device()
     username = stored.get("username") or input("Hive email: ").strip()
@@ -105,7 +104,7 @@ async def build_config() -> dict[str, Any]:
     result: dict[str, Any] = {}
     if device_data:
         print("Logging in with the saved device credentials (no SMS)...")
-        result = await device_login(username, password, device_data)
+        result = await device_login(websession, username, password, device_data)
         if not result:
             print("Hive rejected the saved device credentials - signing in again.")
             DEVICE_FILE.unlink(missing_ok=True)
@@ -113,7 +112,7 @@ async def build_config() -> dict[str, Any]:
 
     if not result:
         print("Logging in with password + SMS...")
-        result, device_data = await sms_login(username, password)
+        result, device_data = await sms_login(websession, username, password)
         if all(device_data):
             save_device(username, device_data)
             print(f"Device credentials saved to {DEVICE_FILE.resolve()}")
@@ -128,9 +127,9 @@ async def build_config() -> dict[str, Any]:
 
 async def main() -> None:
     """Log in, start a session and list the products and devices."""
-    config = await build_config()
-    hive = Hive(username=config["username"], password=config["password"])
-    async with hive:
+    async with ClientSession() as websession:
+        config = await build_config(websession)
+        hive = Hive(websession)
         hive.new_session(config)
         nodes = await hive.get_nodes()
         print("\nProducts:")

@@ -57,13 +57,13 @@ async def main():
     username = input("Hive email: ")
     password = getpass.getpass("Hive password: ")
 
-    auth = Auth(username=username, password=password)
-    tokens = await auth.login()
-    if tokens.get("ChallengeName") == SMS_REQUIRED:
-        tokens = await auth.sms_2fa(input("SMS code: "), tokens)
-        await auth.device_registration()
-
     async with ClientSession() as websession:
+        auth = Auth(username=username, password=password, websession=websession)
+        tokens = await auth.login()
+        if tokens.get("ChallengeName") == SMS_REQUIRED:
+            tokens = await auth.sms_2fa(input("SMS code: "), tokens)
+            await auth.device_registration()
+
         hive = Hive(websession)
         hive.new_session(
             {
@@ -163,11 +163,12 @@ calls; retrying is up to the caller.
 
 ## Offline / File-Based Testing
 
-Set `username="use@file.com"` to load device state from the bundled JSON fixture in `src/hiveheating/data/` instead of making live API calls. Useful for development without real Hive credentials.
+Pass `username="use@file.com"` in the `new_session` config to load device state from the bundled JSON fixture in `src/hiveheating/data/` instead of making live API calls. Useful for development without real Hive credentials.
 
 ```python
-async with Hive(username="use@file.com", password="") as hive:
-    hive.new_session({})
+async with ClientSession() as websession:
+    hive = Hive(websession)
+    hive.new_session({"username": "use@file.com"})
     nodes = await hive.get_nodes()
 ```
 

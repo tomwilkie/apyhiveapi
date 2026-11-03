@@ -154,7 +154,12 @@ def session(websession):
         {
             "username": "user@example.com",
             "password": "password",  # pragma: allowlist secret
-            "tokens": {"token": "id-token", "refreshToken": "refresh-token"},
+            "tokens": {
+                "AuthenticationResult": {
+                    "IdToken": "id-token",
+                    "RefreshToken": "refresh-token",
+                }
+            },
         }
     )
     return hive

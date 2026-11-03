@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any
 
 import boto3
 import botocore.exceptions
-from aiohttp import ClientSession
 from botocore.config import Config
 
 from hiveheating.api import _fetch
@@ -41,28 +40,26 @@ from hiveheating.srp import (
     BIG_N,
     G,
     K,
-    calculate_a,
     calculate_u,
     compute_hkdf,
-    generate_small_a,
     get_random,
     hash_sha256,
     hex_hash,
     hex_to_long,
     long_to_hex,
+    new_ephemeral,
     pad_hex,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from aiohttp import ClientSession
+
 _LOGGER = logging.getLogger(__name__)
 
 # The ChallengeName of a login that needs the user's SMS code.
 SMS_REQUIRED = "SMS_MFA"
-
-# The username that switches to the bundled fixture instead of Hive.
-FILE_USERNAME = "use@file.com"
 
 # Cognito error codes and the exception each one becomes.
 type CodeMap = Mapping[str, type[HiveError]]
@@ -95,6 +92,43 @@ _DEVICE_REJECTED: CodeMap = {
 }
 
 
+def _srp_key(
+    ephemeral: tuple[int, int],
+    identity: str,
+    secret: str,
+    server_b_value: str,
+    salt: str,
+) -> bytes:
+    """Derive the SRP session key for *identity* and its *secret*.
+
+    *identity* is the pool name plus user ID for a password login, or the
+    device group key plus device key for a device login.
+
+    Args:
+        ephemeral: The handshake's client ephemeral ``(a, A)``.
+        identity: Who is authenticating, as Cognito expects it.
+        secret: The password or device password.
+        server_b_value: Cognito's ``SRP_B`` value, a hex string.
+        salt: Cognito's ``SALT`` value.
+
+    Returns:
+        The HKDF key that signs the challenge response.
+    """
+    small_a, large_a = ephemeral
+    server_b = hex_to_long(server_b_value)
+    u_value = calculate_u(large_a, server_b)
+    if u_value == 0:
+        raise ValueError("U cannot be zero")
+    identity_hash = hash_sha256(f"{identity}:{secret}".encode())
+    x_value = hex_to_long(hex_hash(pad_hex(salt) + identity_hash))
+    base = (server_b - K * pow(G, x_value, BIG_N)) % BIG_N
+    s_value = pow(base, small_a + u_value * x_value, BIG_N)
+    return compute_hkdf(
+        bytearray.fromhex(pad_hex(s_value)),
+        bytearray.fromhex(pad_hex(long_to_hex(u_value))),
+    )
+
+
 class HiveAuth:
     """Log in to a Hive account through AWS Cognito and manage trusted devices."""
 
@@ -110,7 +144,7 @@ class HiveAuth:
         device_key: str | None = None,
         device_password: str | None = None,
         *,
-        websession: ClientSession | None = None,
+        websession: ClientSession,
     ) -> None:
         """Set up the auth state.
 
@@ -120,8 +154,7 @@ class HiveAuth:
             device_group_key: Saved trusted-device group key, if any.
             device_key: Saved trusted-device key, if any.
             device_password: Saved trusted-device password, if any.
-            websession: aiohttp session for reading the Hive login page. A
-                short-lived one is created when none is given.
+            websession: aiohttp session for reading the Hive login page.
         """
         self.username = username
         self.password = password
@@ -131,13 +164,6 @@ class HiveAuth:
         self.access_token: str | None = None
         # Cognito's own ID for the user, learnt from the PASSWORD_VERIFIER challenge.
         self.user_id = username
-        # The SRP client ephemeral (a, A), made afresh for every handshake.
-        self.small_a_value = 0
-        self.large_a_value = 0
-        self.use_file = self.username == FILE_USERNAME
-        self.file_response: dict[str, Any] = {
-            "AuthenticationResult": {"AccessToken": "file"}
-        }
         self._websession = websession
         # Set by _ensure_client once the SSO login page has been read.
         self._pool_name: str | None = None
@@ -147,8 +173,7 @@ class HiveAuth:
     async def _ensure_client(self) -> None:
         """Create the Cognito client on first use.
 
-        The pool details come from Hive's SSO login page, read with the given
-        aiohttp session or, when there is none, a short-lived one.
+        The pool details come from Hive's SSO login page.
 
         Raises:
             HiveConnectionError: The login page could not be fetched.
@@ -156,11 +181,7 @@ class HiveAuth:
         """
         if self.client is not None:
             return
-        if self._websession is None:
-            async with ClientSession() as own_session:
-                page = await _fetch(own_session, "get", _SSO_URL)
-        else:
-            page = await _fetch(self._websession, "get", _SSO_URL)
+        page = await _fetch(self._websession, "get", _SSO_URL)
         script = _FIRST_SCRIPT.search(page)
         values = {
             key: value
@@ -248,15 +269,13 @@ class HiveAuth:
             HiveApiError: Cognito asked for a challenge this library cannot answer.
             HiveConnectionError: Cognito or the login page could not be reached.
         """
-        if self.use_file:
-            return self.file_response
         await self._ensure_client()
-        self._new_srp_ephemeral()
+        ephemeral = new_ephemeral()
         response = await self._cognito(
             "initiate_auth",
             {"UserNotFoundException": HiveInvalidUsername},
             AuthFlow="USER_SRP_AUTH",
-            AuthParameters=self._auth_params(),
+            AuthParameters=self._auth_params(ephemeral),
             ClientId=self._client_id,
         )
         challenge = response.get("ChallengeName")
@@ -266,6 +285,7 @@ class HiveAuth:
         self.user_id = parameters["USER_ID_FOR_SRP"]
         answer = await self._answer_srp_challenge(
             parameters,
+            ephemeral,
             identity=f"{self._pool_name}{self.user_id}",
             secret=self.password,
             username=self.user_id,
@@ -303,17 +323,18 @@ class HiveAuth:
         if not (group_key and device_key and device_password):
             raise HiveReauthRequired("There are no saved device credentials")
         await self._ensure_client()
-        self._new_srp_ephemeral()
+        ephemeral = new_ephemeral()
         challenge = await self._cognito(
             "respond_to_auth_challenge",
             _DEVICE_REJECTED,
             ClientId=self._client_id,
             ChallengeName=self.DEVICE_VERIFIER_CHALLENGE,
-            ChallengeResponses=self._auth_params(device_key),
+            ChallengeResponses=self._auth_params(ephemeral, device_key),
         )
         parameters = challenge["ChallengeParameters"]
         answer = await self._answer_srp_challenge(
             parameters,
+            ephemeral,
             identity=f"{group_key}{device_key}",
             secret=device_password,
             username=parameters["USERNAME"],
@@ -503,55 +524,19 @@ class HiveAuth:
             datetime.now(UTC).strftime("%a %b %d %H:%M:%S UTC %Y"),
         )
 
-    def _new_srp_ephemeral(self) -> None:
-        """Generate a fresh SRP client ephemeral (a, A) pair.
-
-        SRP ephemerals must not be reused across handshakes, so this is
-        called at the start of every authentication attempt.
-        """
-        self.small_a_value = generate_small_a()
-        self.large_a_value = calculate_a(self.small_a_value)
-
-    def _auth_params(self, device_key: str | None = None) -> dict[str, str]:
+    def _auth_params(
+        self, ephemeral: tuple[int, int], device_key: str | None = None
+    ) -> dict[str, str]:
         """Return the parameters that start an SRP handshake."""
-        params = {"USERNAME": self.username, "SRP_A": long_to_hex(self.large_a_value)}
+        params = {"USERNAME": self.username, "SRP_A": long_to_hex(ephemeral[1])}
         if device_key is not None:
             params["DEVICE_KEY"] = device_key
         return params
 
-    def _srp_key(
-        self, identity: str, secret: str, server_b_value: str, salt: str
-    ) -> bytes:
-        """Derive the SRP session key for *identity* and its *secret*.
-
-        *identity* is the pool name plus user ID for a password login, or the
-        device group key plus device key for a device login.
-
-        Args:
-            identity: Who is authenticating, as Cognito expects it.
-            secret: The password or device password.
-            server_b_value: Cognito's ``SRP_B`` value, a hex string.
-            salt: Cognito's ``SALT`` value.
-
-        Returns:
-            The HKDF key that signs the challenge response.
-        """
-        server_b = hex_to_long(server_b_value)
-        u_value = calculate_u(self.large_a_value, server_b)
-        if u_value == 0:
-            raise ValueError("U cannot be zero")
-        identity_hash = hash_sha256(f"{identity}:{secret}".encode())
-        x_value = hex_to_long(hex_hash(pad_hex(salt) + identity_hash))
-        base = (server_b - K * pow(G, x_value, BIG_N)) % BIG_N
-        s_value = pow(base, self.small_a_value + u_value * x_value, BIG_N)
-        return compute_hkdf(
-            bytearray.fromhex(pad_hex(s_value)),
-            bytearray.fromhex(pad_hex(long_to_hex(u_value))),
-        )
-
     async def _answer_srp_challenge(
         self,
         challenge_parameters: dict[str, Any],
+        ephemeral: tuple[int, int],
         *,
         identity: str,
         secret: str,
@@ -562,7 +547,13 @@ class HiveAuth:
         secret_block = challenge_parameters["SECRET_BLOCK"]
         timestamp = self._cognito_timestamp()
         key = await asyncio.get_running_loop().run_in_executor(
-            None, self._srp_key, identity, secret, challenge_parameters["SRP_B"], salt
+            None,
+            _srp_key,
+            ephemeral,
+            identity,
+            secret,
+            challenge_parameters["SRP_B"],
+            salt,
         )
         message = (
             identity.encode()

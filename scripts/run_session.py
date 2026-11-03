@@ -37,6 +37,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from aiohttp import ClientSession
+
 from hiveheating import (
     SMS_REQUIRED,
     Auth,
@@ -46,7 +48,7 @@ from hiveheating import (
     HiveReauthRequired,
     HotWaterProduct,
 )
-from hiveheating.auth import FILE_USERNAME
+from hiveheating.hive import FILE_USERNAME
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -145,20 +147,16 @@ def forget_stored() -> None:
     )
 
 
-def _tokens(result: dict[str, Any]) -> dict[str, str]:
-    auth_result = result["AuthenticationResult"]
-    return {
-        "token": auth_result["IdToken"],
-        "refreshToken": auth_result["RefreshToken"],
-        "accessToken": auth_result["AccessToken"],
-    }
+def _tokens(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep the part of a Cognito response that new_session reads."""
+    return {"AuthenticationResult": result["AuthenticationResult"]}
 
 
 async def _stored_login(
-    username: str, password: str, device_data: list[str]
+    websession: ClientSession, username: str, password: str, device_data: list[str]
 ) -> dict[str, Any]:
     """Log in with stored device credentials; {} when Hive rejects them."""
-    auth = Auth(username, password, *device_data)
+    auth = Auth(username, password, *device_data, websession=websession)
     try:
         # The password login comes first; Hive answers it with a device
         # challenge, which device_login() then completes.
@@ -172,6 +170,12 @@ async def _stored_login(
 
 async def live_config() -> dict[str, Any]:
     """Log in to a real Hive account and return the new_session config."""
+    async with ClientSession() as websession:
+        return await _log_in(websession)
+
+
+async def _log_in(websession: ClientSession) -> dict[str, Any]:
+    """Log in with stored device credentials, or with an SMS code."""
     stored = load_stored()
     username = stored.get("username") or input("Hive email: ").strip()
     password = getpass.getpass("Hive password (hidden, not stored): ")
@@ -180,7 +184,7 @@ async def live_config() -> dict[str, Any]:
     result: dict[str, Any] = {}
     if device_data:
         print("Logging in with the stored device credentials (no SMS)...")
-        result = await _stored_login(username, password, device_data)
+        result = await _stored_login(websession, username, password, device_data)
         if not result:
             print("Hive rejected the stored device credentials - signing in again.")
             forget_stored()
@@ -188,7 +192,7 @@ async def live_config() -> dict[str, Any]:
 
     if not device_data:
         print("Logging in...")
-        auth = Auth(username, password)
+        auth = Auth(username, password, websession=websession)
         result = await auth.login()
         if result.get("ChallengeName") == SMS_REQUIRED:
             code = input("SMS code: ").strip()
@@ -407,12 +411,12 @@ class Admin:
 
 async def run(args: argparse.Namespace, config: dict[str, Any]) -> None:
     """Start the session, then poll and log a summary until stopped."""
-    hive = Hive(username=config["username"], password=config.get("password", ""))
     settings = Settings(
         interval=args.interval,
         allow_writes=args.allow_writes,
     )
-    async with hive:
+    async with ClientSession() as websession:
+        hive = Hive(websession)
         hive.new_session(config)
         admin = Admin(hive, settings)
         ok = await admin.refresh()

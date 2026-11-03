@@ -25,12 +25,8 @@ AUTH_RESULT = {
         "ExpiresIn": 3600,
     }
 }
-NEW_TOKENS = {
-    "token": "id-token-0001",
-    "refreshToken": "refresh-token-0001",
-    "accessToken": "access-token-0001",
-}
-OLD_TOKENS = {"token": "id-tok", "refreshToken": "rt", "accessToken": "acc-tok"}
+NEW_TOKENS = {"token": "id-token-0001", "refreshToken": "refresh-token-0001"}
+OLD_TOKENS = {"token": "id-tok", "refreshToken": "rt"}
 SMS_CHALLENGE = {"ChallengeName": SMS_REQUIRED}
 DEVICE_CHALLENGE = {"ChallengeName": HiveAuth.DEVICE_VERIFIER_CHALLENGE}
 _LOGGER_NAME = "hiveheating.hive"
@@ -49,7 +45,7 @@ def _nodes():
 
 def _make_hive():
     """Return a Hive with fresh tokens whose Cognito and API calls are mocked."""
-    hive = Hive(username="user@example.com", password="pw")
+    hive = Hive(MagicMock())
     hive.auth.login = AsyncMock()
     hive.auth.device_login = AsyncMock()
     hive.auth.refresh_token = AsyncMock()
@@ -72,7 +68,7 @@ def _is_about(moment, expected):
 class TestInit:
     def test_passes_the_websession_to_auth_and_requests(self):
         websession = MagicMock()
-        hive = Hive(websession, username="user@example.com", password="pw")
+        hive = Hive(websession)
         assert hive.websession is websession
         assert hive.auth._websession is websession
 
@@ -95,21 +91,10 @@ class TestUpdateTokens:
         assert hive.tokens.token_created == _LAST_POLL
         assert hive.tokens.token_data == NEW_TOKENS
 
-    @pytest.mark.parametrize(
-        ("tokens", "expected_token"),
-        [
-            pytest.param(
-                {"AuthenticationResult": {"IdToken": "new-id"}},
-                "new-id",
-                id="cognito-result",
-            ),
-            pytest.param({"token": "t-only"}, "t-only", id="flat-dict"),
-        ],
-    )
-    def test_missing_keys_are_not_written(self, tokens, expected_token):
+    def test_missing_keys_are_not_written(self):
         hive = _make_hive()
-        hive.update_tokens(tokens)
-        assert hive.tokens.token_data == {**OLD_TOKENS, "token": expected_token}
+        hive.update_tokens({"AuthenticationResult": {"IdToken": "new-id"}})
+        assert hive.tokens.token_data == {**OLD_TOKENS, "token": "new-id"}
         assert hive.tokens.token_expiry == timedelta(seconds=3600)
 
     @pytest.mark.parametrize(
@@ -130,15 +115,6 @@ class TestUpdateTokens:
         hive.update_tokens(tokens)
         assert hive.tokens.token_data == OLD_TOKENS
         assert hive.tokens.token_created == _LAST_POLL
-        assert hive.tokens.token_expiry == timedelta(seconds=900)
-
-    def test_flat_dict_is_stored_as_is(self):
-        hive = _make_hive()
-        hive.tokens.token_created = _LAST_POLL
-        hive.tokens.token_expiry = timedelta(seconds=900)
-        hive.update_tokens(dict(NEW_TOKENS))
-        assert hive.tokens.token_data == NEW_TOKENS
-        assert _is_about(hive.tokens.token_created, datetime.now(UTC))
         assert hive.tokens.token_expiry == timedelta(seconds=900)
 
     def test_debug_log_shows_no_part_of_a_long_token(self, caplog):
@@ -296,14 +272,14 @@ class TestRefreshDue:
         assert hive._refresh_due() is True
 
     def test_new_session_is_due(self):
-        hive = Hive(username="user@example.com", password="pw")
+        hive = Hive(MagicMock())
         assert hive._refresh_due() is True
 
 
 class TestRefreshTokens:
     async def test_file_mode_never_refreshes(self):
         hive = _make_hive()
-        hive.config.file = True
+        hive._file = True
         _expire_tokens(hive)
         assert await hive._refresh_tokens() is None
         hive.auth.refresh_token.assert_not_awaited()
@@ -533,7 +509,7 @@ class TestCommands:
 
     async def test_file_mode_sends_nothing(self):
         hive = _make_hive()
-        hive.config.file = True
+        hive._file = True
         _expire_tokens(hive)
         await hive.set_target_temperature(_PRODUCTS["p1"], 20.5)
         hive._request.assert_not_awaited()
@@ -553,7 +529,7 @@ class TestCommands:
 class TestGetNodes:
     async def test_file_mode_reads_the_bundled_fixture_off_the_event_loop(self):
         hive = _make_hive()
-        hive.config.file = True
+        hive._file = True
         with patch(
             "hiveheating.hive.asyncio.to_thread", new=AsyncMock(return_value=_nodes())
         ) as to_thread:
